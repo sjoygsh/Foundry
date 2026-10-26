@@ -1682,6 +1682,8 @@ pub fn build(b: *std.Build) void {
     pipeline_options.addOptionPath("author_job_mod_path", author_job_mod.getEmittedBin());
     pipeline_options.addOptionPath("hostile3d_mod_path", hostile3d_mod.getEmittedBin());
     pipeline_options.addOptionPath("render3d_client_path", render3d_client.getEmittedBin());
+    // M30 Step 5 measures a stream's margin against the gallery's decodes (`music.md` §6.2).
+    pipeline_options.addOptionPath("gallery_dir", b.path("samples/sandbox3d/content/models"));
 
     const integration_mod = b.createModule(.{
         .root_source_file = b.path("engine/tests/root.zig"),

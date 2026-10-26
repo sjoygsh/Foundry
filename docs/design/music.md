@@ -1206,3 +1206,153 @@ slot is told apart by generation, never by trusting the order alone.
 
 **Bar.** `zig build test` passes 2,341 of 2,342 (one skip, M27's), with 11 new tests. fmt, the
 four checks, the four thirty-frame headless runs and `fdt-check` all exit 0.
+
+## Resolution — Step 5: streamed voices (2026-10-26)
+
+§6 is implemented: `audio/stream.zig` (the ring), streamed reading in `audio/voice.zig`, and the
+stream table, decode tasks and lifetime in `audio/mixer.zig`. In `asset/vorbis.zig`, the
+decoder gained `prove`, `Decoder.reserve` and `Decoder.rewind`. Nothing in the public table
+changed shape.
+
+**The loader keeps a streamed sound compressed** (§4). With `stream true`, its decode phase
+runs `vorbis.prove`, which decodes the whole file in 1,024-frame pieces and keeps none of it.
+It then hands the finish a copy of the bytes and the parsed headers. A one-hour track
+therefore costs its file size plus one piece at load, never its length in samples.
+`Mixer.insertStreamed` does the same for a caller that holds bytes rather than content. The
+`.ogg` gap that Step 3 left is closed: `stream true` now streams.
+
+**The ring is a feed of absolute frames.** `Feed` holds a stream's frames in `storage`, one
+second at the sound's own rate.
+- `written` is the producer's count and `consumed` the consumer's. Both are positions in
+  the stream counted across every pass of a loop, and frame `f` lives at index
+  `f % capacity`.
+- Two release/acquire pairs are the whole ordering argument, and `stream.zig` states it as
+  `ring.zig` does:
+  - the producer writes frames, then publishes `written`;
+  - the voice publishes `consumed` once it is past a frame, and the producer reads it
+    before overwriting that frame's index.
+- Because positions are absolute, an underrun needs no special path. The voice moves on, and
+  the frames it skipped are written later at indices nobody reads (§6.3).
+
+**The voice reads the feed with the resident path's own arithmetic.**
+- It keeps the same wrapped `f64` cursor and adds `pass`, the count of completed loop
+  passes, so a frame's stream position is `pass × frames + index`.
+- At a loop's seam, the interpolation's neighbour is the next pass's first frame.
+- The cursor's rounding is therefore bit for bit the resident voice's. The exit test compares
+  every sample across three seams, at the device's rate and resampled from 44.1 kHz, and
+  they are equal.
+
+**An underrun is counted once per buffer**, per voice that missed at least one frame in that
+buffer. `underruns()` counts glitches heard, not frames lost. One stall is one count, however
+long.
+
+**An unscheduled streamed start waits for its first frames.** The design did not say what
+`play` with no `start_at` should do before the first decode lands. Starting at the next
+callback would underrun at once on a real pool and cut the track's opening. There is no
+timeline to keep yet, so such a voice stays pending until two frames are written, then
+starts. `startedAt` reports the frame it actually began on. A scheduled start keeps its frame
+and underruns instead, as §6.3 requires.
+
+**A decode task never allocates.**
+- `Decoder.init` runs on the game thread in `play`, which may fail. Its buffers are fixed by
+  the block sizes.
+- The one other allocation is the Ogg reader's buffer for a packet spanning pages. `prove`
+  measures that buffer's size over the whole file, and `play` reserves it.
+- `rewind` restarts at the first audio packet and keeps that capacity.
+- A test proves it with a failing allocator armed after `reserve`: three passes per fixture
+  allocate nothing and equal the reference.
+- No encoder's fixture has a packet that spans pages, so the test also repaginates every
+  fixture into one-segment pages. Every packet over 255 bytes then spans, the reserve is real
+  (over 255 bytes for each), and the frames are identical.
+- If a task's decode fails anyway, it logs, ends the stream, and the voice hears an underrun.
+
+**Repaginating the fixtures found a Step 3 bug, fixed here.**
+- A page's granule of −1 means no packet ends on it. `Packets` returned that value as the
+  granule of a packet that did end there, and the decoder's position arithmetic then
+  overflowed: a crafted file could panic it.
+- `Packets` now gives such a packet no granule, as libvorbis reads it. The position addition
+  saturates, so a granule near the top of the range cannot overflow either.
+- A container test pins the first. The second is a guard behind `scan`, which refuses a final
+  granule above `max_frames` and granules that go backwards, so it cannot be reached.
+
+**The stream table** is fixed at `init`.
+- `Options.streams` sets its size, 4 by default. Each stream's ring is allocated at 192 kHz
+  stereo, one second, as §6.1 says: the most any stream can need. That is 1.5 MiB a stream,
+  6 MiB at the default, whether or not anything streams.
+- A game that streams nothing can set `streams = 0`.
+- If the fixed cost ever matters, a smaller rate ceiling with a named refusal is the change;
+  it does not matter for M30.
+- Past the table, `play` returns `NoFreeStream`, and the public `audio_play` maps that to
+  `FOUNDRY_ERR_LIMIT`, as it maps `NoFreeVoice`.
+- `VoiceError` also gained `OutOfMemory`, for the decoder's state.
+
+**Where streams decode:** `Options.tasks`, `immediate` by default.
+- Under `immediate`, the first fill runs inside `play` and each refill inside `update`.
+- A game passes its background pool's tasks. No sample streams yet, so none is changed here.
+  The court passes its pool in Step 7.
+- `update` settles finished tasks, starts a refill for any stream below half full with no task
+  in flight, and frees streams that both sides are done with.
+
+**Lifetime** (§6.5).
+- A stream holds its own reference on the sound beside its voice's, so a hot reload, or a
+  `releaseSound`, frees the compressed bytes only once the decode task is done too.
+- A retired voice marks its stream, and the stream is freed when its `Done` is seen.
+- `shutdown` and `deinit` wait for the executor only if a task is actually in flight. A pool
+  torn down first has already run what it held, and a mixer outliving its pool must not call
+  into it.
+
+**`streamBuffered(voice)`** reports the frames decoded ahead of a streamed voice. It is a
+diagnostic, and it is how the margin was measured.
+
+**The half-second margin, measured against the gallery** (§6.2).
+- The setup is the worst position a refill can be in:
+  - the gallery's eight 2048×2048 PNG decodes, each with its sRGB mip chain as the texture
+    loader's decode builds it, are queued on a real `platform.Background` with the default
+    two threads;
+  - then a stream is started half a second ahead, so its first decode waits behind all
+    eight;
+  - then it plays in real time, in 10 ms buffers, for two seconds.
+- On the M5, ReleaseSafe, five runs: the first frames arrived **265–272 ms** after the stream
+  was queued (the gallery itself finished at 266–276 ms), against the 500 ms margin. There
+  were **no underruns**.
+- The pool is FIFO, so the stream's decode waits for every gallery decode started before it.
+  The margin is the gallery's whole decode time plus a moment. Step 8 measures the same on
+  the Arc PC, where M27's synchronous gallery took 834–841 ms against the Mac's 548–575 ms,
+  so the margin there is the open question.
+- The test skips in Debug, where its timings mean nothing, which is why the bar now reports
+  two skips. Run it with `zig build integration-test -Doptimize=ReleaseSafe`.
+
+**Found and not changed:** that ReleaseSafe run also fails
+`ui_theme.test.a valid theme resolves…` on a last-bit float comparison (0.7605246 against
+0.76052463). It is an existing integration test whose code this step does not touch, and
+the Debug bar passes. It is reported to the owner rather than fixed here.
+
+**Guards verified by mutation.** Each was broken, the suite run, and the file restored. Each
+of these failed it:
+- reading a frame the producer has not written, instead of underrunning;
+- an underrun that holds the cursor instead of moving it on (the timeline);
+- `pass` not counted at a seam;
+- a seam's neighbour read from the current pass rather than the next;
+- a second decode task started while one is in flight;
+- a stream freed before its task's `Done`;
+- the stream's own reference on the sound dropped;
+- an unscheduled streamed start not waiting for its first frames;
+- `shutdown` freeing streams without waiting for their tasks;
+- the proving pass replaced by reading the headers alone;
+- `rewind` dropping the reserved capacity;
+- `reserve` doing nothing;
+- `Packets` passing a granule of −1 through.
+
+The `reserve` mutation first survived, because each repaged fixture's setup header spanned
+pages and grew the buffer at `init`, before the failing allocator was armed. The repaging
+keeps the three headers on whole pages now, so only audio packets span. In `mono44_q10` and
+`coupled` they do, and the test requires both to.
+
+**Bar.** `zig build test` passes 2,353 of 2,355. The two skips are M27's and the margin test,
+which runs only in ReleaseSafe. There are 13 new tests:
+- one in `stream.zig`;
+- eight in `mixer.zig`;
+- one each in `vorbis.zig` and `ogg.zig`;
+- two in `sound_pipeline.zig`.
+
+fmt, the four checks, the four thirty-frame headless runs and `fdt-check` all exit 0.

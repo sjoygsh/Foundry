@@ -12,10 +12,13 @@ const platform = @import("platform");
 const asset = @import("asset");
 
 const ring = @import("ring.zig");
+const streaming = @import("stream.zig");
 const voice = @import("voice.zig");
 
 const Allocator = std.mem.Allocator;
 const Voice = voice.Voice;
+const Feed = streaming.Feed;
+const vorbis = asset.vorbis;
 const log = core.log.scoped(.audio);
 
 /// Phantom tag for `VoiceHandle` (I1). See `root.zig` for why a voice is generational.
@@ -41,6 +44,14 @@ pub const Options = struct {
     channels: u8 = 2,
     buffer_frames: u32 = 512,
     master_gain: f32 = 1.0,
+    /// Streamed voices that can play at once (`music.md` §6.1). Each owns a ring of one
+    /// second at the largest rate a stream may have, allocated here. Past it, `play` of a
+    /// streamed sound returns `error.NoFreeStream`.
+    streams: u32 = 4,
+    /// Where streams decode. `immediate` decodes inside `play` and `update`, on the game
+    /// thread; a game hands its background pool's (`platform.Background`) so the decode
+    /// happens beside the frame. Must outlive the mixer.
+    tasks: core.Tasks = core.tasks.immediate,
 };
 
 pub const PlayParams = struct {
@@ -88,6 +99,10 @@ pub const VoiceError = error{
     /// dropping a `set_gain`**: a `play` that vanished would strand a slot that no
     /// retirement is ever coming for, so the claim is undone and the caller told.
     CommandQueueFull,
+    /// Every stream is in use, so a streamed sound cannot start (`Options.streams`).
+    NoFreeStream,
+    /// A streamed voice's decoder state could not be allocated.
+    OutOfMemory,
 };
 
 /// What `play` can fail with: everything about a voice, plus everything about resolving a
@@ -122,6 +137,8 @@ const Play = struct {
     looping: bool,
     start_at: ?u64,
     envelope: f32,
+    /// A streamed voice's frames, in place of `samples`.
+    feed: ?*Feed,
 };
 
 /// Callback thread to game thread: a voice's first sample landed on `frame`, or the voice
@@ -147,16 +164,118 @@ const Slot = struct {
     held: asset.AssetHandle = .none,
     /// The mixer frame the voice's first sample landed on, once `update` has heard.
     started_at: ?u64 = null,
+    /// The stream a streamed voice reads, told when the voice retires.
+    stream: ?u32 = null,
+};
+
+/// A streamed sound: its compressed bytes, kept, and the headers every stream of it shares
+/// read-only (`music.md` §4, §6.1). Boxed, so a decoder may borrow it while the sound table
+/// grows.
+const Compressed = struct {
+    bytes: []u8,
+    headers: vorbis.Headers,
+    /// What `vorbis.Decoder.reserve` needs so a decode task never allocates.
+    spanning: usize,
+
+    fn destroy(self: *Compressed, gpa: Allocator) void {
+        self.headers.deinit();
+        gpa.free(self.bytes);
+        gpa.destroy(self);
+    }
+};
+
+/// What the sound loader's decode hands its finish.
+const Loaded = union(enum) {
+    resident: asset.Sound,
+    streamed: *Compressed,
+
+    fn deinit(self: *Loaded, gpa: Allocator) void {
+        switch (self.*) {
+            .resident => |*sound| sound.deinit(gpa),
+            .streamed => |compressed| compressed.destroy(gpa),
+        }
+    }
+};
+
+/// One streamed voice's decoding (`music.md` §6). The table is fixed at `init`, so a feed's
+/// address is stable for the voice that reads it and the task that fills it.
+const Stream = struct {
+    feed: Feed,
+
+    // -- the game thread's --------------------------------------------------------
+    in_use: bool = false,
+    sound: SoundHandle = .none,
+    /// Its voice has retired: nothing reads the feed any more.
+    retired: bool = false,
+    /// A decode task has been started and its `done` not yet seen.
+    in_flight: bool = false,
+    done: core.tasks.Done = .{},
+
+    // -- the producer's: the task in flight, or the game thread when none is ---------
+    decoder: vorbis.Decoder = undefined,
+    looping: bool = false,
+    /// Absolute frames decoded so far, across every pass.
+    produced: u64 = 0,
+    /// A one-shot has decoded its last frame, or the decoder failed.
+    ended: bool = false,
+
+    /// The decode task: fills the ring until it is full or the sound ends.
+    ///
+    /// **Never allocates and should never fail.** The decoder's memory was reserved at
+    /// `play` from what the load's proving pass measured, and the same bytes decoded whole
+    /// at load. A failure anyway ends the stream, which the voice hears as an underrun.
+    fn fill(erased: *anyopaque) void {
+        const self: *Stream = @ptrCast(@alignCast(erased));
+        var empty_passes: u8 = 0;
+        while (!self.ended) {
+            const room = self.feed.room(self.produced);
+            if (room.len == 0) break;
+            const got = self.decoder.read(room) catch |err| {
+                log.err("a streamed sound failed to decode while playing ({t}); it goes silent", .{err});
+                self.ended = true;
+                break;
+            };
+            if (got == 0) {
+                // A pass that made nothing would loop forever.
+                empty_passes += 1;
+                if (!self.looping or empty_passes > 1) {
+                    self.ended = true;
+                    break;
+                }
+                self.decoder.rewind() catch |err| {
+                    log.err("a streamed loop failed to restart ({t}); it goes silent", .{err});
+                    self.ended = true;
+                    break;
+                };
+                continue;
+            }
+            empty_passes = 0;
+            self.produced += got;
+            self.feed.publish(self.produced);
+        }
+    }
 };
 
 /// A decoded sound and what keeps it alive.
 const Stored = struct {
+    /// Empty for a streamed sound, whose frames are decoded as it plays.
     sound: asset.Sound,
+    compressed: ?*Compressed = null,
     /// Voices currently playing it. The samples cannot be freed above zero.
     refs: u32 = 0,
     /// Set when the owner has released it — a hot reload, or an explicit release — while
     /// a voice may still be reading. Freed by a later `update`.
     retired: bool = false,
+
+    fn frameCount(self: *const Stored) usize {
+        if (self.compressed) |c| return @intCast(c.headers.frames);
+        return self.sound.frameCount();
+    }
+
+    fn deinit(self: *Stored, gpa: Allocator) void {
+        self.sound.deinit(gpa);
+        if (self.compressed) |c| c.destroy(gpa);
+    }
 };
 
 pub fn MixerOf(comptime P: type) type {
@@ -187,6 +306,12 @@ pub fn MixerOf(comptime P: type) type {
         slots: []Slot,
         free_list: std.ArrayList(u32),
         sounds: core.HandlePool(Sounds, Stored) = .empty,
+        /// Fixed at `init`. Each feed is shared with the voice reading it and the task
+        /// filling it (`stream.zig`); the rest is the game thread's.
+        streams: []Stream,
+        /// Every stream's ring, one allocation.
+        stream_storage: []f32,
+        tasks: core.Tasks,
 
         // -- owned by the callback thread -----------------------------------------
         voices: []Voice,
@@ -204,6 +329,9 @@ pub fn MixerOf(comptime P: type) type {
         /// Scheduled starts whose frame had passed when they arrived. Written by the
         /// callback; a diagnostic, so monotonic.
         late_starts: std.atomic.Value(u32) = .init(0),
+        /// Buffers in which a streamed voice found a frame missing and played silence for
+        /// it. Written by the callback; a diagnostic, so monotonic.
+        underrun_count: std.atomic.Value(u32) = .init(0),
 
         pub fn init(
             gpa: Allocator,
@@ -247,6 +375,15 @@ pub fn MixerOf(comptime P: type) type {
             var from_audio: ring.Ring(Event) = try .init(gpa, 2 * voice_count);
             errdefer from_audio.deinit(gpa);
 
+            // One second at the highest rate a sound may have, for each stream: the most any
+            // stream needs, so nothing is allocated for a ring when one starts.
+            const ring_samples: usize = vorbis.max_sample_rate * vorbis.max_channels;
+            const stream_storage = try gpa.alloc(f32, ring_samples * options.streams);
+            errdefer gpa.free(stream_storage);
+            const streams = try gpa.alloc(Stream, options.streams);
+            errdefer gpa.free(streams);
+            for (streams, 0..) |*st, n| st.* = .{ .feed = .{ .storage = stream_storage[n * ring_samples ..][0..ring_samples] } };
+
             self.* = .{
                 .gpa = gpa,
                 .plat = plat,
@@ -262,6 +399,9 @@ pub fn MixerOf(comptime P: type) type {
                 .master_gain = options.master_gain,
                 .to_audio = to_audio,
                 .from_audio = from_audio,
+                .streams = streams,
+                .stream_storage = stream_storage,
+                .tasks = options.tasks,
             };
 
             self.device = try plat.openAudio(.{
@@ -313,16 +453,34 @@ pub fn MixerOf(comptime P: type) type {
             self.device = .none;
             self.ready.store(false, .monotonic);
 
+            // Then every decode task, and only then the streams they fill (`music.md` §6.5).
+            self.quiesceStreams();
+            for (self.streams, 0..) |*st, index| if (st.in_use) self.freeStream(@intCast(index));
+
             // The device thread is gone, so this is the one place a voice may be ended
             // without a round trip through the retirement ring.
             for (self.slots) |*slot| {
                 if (!slot.playing) continue;
                 slot.playing = false;
+                slot.stream = null;
                 const held = slot.held;
                 slot.held = .none;
                 slot.sound = .none;
                 if (!held.isNone()) self.assets.release(held);
             }
+        }
+
+        /// Waits for every decode task in flight. **Only when one is**: an executor whose
+        /// owner has already torn it down ran what it held first, so a mixer outliving its
+        /// pool never calls into it.
+        fn quiesceStreams(self: *Self) void {
+            for (self.streams) |*st| {
+                if (st.in_flight and !st.done.isSet()) {
+                    self.tasks.wait();
+                    break;
+                }
+            }
+            for (self.streams) |*st| st.in_flight = false;
         }
 
         pub fn deinit(self: *Self) void {
@@ -341,8 +499,13 @@ pub fn MixerOf(comptime P: type) type {
             // the worst available way to end a program. A caller that skipped `shutdown`
             // has left reference counts high on a registry that is on its way out anyway.
 
+            self.quiesceStreams();
+            for (self.streams) |*st| if (st.in_use) st.decoder.deinit();
+            gpa.free(self.streams);
+            gpa.free(self.stream_storage);
+
             var it = self.sounds.iterator();
-            while (it.next()) |entry| entry.value.sound.deinit(gpa);
+            while (it.next()) |entry| entry.value.deinit(gpa);
             self.sounds.deinit(gpa);
 
             self.to_audio.deinit(gpa);
@@ -358,6 +521,33 @@ pub fn MixerOf(comptime P: type) type {
         /// Takes ownership of `sound` and returns the handle voices are started from.
         pub fn insertSound(self: *Self, sound: asset.Sound) Allocator.Error!SoundHandle {
             return self.sounds.add(self.gpa, .{ .sound = sound });
+        }
+
+        /// Takes an Ogg Vorbis file as a streamed sound: proved by decoding it whole once,
+        /// then kept compressed and decoded as each voice of it plays (`music.md` §4, §6).
+        /// The bytes are copied.
+        pub fn insertStreamed(self: *Self, bytes: []const u8) (vorbis.DecodeError || Allocator.Error)!SoundHandle {
+            const compressed = try prepareStreamed(self.gpa, bytes);
+            errdefer compressed.destroy(self.gpa);
+            return self.adoptStreamed(compressed);
+        }
+
+        fn prepareStreamed(gpa: Allocator, bytes: []const u8) vorbis.DecodeError!*Compressed {
+            const proven = try vorbis.prove(gpa, bytes, .{});
+            var headers = proven.headers;
+            errdefer headers.deinit();
+            const compressed = try gpa.create(Compressed);
+            errdefer gpa.destroy(compressed);
+            compressed.* = .{ .bytes = try gpa.dupe(u8, bytes), .headers = headers, .spanning = proven.spanning };
+            return compressed;
+        }
+
+        fn adoptStreamed(self: *Self, compressed: *Compressed) Allocator.Error!SoundHandle {
+            const info = compressed.headers.info;
+            return self.sounds.add(self.gpa, .{
+                .sound = .{ .samples = @constCast(@as([]const f32, &.{})), .channels = info.channels, .sample_rate = info.sample_rate },
+                .compressed = compressed,
+            });
         }
 
         /// Gives a sound up. **The samples are not freed here** if a voice is still
@@ -376,7 +566,7 @@ pub fn MixerOf(comptime P: type) type {
         /// Frees a retired sound once nothing is playing it. Game thread only.
         fn collect(self: *Self, handle: SoundHandle, stored: *Stored) void {
             if (!stored.retired or stored.refs != 0) return;
-            stored.sound.deinit(self.gpa);
+            stored.deinit(self.gpa);
             _ = self.sounds.remove(handle);
         }
 
@@ -431,18 +621,26 @@ pub fn MixerOf(comptime P: type) type {
             bytes: []const u8,
         ) asset.LoadError!asset.Decoded {
             const stream = asset.schemas.boolField(record, asset.schemas.sound, asset.schemas.stream_field) orelse false;
-            const vorbis = bytes.len >= 4 and std.mem.eql(u8, bytes[0..4], "OggS");
-            if (stream and !vorbis) {
+            const ogg = bytes.len >= 4 and std.mem.eql(u8, bytes[0..4], "OggS");
+            if (stream and !ogg) {
                 // Streaming PCM that is already resident would buy nothing and cost a ring.
                 log.warn("{f}: stream is for compressed sounds, and this is not one", .{record.id});
                 return error.UnsupportedVersion;
             }
-            const boxed = try gpa.create(asset.Sound);
+            const boxed = try gpa.create(Loaded);
             errdefer gpa.destroy(boxed);
-            // `stream true` is decoded whole for now, as a resident sound; M30 Step 5 keeps it
-            // compressed and decodes it as it plays (`music.md` §6).
-            const decoded = if (vorbis) asset.vorbis.decode(gpa, bytes, .{}) else asset.wav.decode(gpa, bytes, .{});
-            boxed.* = decoded catch |err| return switch (err) {
+            // A streamed sound is decoded whole too, and its samples thrown away: the proving
+            // pass that lets a stream's decode treat failure as impossible (`music.md` §4).
+            boxed.* = loaded: {
+                if (stream) break :loaded .{ .streamed = prepareStreamed(gpa, bytes) catch |err| return loadError(err) };
+                const decoded = if (ogg) vorbis.decode(gpa, bytes, .{}) else asset.wav.decode(gpa, bytes, .{});
+                break :loaded .{ .resident = decoded catch |err| return loadError(err) };
+            };
+            return .fromPointer(boxed);
+        }
+
+        fn loadError(err: asset.SoundDecodeError) asset.LoadError {
+            return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 // A valid file this decoder does not handle. The file is fine and the
                 // answer for the author is different: transcode, do not debug.
@@ -450,10 +648,10 @@ pub fn MixerOf(comptime P: type) type {
                 error.SoundTooLarge => error.LoadFailed,
                 error.InvalidSound => error.InvalidAsset,
             };
-            return .fromPointer(boxed);
         }
 
-        /// The samples become the mixer's; only the box they came in is freed here.
+        /// The samples, or the compressed bytes, become the mixer's; only the box they came
+        /// in is freed here.
         fn soundFinish(
             ctx: ?*anyopaque,
             gpa: Allocator,
@@ -462,14 +660,17 @@ pub fn MixerOf(comptime P: type) type {
             _: *asset.Budget,
         ) asset.LoadError!asset.Payload {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
-            const boxed: *asset.Sound = @ptrCast(@alignCast(decoded.pointer().?));
-            const handle = try self.insertSound(boxed.*);
+            const boxed: *Loaded = @ptrCast(@alignCast(decoded.pointer().?));
+            const handle = switch (boxed.*) {
+                .resident => |sound| try self.insertSound(sound),
+                .streamed => |compressed| try self.adoptStreamed(compressed),
+            };
             gpa.destroy(boxed);
             return .fromHandle(handle);
         }
 
         fn soundDiscard(gpa: Allocator, decoded: asset.Decoded) void {
-            const boxed: *asset.Sound = @ptrCast(@alignCast(decoded.pointer().?));
+            const boxed: *Loaded = @ptrCast(@alignCast(decoded.pointer().?));
             boxed.deinit(gpa);
             gpa.destroy(boxed);
         }
@@ -510,7 +711,33 @@ pub fn MixerOf(comptime P: type) type {
             const stored = self.sounds.get(sound) orelse return error.UnknownSound;
             // A sound on its way out is not a sound to start something new on.
             if (stored.retired) return error.UnknownSound;
-            if (stored.sound.frameCount() == 0) return error.UnknownSound;
+            if (stored.frameCount() == 0) return error.UnknownSound;
+
+            // A streamed sound needs a stream as well as a voice, and its decoder state, which
+            // is the one thing `play` allocates (`music.md` §6.1).
+            var stream_index: ?u32 = null;
+            if (stored.compressed) |compressed| {
+                if (self.free_list.items.len == 0) return error.NoFreeVoice;
+                const n = self.freeStreamIndex() orelse return error.NoFreeStream;
+                const st = &self.streams[n];
+                st.decoder = vorbis.Decoder.init(self.gpa, compressed.bytes, &compressed.headers) catch |err| return streamError(err);
+                st.decoder.reserve(compressed.spanning) catch {
+                    st.decoder.deinit();
+                    return error.OutOfMemory;
+                };
+                st.feed.reset(compressed.headers.info.sample_rate, compressed.headers.info.channels);
+                st.in_use = true;
+                st.sound = sound;
+                st.retired = false;
+                st.in_flight = false;
+                st.looping = params.looping;
+                st.produced = 0;
+                st.ended = false;
+                // The stream holds the compressed bytes alive for its decode task, which may
+                // outlast the voice (`music.md` §6.5).
+                stored.refs += 1;
+                stream_index = n;
+            }
 
             const index = self.free_list.pop() orelse return error.NoFreeVoice;
             const slot = &self.slots[index];
@@ -518,6 +745,7 @@ pub fn MixerOf(comptime P: type) type {
             slot.playing = true;
             slot.sound = sound;
             slot.started_at = null;
+            slot.stream = stream_index;
             stored.refs += 1;
 
             const handle: VoiceHandle = .{ .index = index, .generation = slot.generation };
@@ -526,7 +754,7 @@ pub fn MixerOf(comptime P: type) type {
                 .voice = handle,
                 .samples = stored.sound.samples,
                 .channels = stored.sound.channels,
-                .frames = stored.sound.frameCount(),
+                .frames = stored.frameCount(),
                 .step = voice.stepFor(stored.sound.sample_rate, self.info.sample_rate, params.pitch),
                 .gain = params.gain,
                 .left = gains.left,
@@ -534,17 +762,100 @@ pub fn MixerOf(comptime P: type) type {
                 .looping = params.looping,
                 .start_at = params.start_at,
                 .envelope = params.envelope,
+                .feed = if (stream_index) |n| &self.streams[n].feed else null,
             } });
 
             if (!started) {
-                // Undo the claim. Nothing was ever started, so no retirement is coming.
+                // Undo the claim. Nothing was ever started, so no retirement is coming, and
+                // no decode task either.
                 stored.refs -= 1;
                 slot.playing = false;
                 slot.sound = .none;
+                slot.stream = null;
                 self.free_list.appendAssumeCapacity(index);
+                if (stream_index) |n| self.freeStream(n);
                 return error.CommandQueueFull;
             }
+            // The first fill starts now, so the ring is full before a scheduled start arrives
+            // (§8.4's lookahead is a second).
+            if (stream_index) |n| self.refill(&self.streams[n]);
             return handle;
+        }
+
+        fn streamError(err: vorbis.DecodeError) VoiceError {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                // The bytes decoded whole at load, so a refusal now means they changed.
+                else => error.UnknownSound,
+            };
+        }
+
+        fn freeStreamIndex(self: *const Self) ?u32 {
+            for (self.streams, 0..) |*st, n| if (!st.in_use) return @intCast(n);
+            return null;
+        }
+
+        /// Starts a decode task for a stream below half full (`music.md` §6.2). One at a
+        /// time: a stream with a task in flight waits for its `Done`.
+        fn refill(self: *Self, st: *Stream) void {
+            if (st.in_flight or st.ended or st.retired) return;
+            if (st.feed.level() >= st.feed.capacity / 2) return;
+            st.done = .{};
+            self.tasks.start(.{ .context = st, .call = Stream.fill }, &st.done) catch return;
+            st.in_flight = true;
+        }
+
+        /// Frees a stream whose voice has retired and whose task has finished, or one that
+        /// never had either. Game thread.
+        fn freeStream(self: *Self, n: u32) void {
+            const st = &self.streams[n];
+            std.debug.assert(st.in_use and !st.in_flight);
+            st.decoder.deinit();
+            const sound = st.sound;
+            const feed = st.feed;
+            st.* = .{ .feed = feed };
+            if (self.sounds.get(sound)) |stored| {
+                stored.refs -= 1;
+                self.collect(sound, stored);
+            }
+        }
+
+        /// Settles finished decode tasks, starts the ones streams need, and frees streams
+        /// both sides are done with (`music.md` §6.2, §6.5).
+        fn pumpStreams(self: *Self) void {
+            for (self.streams, 0..) |*st, n| {
+                if (!st.in_use) continue;
+                if (st.in_flight and st.done.isSet()) st.in_flight = false;
+                if (st.retired) {
+                    if (!st.in_flight) self.freeStream(@intCast(n));
+                    continue;
+                }
+                self.refill(st);
+            }
+        }
+
+        /// Buffers in which a streamed voice played silence for a frame it did not yet have
+        /// (`music.md` §6.3). Criterion 2 requires it to stay at zero.
+        pub fn underruns(self: *const Self) u32 {
+            return self.underrun_count.load(.monotonic);
+        }
+
+        /// Frames decoded ahead of a streamed voice, or null for a voice that is not one or is
+        /// no longer playing. Approximate while the device runs. For a diagnostic and a margin
+        /// measurement, never for a decision.
+        pub fn streamBuffered(self: *const Self, handle: VoiceHandle) ?u64 {
+            const slot = self.liveSlotConst(handle) orelse return null;
+            const n = slot.stream orelse return null;
+            return self.streams[n].feed.level();
+        }
+
+        /// Streams claimed, including ones whose voice has gone but whose task has not.
+        pub fn streamsInUse(self: *const Self) u32 {
+            var count: u32 = 0;
+            for (self.streams) |st| {
+                if (st.in_use) count += 1;
+            }
+            return count;
         }
 
         pub fn stop(self: *Self, handle: VoiceHandle) void {
@@ -686,6 +997,9 @@ pub fn MixerOf(comptime P: type) type {
                 slot.sound = .none;
                 slot.held = .none;
                 slot.started_at = null;
+                // Its stream is freed once its decode task, if one is in flight, is done too.
+                if (slot.stream) |n| self.streams[n].retired = true;
+                slot.stream = null;
                 self.free_list.appendAssumeCapacity(retired.slot);
 
                 if (self.sounds.get(sound)) |stored| {
@@ -698,6 +1012,7 @@ pub fn MixerOf(comptime P: type) type {
                 // hazard one: `play` acquired it and this is the other end of that.
                 if (!held.isNone()) self.assets.release(held);
             }
+            self.pumpStreams();
         }
 
         /// Commands the ring refused. Non-zero means the ring is too small or the game is
@@ -764,14 +1079,23 @@ pub fn MixerOf(comptime P: type) type {
                 // sample lands on that frame rather than at the buffer's start.
                 var offset: usize = 0;
                 if (v.pending) {
+                    if (v.wait_for_feed) {
+                        // An unscheduled stream starts with its first frames, not before them.
+                        if (v.feed.?.written.load(.acquire) < @min(2, v.frames)) continue;
+                        v.wait_for_feed = false;
+                        v.start_at = @max(v.start_at, self.mixed);
+                    }
                     if (v.start_at >= self.mixed + frames) continue;
                     offset = @intCast(v.start_at - self.mixed);
                     v.pending = false;
                     self.report(.{ .kind = .started, .slot = @intCast(index), .generation = generation, .frame = v.start_at });
                 }
-                if (!v.mix(out[offset * channels ..], channels, self.mixed + offset)) {
-                    self.retire(@intCast(index), generation);
+                const playing = v.mix(out[offset * channels ..], channels, self.mixed + offset);
+                if (v.underran) {
+                    v.underran = false;
+                    _ = self.underrun_count.fetchAdd(1, .monotonic);
                 }
+                if (!playing) self.retire(@intCast(index), generation);
             }
 
             // 4. Master gain, then clamp. **The clamp is not a limiter and does not
@@ -832,6 +1156,8 @@ pub fn MixerOf(comptime P: type) type {
                         .looping = p.looping,
                         .pending = true,
                         .start_at = start,
+                        .feed = p.feed,
+                        .wait_for_feed = p.feed != null and p.start_at == null,
                     };
                 },
                 .stop => |s| {
@@ -1463,4 +1789,234 @@ test "a start reported for a slot's earlier voice does not stamp the voice now i
     _ = try f.step(4);
     f.mixer.update();
     try testing.expectEqual(@as(?u64, 4), f.mixer.startedAt(now));
+}
+
+// -- streams ------------------------------------------------------------------------
+
+fn oggFixture(comptime name: []const u8) []const u8 {
+    for (asset.ogg.fixtures) |f| {
+        if (std.mem.eql(u8, f.name, name)) return f.ogg;
+    }
+    @compileError("no fixture " ++ name);
+}
+
+/// The same file, resident and streamed, each in a mixer of its own.
+const Pair = struct {
+    resident: *Fixture,
+    streamed: *Fixture,
+    resident_sound: SoundHandle,
+    streamed_sound: SoundHandle,
+
+    fn init(bytes: []const u8, options: Options) !Pair {
+        const resident = try Fixture.init(testing.allocator, options);
+        errdefer resident.deinit();
+        const streamed = try Fixture.init(testing.allocator, options);
+        errdefer streamed.deinit();
+        const decoded = try asset.vorbis.decode(testing.allocator, bytes, .{});
+        return .{
+            .resident = resident,
+            .streamed = streamed,
+            .resident_sound = try resident.mixer.insertSound(decoded),
+            .streamed_sound = try streamed.mixer.insertStreamed(bytes),
+        };
+    }
+
+    fn deinit(self: Pair) void {
+        self.streamed.deinit();
+        self.resident.deinit();
+    }
+
+    fn play(self: Pair, params: PlayParams) ![2]VoiceHandle {
+        return .{ try self.resident.mixer.playSound(self.resident_sound, params), try self.streamed.mixer.playSound(self.streamed_sound, params) };
+    }
+
+    /// One buffer from each, after each mixer's `update`; they must be identical.
+    fn stepBoth(self: Pair, frames: u32) !void {
+        self.resident.mixer.update();
+        self.streamed.mixer.update();
+        const expected = try testing.allocator.dupe(f32, try self.resident.step(frames));
+        defer testing.allocator.free(expected);
+        try testing.expectEqualSlices(f32, expected, try self.streamed.step(frames));
+    }
+};
+
+test "a streamed voice equals its resident decode, sample for sample, across three loop seams" {
+    // Same rate as the device, and a rate the voice resamples, so the seam is read across
+    // the next pass's first frame by interpolation as well as directly.
+    const cases = [_]struct { bytes: []const u8, frames: u64 }{
+        .{ .bytes = comptime oggFixture("short"), .frames = 300 },
+        .{ .bytes = comptime oggFixture("mono44_q0"), .frames = 66_150 * 48_000 / 44_100 },
+    };
+    for (cases) |case| {
+        const pair = try Pair.init(case.bytes, .{ .buffer_frames = 512 });
+        defer pair.deinit();
+        _ = try pair.play(.{ .looping = true, .pan = 0.3 });
+        var mixed: u64 = 0;
+        while (mixed < case.frames * 7 / 2) : (mixed += 512) try pair.stepBoth(512);
+        try testing.expectEqual(@as(u32, 0), pair.streamed.mixer.underruns());
+        try testing.expectEqual(@as(u32, 1), pair.streamed.mixer.activeVoices());
+    }
+
+    // And a one-shot ends in the same buffer, retires, and gives its stream back.
+    const pair = try Pair.init(comptime oggFixture("short"), .{ .buffer_frames = 128 });
+    defer pair.deinit();
+    _ = try pair.play(.{});
+    for (0..4) |_| try pair.stepBoth(128);
+    pair.streamed.mixer.update();
+    try testing.expectEqual(@as(u32, 0), pair.streamed.mixer.activeVoices());
+    try testing.expectEqual(@as(u32, 0), pair.streamed.mixer.streamsInUse());
+}
+
+test "with tasks held back, an underrun is silent, counted, keeps the timeline, and recovers on time" {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const pair = try Pair.init(comptime oggFixture("stereo48_q4"), .{ .buffer_frames = 256 });
+    defer pair.deinit();
+    const held = try Fixture.init(testing.allocator, .{ .buffer_frames = 256, .tasks = manual.tasks() });
+    defer held.deinit();
+    const sound = try held.mixer.insertStreamed(comptime oggFixture("stereo48_q4"));
+
+    // Scheduled at frame 0 in all three, so the timeline is the thing compared.
+    _ = try pair.resident.mixer.playSound(pair.resident_sound, .{ .start_at = 0 });
+    _ = try held.mixer.playSound(sound, .{ .start_at = 0 });
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    for (0..4) |_| {
+        _ = try pair.resident.step(256);
+        held.mixer.update();
+        try expectAllZero(try held.step(256));
+    }
+    // One per buffer that missed frames, and the decode is still the one task in flight.
+    try testing.expectEqual(@as(u32, 4), held.mixer.underruns());
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+
+    // The frames arrive late: the four buffers missed are thrown away, and the fifth is the
+    // track's fifth buffer, not its first.
+    manual.runAll();
+    held.mixer.update();
+    const expected = try testing.allocator.dupe(f32, try pair.resident.step(256));
+    defer testing.allocator.free(expected);
+    try testing.expectEqualSlices(f32, expected, try held.step(256));
+    try testing.expectEqual(@as(u32, 4), held.mixer.underruns());
+    manual.runAll();
+}
+
+test "an unscheduled streamed start waits for its first frames instead of underrunning" {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64, .tasks = manual.tasks() });
+    defer f.deinit();
+    const resident = try Fixture.init(testing.allocator, .{ .buffer_frames = 64 });
+    defer resident.deinit();
+    const bytes = comptime oggFixture("short");
+    const decoded = try asset.vorbis.decode(testing.allocator, bytes, .{});
+    const reference = try resident.mixer.insertSound(decoded);
+    const sound = try f.mixer.insertStreamed(bytes);
+
+    const v = try f.mixer.playSound(sound, .{});
+    try expectAllZero(try f.step(64));
+    try expectAllZero(try f.step(64));
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, null), f.mixer.startedAt(v));
+    try testing.expectEqual(@as(u32, 0), f.mixer.underruns());
+
+    manual.runAll();
+    _ = try resident.mixer.playSound(reference, .{});
+    const expected = try testing.allocator.dupe(f32, try resident.step(64));
+    defer testing.allocator.free(expected);
+    try testing.expectEqualSlices(f32, expected, try f.step(64));
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, 128), f.mixer.startedAt(v));
+    try testing.expectEqual(@as(u32, 0), f.mixer.underruns());
+    manual.runAll();
+}
+
+test "a stopped stream, and its released sound, are freed only once its decode task is done" {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64, .tasks = manual.tasks() });
+    defer f.deinit();
+    const sound = try f.mixer.insertStreamed(comptime oggFixture("short"));
+
+    const v = try f.mixer.playSound(sound, .{ .start_at = 0 });
+    f.mixer.stop(v);
+    // A hot reload's half: the sound is given up while its stream still reads it.
+    f.mixer.releaseSound(sound);
+    _ = try f.step(64);
+    f.mixer.update();
+    try testing.expect(!f.mixer.isPlaying(v));
+    // The voice has gone, but the task still holds the decoder and the bytes.
+    try testing.expectEqual(@as(u32, 1), f.mixer.streamsInUse());
+    try testing.expectEqual(@as(u32, 1), f.mixer.soundCount());
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 1), f.mixer.streamsInUse());
+
+    manual.runAll();
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.streamsInUse());
+    try testing.expectEqual(@as(u32, 0), f.mixer.soundCount());
+}
+
+test "a streamed sound released while it plays keeps playing, and is freed after it" {
+    const pair = try Pair.init(comptime oggFixture("short"), .{ .buffer_frames = 100 });
+    defer pair.deinit();
+    _ = try pair.play(.{});
+    try pair.stepBoth(100);
+    pair.resident.mixer.releaseSound(pair.resident_sound);
+    pair.streamed.mixer.releaseSound(pair.streamed_sound);
+    try testing.expectEqual(@as(u32, 1), pair.streamed.mixer.soundCount());
+    for (0..3) |_| try pair.stepBoth(100);
+    pair.streamed.mixer.update();
+    try testing.expectEqual(@as(u32, 0), pair.streamed.mixer.soundCount());
+    try testing.expectError(error.UnknownSound, pair.streamed.mixer.playSound(pair.streamed_sound, .{}));
+}
+
+test "past the stream table, a streamed play is refused, and nothing is left claimed" {
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64, .streams = 1 });
+    defer f.deinit();
+    const sound = try f.mixer.insertStreamed(comptime oggFixture("short"));
+    const resident = try f.add(&[_]f32{0.5}, 1, 48_000);
+
+    const first = try f.mixer.playSound(sound, .{ .looping = true });
+    try testing.expectError(error.NoFreeStream, f.mixer.playSound(sound, .{}));
+    try testing.expectEqual(@as(u32, 1), f.mixer.activeVoices());
+    // A resident sound needs no stream.
+    _ = try f.mixer.playSound(resident, .{});
+
+    f.mixer.stop(first);
+    _ = try f.step(64);
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.streamsInUse());
+    _ = try f.mixer.playSound(sound, .{});
+    try testing.expectEqual(@as(u32, 1), f.mixer.streamsInUse());
+}
+
+test "shutdown waits for a decode task in flight before it frees the stream" {
+    var manual = try core.tasks.Manual.init(testing.allocator, 4);
+    defer manual.deinit();
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64, .tasks = manual.tasks() });
+    defer f.deinit();
+    const sound = try f.mixer.insertStreamed(comptime oggFixture("short"));
+    _ = try f.mixer.playSound(sound, .{ .looping = true });
+    try testing.expectEqual(@as(u32, 1), manual.pending());
+    f.mixer.shutdown();
+    try testing.expectEqual(@as(u32, 0), manual.pending());
+    try testing.expectEqual(@as(u32, 0), f.mixer.streamsInUse());
+}
+
+test "a streamed sound is proved whole when it is added: one that would fail partway is refused then" {
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64 });
+    defer f.deinit();
+    // The last page claims a thousand frames more than the packets hold. The headers and the
+    // container are sound, so only decoding every packet finds it.
+    const bytes = try testing.allocator.dupe(u8, comptime oggFixture("short"));
+    defer testing.allocator.free(bytes);
+    const last = std.mem.lastIndexOf(u8, bytes, "OggS").?;
+    const page = bytes[last..];
+    const granule = std.mem.readInt(u64, page[6..14], .little);
+    std.mem.writeInt(u64, page[6..14], granule + 1000, .little);
+    std.mem.writeInt(u32, page[22..26], 0, .little);
+    std.mem.writeInt(u32, page[22..26], asset.ogg.crc32(page), .little);
+
+    try testing.expectError(error.InvalidSound, f.mixer.insertStreamed(bytes));
+    try testing.expectEqual(@as(u32, 0), f.mixer.soundCount());
 }

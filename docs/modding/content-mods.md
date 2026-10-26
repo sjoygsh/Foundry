@@ -488,7 +488,12 @@ and wins, and the file it points at is yours.
 An `.ogg` derives a `foundry:sound` exactly as a `.wav` does, and the engine tells the two
 apart by the file's first bytes, not its name. Vorbis is about a tenth of the size of
 16-bit WAV, so it is the format for music. A sound record may also say `stream true`, which
-is for compressed sounds only; a `.wav` that says it is refused.
+is for compressed sounds only; a `.wav` that says it is refused. A streamed sound stays
+compressed in memory and is decoded about a second ahead of where it is playing, so a long
+track costs its file size rather than ten times that. It is still decoded whole once when it
+loads, so a broken file is refused then, by name, rather than going silent partway through.
+A game can play a few streamed sounds at once (four unless it sets otherwise), so stream your
+music and keep short sounds resident.
 
 **Anything else is refused with a sentence naming what your file actually is** — ADPCM,
 mu-law and A-law included, and Opus, FLAC or Speex inside an Ogg file. Vorbis files using

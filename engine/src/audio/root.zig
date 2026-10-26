@@ -38,6 +38,7 @@ const asset = @import("asset");
 
 pub const mixer = @import("mixer.zig");
 pub const ring = @import("ring.zig");
+const stream = @import("stream.zig");
 pub const voice = @import("voice.zig");
 
 /// Phantom tag for `VoiceHandle`. Never instantiated; it exists so a voice handle cannot
@@ -90,6 +91,7 @@ const testing = std.testing;
 test {
     _ = mixer;
     _ = ring;
+    _ = stream;
     _ = voice;
 }
 

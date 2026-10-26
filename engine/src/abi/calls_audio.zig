@@ -106,7 +106,7 @@ pub fn Of(comptime H: type) type {
 
 fn playFailure(err: anyerror) Result {
     return switch (err) {
-        error.NoFreeVoice, error.CommandQueueFull => .limit,
+        error.NoFreeVoice, error.NoFreeStream, error.CommandQueueFull => .limit,
         error.UnknownSound, error.AssetNotFound, error.SourceMissing => .not_found,
         error.WrongSchema, error.SourceRejected => .invalid_argument,
         error.NoLoader => .unavailable,
@@ -128,6 +128,7 @@ fn internalFailure(err: anyerror) Result {
 test "audio ABI reports mapping, invalid input, and an absent mixer" {
     const testing = std.testing;
     try testing.expectEqual(Result.limit, playFailure(error.NoFreeVoice));
+    try testing.expectEqual(Result.limit, playFailure(error.NoFreeStream));
     try testing.expectEqual(Result.not_found, playFailure(error.UnknownSound));
     try testing.expectEqual(Result.unavailable, playFailure(error.NoLoader));
     try testing.expectEqual(Result.unsupported, playFailure(error.UnsupportedVersion));

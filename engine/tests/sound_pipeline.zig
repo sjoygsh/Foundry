@@ -419,3 +419,153 @@ test "an Opus file is refused as the valid file it is, and a broken Ogg as broke
     try testing.expectError(error.UnsupportedVersion, s.mixer.play(core.ContentId.fromString("foundry:sounds.opus"), .{}));
     try testing.expectError(error.InvalidAsset, s.mixer.play(core.ContentId.fromString("foundry:sounds.broken"), .{}));
 }
+
+test "a streamed .ogg plays through content, decoded as it plays, and a reload mid-stream keeps it" {
+    // M30 Step 5: `stream true` keeps the file compressed and decodes it into a ring as the
+    // voice plays. Mono at the files' own rate, so the voice copies frames unchanged.
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 64, .sample_rate = 44_100 });
+    defer s.deinit();
+    const first = asset.ogg.fixtures[0];
+    const second = asset.ogg.fixtures[1];
+    try s.writeFile("music/theme.ogg", first.ogg);
+    try s.loadPackage("foundry:core",
+        \\foundry:sound foundry:sounds.chirp {
+        \\    source "music/theme.ogg"
+        \\    stream true
+        \\}
+    );
+    var old_take = try asset.vorbis.decode(s.gpa, first.ogg, .{});
+    defer old_take.deinit(s.gpa);
+    var new_take = try asset.vorbis.decode(s.gpa, second.ogg, .{});
+    defer new_take.deinit(s.gpa);
+    try testing.expectEqual(old_take.sample_rate, new_take.sample_rate);
+
+    const old = try s.mixer.play(chirp_id, .{});
+    try testing.expectEqual(@as(u32, 1), s.mixer.streamsInUse());
+    try testing.expectEqualSlices(f32, old_take.samples[0..64], try s.step(64));
+
+    // The author saves another take while the first streams: two sounds are alive, and the
+    // voice keeps decoding the bytes it started with.
+    try s.writeFile("music/theme.ogg", second.ogg);
+    const handle = try s.assets.acquire(s.gpa, chirp_id);
+    defer s.assets.release(handle);
+    try s.assets.reload(s.gpa, handle);
+    try testing.expectEqual(@as(u32, 2), s.mixer.soundCount());
+    s.mixer.update();
+    try testing.expectEqualSlices(f32, old_take.samples[64..128], try s.step(64));
+
+    s.mixer.stop(old);
+    _ = try s.step(64);
+    s.mixer.update();
+    try testing.expectEqual(@as(u32, 1), s.mixer.soundCount());
+    try testing.expectEqual(@as(u32, 0), s.mixer.streamsInUse());
+
+    _ = try s.mixer.play(chirp_id, .{});
+    try testing.expectEqualSlices(f32, new_take.samples[0..64], try s.step(64));
+}
+
+/// One of the gallery's texture decodes, as its loader's decode phase does it: the PNG, then
+/// its whole mip chain (`background.md` §7).
+const GalleryDecode = struct {
+    bytes: []const u8,
+    failed: bool = false,
+
+    fn run(erased: *anyopaque) void {
+        const self: *GalleryDecode = @ptrCast(@alignCast(erased));
+        var image = asset.png.decode(testing.allocator, self.bytes, .{}) catch {
+            self.failed = true;
+            return;
+        };
+        defer image.deinit(testing.allocator);
+        var chain = asset.mips.generate(testing.allocator, image, .srgb) catch {
+            self.failed = true;
+            return;
+        };
+        chain.deinit(testing.allocator);
+    }
+};
+
+test "a stream's first decode, queued behind the whole gallery, arrives inside its half-second margin" {
+    // `music.md` §6.2: a refill starts when half a second is left, so the pool must deliver
+    // frames within that even behind its worst neighbour, M27's gallery. Here the stream's
+    // first decode is queued behind all eight of the gallery's, half a second before the voice
+    // is due: a refill's position at its worst. Played in real time, so only a release build
+    // says anything; Debug skips it.
+    if (@import("builtin").mode == .Debug) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const options = @import("mod_pipeline_options");
+
+    const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-stream-margin", .env = &.{} });
+    defer os.deinit();
+    const threads = platform.background.defaultCount();
+    const pool = try os.startBackground(gpa, .{ .count = threads });
+    defer pool.deinit();
+    const plat = try null_backend.Platform.init(gpa, .{});
+    defer plat.deinit();
+    var store: asset.Store = .init(gpa, .default);
+    defer store.deinit(gpa);
+    var assets: asset.Registry = .init(gpa, os, &store, .{});
+    const mixer = try Mixer.init(gpa, plat, &assets, .{ .tasks = pool.tasks() });
+    defer {
+        mixer.shutdown();
+        assets.deinit(gpa);
+        mixer.deinit();
+    }
+    const sound = try mixer.insertStreamed(asset.ogg.fixtures[2].ogg);
+
+    var pngs: [8][]u8 = undefined;
+    for (&pngs, 0..) |*png, i| {
+        const name = try std.fmt.allocPrint(gpa, "gallery{d}.png", .{i});
+        defer gpa.free(name);
+        const path = try platform.os.joinPath(gpa, &.{ options.gallery_dir, name });
+        defer gpa.free(path);
+        png.* = try os.readFile(gpa, path, 16 << 20);
+    }
+    defer for (pngs) |png| gpa.free(png);
+
+    var decodes: [8]GalleryDecode = undefined;
+    var done: [8]core.tasks.Done = @splat(.{});
+    for (&decodes, &done, pngs) |*d, *flag, png| {
+        d.* = .{ .bytes = png };
+        try pool.tasks().start(.{ .context = d, .call = GalleryDecode.run }, flag);
+    }
+    const queued = os.monotonicNanos();
+    const margin: u64 = 24_000;
+    const v = try mixer.playSound(sound, .{ .start_at = mixer.clock() + margin, .looping = true });
+
+    // Ten-millisecond buffers at their own pace, for two seconds: the start, and the refills
+    // after it while the gallery may still be decoding. Arrivals are looked for every
+    // millisecond between buffers.
+    var first_frames_ns: ?u64 = null;
+    var gallery_ns: ?u64 = null;
+    var deadline = queued;
+    var buffers: u32 = 0;
+    while (buffers < 200) {
+        os.sleep(.fromMillis(1));
+        const at = os.monotonicNanos() - queued;
+        if (first_frames_ns == null and (mixer.streamBuffered(v) orelse 0) > 0) first_frames_ns = at;
+        if (gallery_ns == null) {
+            var all = true;
+            for (&done) |*flag| all = all and flag.isSet();
+            if (all) gallery_ns = at;
+        }
+        if (os.monotonicNanos() < deadline) continue;
+        _ = try plat.stepAudio(mixer.device, 480);
+        mixer.update();
+        deadline += 10 * std.time.ns_per_ms;
+        buffers += 1;
+    }
+    pool.tasks().wait();
+    for (decodes) |d| try testing.expect(!d.failed);
+
+    std.debug.print("stream margin ({t}, {d} background thread(s)): first frames after {d:.1} ms behind the gallery (done after {d:.1} ms); margin 500 ms; {d} underrun(s)\n", .{
+        @import("builtin").mode,
+        threads,
+        @as(f64, @floatFromInt(first_frames_ns orelse 0)) / 1e6,
+        @as(f64, @floatFromInt(gallery_ns orelse 0)) / 1e6,
+        mixer.underruns(),
+    });
+    try testing.expect(first_frames_ns != null);
+    try testing.expect(first_frames_ns.? < margin * std.time.ns_per_s / 48_000);
+    try testing.expectEqual(@as(u32, 0), mixer.underruns());
+}

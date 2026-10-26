@@ -1310,6 +1310,31 @@ pub const Decoder = struct {
         return self;
     }
 
+    /// Makes sure no later packet needs memory: `bytes` is the most a packet spanning pages
+    /// has needed, which `prove` measured. A stream's decode task then never allocates, and so
+    /// never fails for memory (`music.md` §6.1).
+    pub fn reserve(self: *Decoder, bytes: usize) Allocator.Error!void {
+        try self.packets.spanning.ensureTotalCapacity(self.gpa, bytes);
+    }
+
+    /// Starts again at the first audio packet, as a loop does (`music.md` §6.4). The new pass
+    /// overlaps from silence as the file's own start does, so it is exactly the stream's
+    /// length again. Allocates nothing once `reserve` has been called.
+    pub fn rewind(self: *Decoder) DecodeError!void {
+        var spanning = self.packets.spanning;
+        spanning.clearRetainingCapacity();
+        self.packets = .init(self.packets.bytes);
+        self.packets.spanning = spanning;
+        self.ready_frames = 0;
+        self.ready_read = 0;
+        self.previous_n = 0;
+        self.made = null;
+        self.position = null;
+        self.emitted = 0;
+        self.done = false;
+        for (0..3) |_| _ = try self.packets.next(self.gpa) orelse return invalid("the stream ends inside its headers", .{});
+    }
+
     fn take(rest: *[]f32, n: usize) []f32 {
         const out = rest.*[0..n];
         rest.* = rest.*[n..];
@@ -1476,7 +1501,9 @@ pub const Decoder = struct {
         self.made = made;
         const have: u64 = self.ready_frames - self.ready_read;
         if (self.position) |p| {
-            const position = p + step;
+            // Saturating: a granule is the file's word, and one near the top of the range
+            // must not overflow the count it is added to.
+            const position = p +| step;
             self.position = position;
             const granule = packet.granule orelse return;
             if (position > granule and packet.last) self.ready_frames -= @intCast(@min(position - granule, have));
@@ -1511,6 +1538,30 @@ pub fn decode(gpa: Allocator, bytes: []const u8, limits: Limits) DecodeError!Sou
     var extra: [max_channels]f32 = undefined;
     if (try decoder.read(extra[0..sound.channels]) != 0) return invalid("the stream runs past its length", .{});
     return sound;
+}
+
+/// A streamed sound's headers, once the whole file has been decoded and found sound.
+pub const Proven = struct {
+    headers: Headers,
+    /// The most memory a packet spanning pages needed, for `Decoder.reserve`.
+    spanning: usize,
+};
+
+/// Decodes the whole file and keeps none of it: the proving pass a streamed sound gets at load
+/// (`music.md` §4). The same bytes through the same decoder give the same result, so a file
+/// that decodes here decodes again while it plays, and a broken one is refused by name now
+/// rather than heard as silence halfway through. Decodes in pieces, so a long track costs a
+/// buffer, not its whole length in samples.
+pub fn prove(gpa: Allocator, bytes: []const u8, limits: Limits) DecodeError!Proven {
+    var headers = try readHeaders(gpa, bytes, limits);
+    errdefer headers.deinit();
+    var decoder = try Decoder.init(gpa, bytes, &headers);
+    defer decoder.deinit();
+    var piece: [1024 * max_channels]f32 = undefined;
+    const ch = headers.info.channels;
+    // `read` refuses a stream that ends short or runs long, and a sample that is not finite.
+    while (try decoder.read(piece[0 .. piece.len / ch * ch]) != 0) {}
+    return .{ .headers = headers, .spanning = decoder.packets.spanning.capacity };
 }
 
 // -- tests ------------------------------------------------------------------------------------
@@ -2254,4 +2305,105 @@ test "vorbis speed: frames per second, single-threaded, printed" {
     std.debug.print("vorbis speed ({t}): {d:.0} frames/s, {d:.0}x real time ({s}, {d} runs)\n", .{
         @import("builtin").mode, per_second, per_second / @as(f64, @floatFromInt(rate)), f.name, runs,
     });
+}
+
+/// The same stream laid out with each audio packet ending its own page, with the granule it had,
+/// in pages of one segment: every audio packet longer than 255 bytes then spans pages, which no
+/// encoder's fixture does, and decodes to exactly the same frames. The three headers keep a page
+/// each, whole, so the decoder's first spanning packet is an audio one.
+fn repage(gpa: Allocator, bytes: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var packets: ogg.Packets = .init(bytes);
+    defer packets.deinit(gpa);
+    const serial = std.mem.readInt(u32, bytes[14..18], .little);
+    var sequence: u32 = 0;
+    var index: usize = 0;
+    while (try packets.next(gpa)) |packet| : (index += 1) {
+        var rest = packet.data;
+        const whole = index < 3;
+        var continued = false;
+        while (true) {
+            const ends = whole or rest.len <= 255;
+            const take = if (whole) rest.len else @min(rest.len, 255);
+            var lacing: [255]u8 = undefined;
+            var segments: usize = 0;
+            var left = take;
+            while (left >= 255) : (left -= 255) {
+                lacing[segments] = 255;
+                segments += 1;
+            }
+            // A packet that ends here closes with a value below 255, zero if need be.
+            if (ends or left > 0) {
+                lacing[segments] = @intCast(left);
+                segments += 1;
+            }
+            var flags: u8 = if (continued) 0x01 else 0;
+            if (sequence == 0) flags |= 0x02;
+            if (ends and packet.last) flags |= 0x04;
+            const granule = if (ends) packet.granule orelse ogg.Page.no_granule else ogg.Page.no_granule;
+            const start = out.items.len;
+            try out.appendSlice(gpa, "OggS");
+            try out.appendSlice(gpa, &.{ 0, flags });
+            var word: [8]u8 = undefined;
+            std.mem.writeInt(u64, &word, granule, .little);
+            try out.appendSlice(gpa, &word);
+            std.mem.writeInt(u32, word[0..4], serial, .little);
+            try out.appendSlice(gpa, word[0..4]);
+            std.mem.writeInt(u32, word[0..4], sequence, .little);
+            try out.appendSlice(gpa, word[0..4]);
+            try out.appendSlice(gpa, &.{ 0, 0, 0, 0, @intCast(segments) });
+            try out.appendSlice(gpa, lacing[0..segments]);
+            try out.appendSlice(gpa, rest[0..take]);
+            const page = out.items[start..];
+            std.mem.writeInt(u32, page[22..26], ogg.crc32(page), .little);
+            sequence += 1;
+            rest = rest[take..];
+            continued = true;
+            if (ends) break;
+        }
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+test "a proven stream rewinds to the same frames, and after its reserve never allocates" {
+    var spanned: usize = 0;
+    for (ogg.fixtures) |fixture| for ([_]bool{ false, true }) |spanning| {
+        const bytes = if (spanning) try repage(testing.allocator, fixture.ogg) else fixture.ogg;
+        defer if (spanning) testing.allocator.free(bytes);
+        const f: ogg.Fixture = .{ .name = fixture.name, .ogg = bytes, .reference = fixture.reference };
+        var expected = try decode(testing.allocator, fixture.ogg, .{});
+        defer expected.deinit(testing.allocator);
+        var proven = try prove(testing.allocator, f.ogg, .{});
+        defer proven.headers.deinit();
+        try testing.expectEqual(@as(u64, expected.frameCount()), proven.headers.frames);
+        // A repaged stream's audio packets over 255 bytes span pages, so its reserve is real.
+        if (spanning and proven.spanning > 255) spanned += 1;
+
+        // Every allocation the decoder will ever make, made here; then none is allowed.
+        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+        var decoder = try Decoder.init(failing.allocator(), f.ogg, &proven.headers);
+        defer decoder.deinit();
+        try decoder.reserve(proven.spanning);
+        failing.fail_index = failing.alloc_index;
+
+        const pass = try testing.allocator.alloc(f32, expected.samples.len);
+        defer testing.allocator.free(pass);
+        for (0..3) |round| {
+            if (round > 0) try decoder.rewind();
+            var filled: usize = 0;
+            // Pieces of an odd size, so a pass ends partway through one.
+            while (filled < pass.len) {
+                const want = @min(pass.len - filled, 777 * @as(usize, expected.channels));
+                const got = try decoder.read(pass[filled..][0..want]);
+                try testing.expect(got > 0);
+                filled += got * expected.channels;
+            }
+            try testing.expectEqual(@as(usize, 0), try decoder.read(pass[0..expected.channels]));
+            try testing.expectEqualSlices(f32, expected.samples, pass);
+        }
+    };
+    // `mono44_q10` and `coupled` have audio packets over 255 bytes; the others' all fit one
+    // segment, so these two are where the reserve is what keeps a decode from allocating.
+    try testing.expectEqual(@as(usize, 2), spanned);
 }

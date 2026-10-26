@@ -352,7 +352,10 @@ pub const Packets = struct {
                         } else piece;
                         return .{
                             .data = data,
-                            .granule = if (ends_here) page.granule else null,
+                            // A page's granule of -1 says no packet ends on it. One that
+                            // ends a packet anyway gives that packet no position, as
+                            // libvorbis reads it, rather than a position at the end of time.
+                            .granule = if (ends_here and page.granule != Page.no_granule) page.granule else null,
                             .last = ends_here and page.flags.last,
                         };
                     }
@@ -646,4 +649,19 @@ test "the first packet names its codec" {
     std.mem.writeInt(u32, page[22..26], 0, .little);
     std.mem.writeInt(u32, page[22..26], crc32(page), .little);
     try testing.expectEqual(Codec.opus, (try scan(page)).codec);
+}
+
+test "a page that ends a packet but carries granule -1 gives that packet no position" {
+    const gpa = testing.allocator;
+    const p0 = try buildPage(gpa, first_flag, Page.no_granule, 9, 0, &.{10}, 0);
+    defer gpa.free(p0);
+    const p1 = try buildPage(gpa, last_flag, 300, 9, 1, &.{20}, 0);
+    defer gpa.free(p1);
+    const file = try concat(gpa, &.{ p0, p1 });
+    defer gpa.free(file);
+
+    var packets: Packets = .init(file);
+    defer packets.deinit(gpa);
+    try testing.expectEqual(@as(?u64, null), (try packets.next(gpa)).?.granule);
+    try testing.expectEqual(@as(?u64, 300), (try packets.next(gpa)).?.granule);
 }

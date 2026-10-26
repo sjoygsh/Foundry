@@ -10,6 +10,7 @@
 //! rather than merely observed.
 
 const std = @import("std");
+const Feed = @import("stream.zig").Feed;
 
 /// The two gains a pan produces. Computed once per `set_pan`, never per sample: the
 /// trigonometry is not what the callback rule forbids, but doing it 48,000 times a
@@ -173,6 +174,19 @@ pub const Voice = struct {
     /// The mixer frame its first sample lands on.
     start_at: u64 = 0,
 
+    /// A streamed voice reads its frames from here rather than from `samples`
+    /// (`music.md` §6.1). The stream outlives the voice: the game thread frees it only after
+    /// the retirement this voice pushes, and after its decode task's `Done`.
+    feed: ?*Feed = null,
+    /// A streamed voice whose start was not scheduled waits for its first frames, since there
+    /// is no timeline to keep yet. A scheduled one keeps its frame and underruns instead.
+    wait_for_feed: bool = false,
+    /// Completed passes of a loop: the stream's absolute frame is `pass * frames + cursor`.
+    pass: u64 = 0,
+    /// Set by `mix` when a streamed voice found a frame it needed missing, and wrote silence
+    /// for it instead (§6.3). The mixer counts it and clears it.
+    underran: bool = false,
+
     /// Adds this voice's contribution to `out`, which is already zeroed. `frame` is the
     /// mixer frame of `out`'s first frame, which is what the ramps are timed against.
     ///
@@ -183,6 +197,10 @@ pub const Voice = struct {
 
         const total: f64 = @floatFromInt(self.frames);
         const frames_out = out.len / device_channels;
+        // Read once per buffer: frames the producer adds meanwhile wait for the next one.
+        const available: u64 = if (self.feed) |feed| feed.written.load(.acquire) else 0;
+        // However the buffer ends, the stream learns how far this voice has got.
+        defer if (self.feed) |feed| feed.release(self.pass * self.frames + @as(u64, @intFromFloat(self.cursor)));
 
         var f: usize = 0;
         while (f < frames_out) : (f += 1) {
@@ -197,21 +215,36 @@ pub const Voice = struct {
             const index: usize = @intFromFloat(self.cursor);
             const frac: f32 = @floatCast(self.cursor - @floor(self.cursor));
             const next = self.neighbour(index);
+            // Positions in the stream for a streamed voice, where a loop's seam reads the next
+            // pass's first frame; indices into `samples` otherwise.
+            var a: u64 = index;
+            var b: u64 = next;
+            if (self.feed != null) {
+                const base = self.pass * self.frames;
+                a = base + index;
+                b = if (self.looping and index + 1 >= self.frames) base + self.frames + next else base + next;
+            }
 
-            var left = self.lerp(index, next, 0, frac);
-            var right = if (self.channels == 1) left else self.lerp(index, next, 1, frac);
-
-            if (device_channels == 1) {
-                // **Pan is ignored on a mono device**, rather than applied and then
-                // summed. Constant-power gains summed to one channel would make a
-                // centred sound 3 dB quieter than a hard-panned one, which is a strange
-                // thing for panning to do to a listener who has one speaker.
-                out[f] += 0.5 * (left + right) * gain;
+            if (self.feed != null and b >= available) {
+                // **An underrun keeps the timeline** (`music.md` §6.3): silence, and the
+                // cursor moves on as if the frame had been there.
+                self.underran = true;
             } else {
-                left *= self.left;
-                right *= self.right;
-                out[f * 2] += left * gain;
-                out[f * 2 + 1] += right * gain;
+                var left = self.lerp(a, b, 0, frac);
+                var right = if (self.channels == 1) left else self.lerp(a, b, 1, frac);
+
+                if (device_channels == 1) {
+                    // **Pan is ignored on a mono device**, rather than applied and then
+                    // summed. Constant-power gains summed to one channel would make a
+                    // centred sound 3 dB quieter than a hard-panned one, which is a strange
+                    // thing for panning to do to a listener who has one speaker.
+                    out[f] += 0.5 * (left + right) * gain;
+                } else {
+                    left *= self.left;
+                    right *= self.right;
+                    out[f * 2] += left * gain;
+                    out[f * 2 + 1] += right * gain;
+                }
             }
 
             self.cursor += self.step;
@@ -228,7 +261,10 @@ pub const Voice = struct {
                 // fractional-frame error on every pass. A `while` rather than an `if`
                 // because a high pitch can carry the cursor past the end more than once
                 // on a very short sound.
-                while (self.cursor >= total) self.cursor -= total;
+                while (self.cursor >= total) {
+                    self.cursor -= total;
+                    self.pass += 1;
+                }
             }
         }
         return true;
@@ -242,10 +278,15 @@ pub const Voice = struct {
         return if (self.looping) 0 else index;
     }
 
-    fn lerp(self: *const Voice, a: usize, b: usize, channel: u8, frac: f32) f32 {
-        const first = self.samples[a * self.channels + channel];
-        const second = self.samples[b * self.channels + channel];
+    fn lerp(self: *const Voice, a: u64, b: u64, channel: u8, frac: f32) f32 {
+        const first = self.source(a, channel);
+        const second = self.source(b, channel);
         return first + (second - first) * frac;
+    }
+
+    fn source(self: *const Voice, frame: u64, channel: u8) f32 {
+        if (self.feed) |feed| return feed.sample(frame, channel);
+        return self.samples[@as(usize, @intCast(frame)) * self.channels + channel];
     }
 };
 

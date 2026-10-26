@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 4 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 5**: streamed voices, decoded on the background pool into a ring per stream. No stream, stream ring or underrun counter exists yet, and an `.ogg` with `stream true` is still decoded whole. M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 5 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 6**: music records (`foundry:music_playlist`, `foundry:music_stinger`) and `audio.Music`. No music record, sequencer, crossfade policy or stinger exists yet, and no sample streams or hands the mixer its background pool (the court does in Step 7). M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 5 is done (2026-10-26): streamed voices.**
+- `stream true` keeps an `.ogg` compressed. The load decodes it whole once, in pieces, as its proof (`vorbis.prove`), and a voice decodes it into a one-second ring per stream as it plays (`audio/stream.zig`).
+- Decode tasks run on `Options.tasks` (`immediate` by default), one per stream at a time, refilling below half full. A task never allocates: `play` reserves what the proof measured, and `Decoder.rewind` restarts a loop.
+- An underrun plays silence, is counted once per buffer (`underruns()`) and keeps the timeline. An unscheduled streamed start waits for its first frames instead.
+- A stream is freed only once its voice has retired and its task is done. It holds its own reference on the sound, so a hot reload mid-stream is safe. `NoFreeStream` past `Options.streams` (4) maps to `FOUNDRY_ERR_LIMIT` in `audio_play`.
+- A streamed voice equals its resident decode sample for sample across three loop seams, resampled and not.
+- Margin against M27's gallery on the M5 (ReleaseSafe, two threads): first frames 265–272 ms behind all eight decodes, against 500 ms, with no underruns. Step 8 measures the Arc PC.
+- Found and fixed (from Step 3): a page granule of −1 ending a packet overflowed the decoder's position. Found and not changed: a ReleaseSafe-only last-bit float failure in the ui_theme integration test, reported to the owner.
+- Thirteen guards each failed the suite when broken.
+
+Bar **2,353/2,355** (two skips: M27's, and the margin test, which runs only in ReleaseSafe), all exit 0.
 
 **M30 Step 4 is done (2026-10-26): the mixer's sample clock, scheduled starts and ramps.**
 - The callback counts `mixed` frames and publishes them as `clock()` after each buffer. It is presentation only and reaches no tick (I9).
