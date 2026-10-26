@@ -1672,3 +1672,116 @@ same bundle. It is not an exit criterion (§12).
 
 **Bar.** `zig build test` passes 2,376 of 2,379, with the same three skips (M27's, the stream margin and command delivery). fmt, the four checks, the four thirty-frame
 headless runs and `fdt-check` all exit 0. `dist -Dapp=court` stages.
+
+## Resolution — Step 8: Windows/Vulkan on the Arc A750 (2026-10-27)
+
+**How it ran.** The PC had no Foundry clone, so `%USERPROFILE%\src\Foundry-m30` was cloned
+from GitHub and Steps 1–7 fetched from a bundle of the unpushed commits. It was checked out
+detached at `df08ace`, clean.
+- Every build ran at `-j2` and below-normal priority, each after an idle check.
+- The first attempt found the PC at 56% CPU, most of it Defender scanning the new clone, and
+  refused to start. It began once the load fell to 19%.
+- The harness is `scripts/m30/windows.ps1`, M29's with this milestone's runs:
+  - `build`, over SSH, runs the native suites and stages a relocated, read-only install;
+  - `desktop`, from a scheduled task in the console session, runs at normal integrity, so
+    the validation filter is honoured and the audio device is the player's own WASAPI
+    endpoint.
+- A rerun skips what already passed and keeps its evidence. The court runs are collected
+  rather than stopping at the first failure, so an interrupted run would be retried alone
+  (`-Only`).
+
+**Suites, native on the PC:**
+- `zig build test -Dplatform=null -Drhi=null`: 2,355 of 2,367, with 12 skips. They are M29's 10
+  Windows-conditional skips plus the two release-only measurements.
+- `zig build test vulkan-test -Drhi=vulkan`: 2,636 of 2,659, with 23 skips (M29's 21 plus the
+  same two).
+- ReleaseSafe `asset-test` and `court-test` on Vulkan: 255 of 256. They include the full
+  2,000-flip sweep and the court's music tests.
+- ReleaseSafe `integration-test`: 133 of 138. The `ui_theme` test that fails in ReleaseSafe
+  on the Mac (Step 5's Resolution) passes here, which fits that failure being the macOS libm's
+  last bit.
+
+**The pins hold across machines.** Each fixture's decode hash and the sequenced mix
+(`2692657964278199496`) are pinned in tests that passed here in Debug and ReleaseSafe. They
+match the Mac's, so §12 has no difference to record. The decoder owns its trig (Step 1), and
+the mixer's arithmetic is the same on both machines.
+
+**Criterion 1, speed:** stereo 48 kHz at quality 4 decodes at **301× real time** on the i3-10105F,
+in ReleaseSafe on one thread (14.5 million frames per second), against the bound of 50×. Even
+Debug decodes at 68–70×. The M5 is 1,119× (Step 3).
+
+**The stream margin (§6.2)** is the test's worst case: the first decode queued behind all eight
+of M27's gallery decodes, on this machine's two background threads.
+- The first frames arrived after **440 ms against the 500 ms margin**, with no underrun.
+- The Mac takes 265–272 ms.
+- The PC's pool reaches the stream only once the gallery is done: its two threads are each
+  busy with a PNG until 440 ms.
+- So the margin is about seven-eighths used in a case the court never meets, because the court
+  decodes no gallery beside its music. The ten-minute runs below are the court's own measure.
+- Track lookahead stays at one second and the refill threshold at half a second, as Step 6
+  left them pending this figure.
+
+**§8.4's command delivery**, on the PC's real WASAPI device: 1 of 400 plays slipped, by exactly
+one 512-frame buffer (10.7 ms). The 0.1 s stinger lookahead clears several buffers. This held
+over SSH and again in the desktop session.
+
+**Criteria 2–4 and 6–7, from the relocated install.**
+- The install is `zig build install -Drhi=vulkan -Doptimize=ReleaseSafe`, moved to a new
+  path and denied writes by ACL.
+- Every run was windowed in the console session with `FOUNDRY_COURT_MUSIC_LOG=on`.
+- Each had a disposable `APPDATA` and preferences root, and a `PATH` of the system directories
+  alone.
+
+| Run | Frames | Starts asked / on their frame / cancelled / pending | Underruns, late starts, commands dropped, refused | `audio` median / p95 | Frame work p95 |
+| --- | --- | --- | --- | --- | --- |
+| soundtrack 1 | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0020 / 0.0040 ms | 0.67 ms |
+| soundtrack 2 | 40,551 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0019 / 0.0042 ms | 0.53 ms |
+| soundtrack 3 | 40,554 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0017 / 0.0041 ms | 0.60 ms |
+| soundtrack, validation | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0018 / 0.0043 ms | 2.30 ms |
+| `nocturne` soundtrack | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0017 / 0.0038 ms | 0.57 ms |
+
+- **All five finished their 208 steps**, 11.3 minutes each, with no start missed or lost
+  (criterion 3). Unlike the Mac's third run, none lost focus.
+- **The schedule is the Mac's.** The base run logged the same 85 starts, of the same sounds in the
+  same order, as the Mac's first run. A frame is a slightly different tick here (40,553 frames were 40,579
+  ticks), so one run asked for 574 event sounds rather than 573.
+- `audio`'s p95 is at most 0.0043 ms against the 0.10 ms budget (criterion 4). Residency is
+  the test's figure from Step 7, which passed here in `court-test`.
+- Every replay matched a fresh simulation at every tick. Every sound asked for was played, and
+  no event, command or skinned draw was dropped.
+- **Criterion 6:** `nocturne:content`, installed beside the court, was selected with
+  `FOUNDRY_COURT_PACKAGES`.
+  - Its two calm tracks and its beacon replaced the court's.
+  - The title, chase, gate and ending sounds were the court's.
+  - The IDs and the count of each are exactly the Mac's `nocturne` run.
+- **Criterion 7:** the scripted endings, each with validation on and then off.
+
+  | Ending | Frames (validation / off) | Sounds | Music |
+  | --- | --- | --- | --- |
+  | win | 1,212 / 1,211 | 73 of 73 | 17 asked, 15 on their frame, 2 pending at Quit |
+  | caught | 101 / 102 | 5 of 5 | 4 asked, 1 on its frame, 3 pending |
+  | fell | 177 / 177 | 10 of 10 | 4 asked, 1 on its frame, 3 pending |
+  | `nocturne` win (validation) | 1,210 | 73 of 73 | 17 asked, 15 on their frame |
+
+  - Each ending finished its script and matched its replay.
+  - The pending starts are the ending stinger and the next title, asked within the second
+    before the script quits.
+- **Validation is clean.** Five runs had synchronization validation on: the soundtrack,
+  `nocturne`'s win and the three endings. Each log holds only the layer's info line, which shows
+  it was live.
+- After the runs, the install's files hashed the same and no preferences had been written.
+
+**The harness's two fixes.** Neither changed a measurement.
+- Its first release line named an `audio-test` step that does not exist. The `audio` unit tests
+  run only in `zig build test`.
+- After the court runs, it removed an environment variable that setting it to the empty string
+  had already removed. The rerun re-checked every log before its final checks.
+
+**Bar:** **2,376/2,379** (the same three skips), the full bar on `df08ace`, all exit 0 (Step 7).
+This step adds only the harness and documents, so the bar was not rerun, as M29's Windows step
+did.
+
+**Left on the PC for Step 9 to remove by exact path:**
+- `%USERPROFILE%\src\Foundry-m30`;
+- `%USERPROFILE%\m30` (the bundle, scripts, the relocated install and the evidence in `s8`);
+- `%USERPROFILE%\idle-m30.ps1`.

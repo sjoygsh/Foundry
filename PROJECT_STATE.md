@@ -1,7 +1,28 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-26
-**Current handoff: M30 Step 7 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 8**: Windows/Vulkan on the Arc PC. That means a fresh clone in a worktree, the null and Vulkan suites, the decoder's speed test and pins against the Mac's, the stream margin, and the relocated court's soundtrack run three times (with and without validation), plus its endings. Nothing has run on the PC for M30 yet. M29 is complete (tag `m29`) and pushed.
+**Last updated:** 2026-10-27
+**Current handoff: M30 Step 8 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 9**: close M30. That means resolving the contract discrepancies music.md §15 names, moving ADR-0065/0066 into `CLAUDE.md` §4.1, updating the roadmap, the indexes and `AGENTS.md`, packing up the PC by exact path, and tagging `m30`. Nothing since M29 is pushed.
+
+**M30 Step 8 is done (2026-10-27): Windows/Vulkan on the Arc A750.**
+- A fresh clone on the PC, `Foundry-m30`, with Steps 1–7 fetched from a bundle, detached at `df08ace`. The harness is `scripts/m30/windows.ps1`: `build` over SSH, then `desktop` from a scheduled task in the console session.
+- Suites, native:
+  - null 2,355/2,367 (12 Windows-conditional and release-only skips);
+  - Vulkan 2,636/2,659 (23 skips);
+  - ReleaseSafe `asset-test` and `court-test` 255/256, and `integration-test` 133/138. The Mac's ReleaseSafe-only `ui_theme` failure does not occur here.
+- Pins: every decoder fixture hash and the sequenced mix (`2692657964278199496`) match the Mac's. There is no difference to record.
+- Criterion 1: **301× real time** on the i3 in ReleaseSafe, single-threaded, against 50×.
+- The stream margin's worst case, behind the whole gallery on two background threads: first frames at 440 ms against 500 ms (the Mac: 265–272). Lookahead stays at 1 s.
+- Command delivery on the real WASAPI device: 1 of 400 plays slipped, by one buffer.
+- From a relocated, read-only ReleaseSafe install, windowed:
+  - **three ten-minute soundtrack runs, one under validation, and `nocturne`'s all finished**: 86 starts asked, 80 on their frame, 5 cancelled by a stop, none missed;
+  - zero underruns, late starts, dropped commands or refusals;
+  - `audio` p95 0.0038–0.0043 ms against 0.10 ms;
+  - the same starts in the same order as on the Mac;
+  - `nocturne` replaced exactly the calm tracks and the beacon stinger;
+  - the endings, each with validation on and off, finished their scripts and matched their replays;
+  - validation clean, and the install unchanged.
+
+Bar **2,376/2,379** on `df08ace` (Step 7). This step adds only the harness and documents.
 
 **M30 Step 7 is done (2026-10-26): the court's soundtrack, on the Mac.**
 - `scripts/m30/make_court_music.py` synthesises and encodes the court's music at 96 bpm in 4/4: four streamed tracks and three resident stingers. It also writes `nocturne`'s at 72 bpm in 3/4. All ten files come to 1.8 MB.
