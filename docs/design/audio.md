@@ -572,6 +572,9 @@ opportunistically.
 
 ## 12. Deliberately not here
 
+> **2026-10-26:** compressed formats, streaming (§11, question 3) and music sequencing are
+> M30's, designed in [`music.md`](music.md) (proposed).
+
 > **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
 > owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that
 > belonged to what was already built ([`playable3d.md`](playable3d.md) §12), or named by its

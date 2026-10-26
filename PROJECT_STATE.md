@@ -1,7 +1,16 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-24
-**Current handoff: M29 is complete** (tag `m29`, 2026-10-24; [`docs/design/particles.md`](docs/design/particles.md), ADR-0064 implemented). **Stop before M30's design.** M27, M28 and M29 are pushed. The PC and the Mac are cleaned.
+**Last updated:** 2026-10-26
+**Current handoff: M30's design is proposed** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066); awaiting the owner's acceptance of §14. **Stop before Step 1.** M29 is complete (tag `m29`, 2026-10-24) and pushed; the PC and the Mac are cleaned.
+
+**M30's design (2026-10-26, proposed): Audio II.**
+- Foundry decodes its own Ogg Vorbis in `asset` (ADR-0065). Its fixtures come from the reference libvorbis, built by `zig cc` in scratch by a developer script, never by the build.
+- `foundry:sound` v2 adds `stream`. A streamed sound stays compressed and is decoded on the background pool into a ring per stream (ADR-0066).
+- The mixer gains a sample clock, frame-exact scheduled starts and ramped gains. `audio.Music` sequences `foundry:music_playlist` and `foundry:music_stinger` records.
+- The runnable result is the court's soundtrack, with the `nocturne` content mod.
+- Nine steps. No ABI change.
+
+**M29 is complete** (tag `m29`, 2026-10-24; [`docs/design/particles.md`](docs/design/particles.md), ADR-0064 implemented).
 
 **M29 Step 8 is done (2026-10-24): M29 closed.**
 - **Contract discrepancies:**
