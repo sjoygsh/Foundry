@@ -22,6 +22,9 @@
 
 const std = @import("std");
 
+/// Sine and cosine in arithmetic alone, for results pinned by hash (`trig.zig`).
+pub const trig = @import("trig.zig");
+
 pub const Vec2 = extern struct {
     x: f32 = 0,
     y: f32 = 0,

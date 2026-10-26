@@ -1,14 +1,26 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30's design is proposed** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066); awaiting the owner's acceptance of §14. **Stop before Step 1.** M29 is complete (tag `m29`, 2026-10-24) and pushed; the PC and the Mac are cleaned.
+**Current handoff: M30 Step 1 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066, accepted 2026-10-26). **Stop before Step 2**: Vorbis headers and setup. No Vorbis decoding exists yet, and `.ogg` is not yet a sound. M29 is complete (tag `m29`) and pushed.
 
-**M30's design (2026-10-26, proposed): Audio II.**
-- Foundry decodes its own Ogg Vorbis in `asset` (ADR-0065). Its fixtures come from the reference libvorbis, built by `zig cc` in scratch by a developer script, never by the build.
-- `foundry:sound` v2 adds `stream`. A streamed sound stays compressed and is decoded on the background pool into a ring per stream (ADR-0066).
-- The mixer gains a sample clock, frame-exact scheduled starts and ramped gains. `audio.Music` sequences `foundry:music_playlist` and `foundry:music_stinger` records.
-- The runnable result is the court's soundtrack, with the `nocturne` content mod.
-- Nine steps. No ABI change.
+**M30 Step 1 is done (2026-10-26): the Ogg container, and the reference fixtures.**
+- `sinCosTurns` moved from `particles` to `core.math.trig`, with the particles pins unchanged.
+- `scripts/m30/` builds the reference libvorbis 1.3.7 and libogg 1.3.5 with `zig cc` in scratch, from hash-pinned tarballs (`AGENTS.md`). It wrote seven fixtures and their 16-bit reference decodes into `engine/src/asset/testdata/vorbis/`, byte-identical across two runs.
+- `asset/ogg.zig` provides:
+  - `scan`, which checks every page and allocates nothing;
+  - `Packets`, which reassembles packets that span pages;
+  - codec identification;
+  - every container refusal.
+- Every fixture's final granule equals its reference frame count.
+- The 255-segment test caught a `u8` overflow in the page-length sum.
+- The CRC, sequence and serial guards each failed the suite when disabled.
+
+Bar **2,304/2,305** (one skip, M27's), all exit 0.
+
+**M30's design (2026-10-26): Audio II**, accepted with Step 1. It covers:
+- its own Ogg Vorbis decoder (ADR-0065);
+- streamed sounds decoded on the background pool, the mixer's sample clock, scheduled starts and ramps, and `audio.Music` (ADR-0066);
+- the court's soundtrack.
 
 **M29 is complete** (tag `m29`, 2026-10-24; [`docs/design/particles.md`](docs/design/particles.md), ADR-0064 implemented).
 

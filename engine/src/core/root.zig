@@ -35,6 +35,7 @@ test {
     _ = jobs;
     _ = log;
     _ = math;
+    _ = math.trig;
     _ = mem;
     _ = profile;
     _ = rng;

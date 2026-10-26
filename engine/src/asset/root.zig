@@ -52,6 +52,8 @@ pub const ui_theme = @import("ui_theme.zig");
 /// `fpack` checks it with no renderer, and `particles` at L1 holds no schema.
 pub const particle_emitter = @import("particle_emitter.zig");
 pub const ParticleEmitter = particle_emitter.ParticleEmitter;
+/// Ogg, the container a Vorbis file is (ADR-0065).
+pub const ogg = @import("ogg.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -149,5 +151,6 @@ test {
     _ = tilemap;
     _ = ui_theme;
     _ = particle_emitter;
+    _ = ogg;
     _ = wav;
 }

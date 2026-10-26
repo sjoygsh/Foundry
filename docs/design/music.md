@@ -1,6 +1,6 @@
 # Design: M30 — Audio II: compressed audio, streamed music and music sequencing
 
-**Status:** Proposed 2026-10-26; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-10-26, when the owner asked for Step 1, with §14 as written. Step 1 of nine is done; its Resolution follows §15.
 **Date:** 2026-10-26
 **Baseline:** `e4ea4b5`, tag `m29`. M0–M29 are complete.
 **Decisions:**
@@ -828,3 +828,76 @@ Then:
 - pack up the PC by exact path.
 
 Tag `m30`, push when asked, and stop before M31's design.
+
+## Resolution — Step 1: the Ogg container, and the reference fixtures (2026-10-26)
+
+**Acceptance.** The owner's "Begin" on 2026-10-26 accepted §14 as written. ADR-0065 and
+ADR-0066 are Accepted and listed in `CLAUDE.md` §4.1.
+
+**Trig, moved.** `sinCosTurns` is now `core.math.trig` (`engine/src/core/trig.zig`), moved
+from `particles` unchanged. `particles` imports it from `core`, and every particles pin passes
+untouched. `CLAUDE.md` §4.1's particles row still says the module "owns its trig". Step 9
+corrects that row along with the other close items.
+
+**The reference tool** is in place, as §3.5 describes:
+- `scripts/m30/reference/vorbis_ref.c`;
+- `scripts/m30/reference.py`, which fetches, hash-checks, unpacks and builds;
+- `scripts/m30/make_fixtures.py`.
+
+`AGENTS.md` records the tarballs' hashes under "The Vorbis reference (M30)". Three details §3.5
+had not fixed:
+- **Quality is libvorbisenc's VBR scale**, −0.1 to 1.0, which is `oggenc`'s −1 to 10 divided
+  by ten. The fixtures use −0.1, 0, 0.2, 0.4, 0.6 and 1.0.
+- **The reference decode** is libvorbisfile's float output, each sample rounded to the
+  nearest `x · 32768` and clamped to 16 bits. Foundry's WAV decoder divides by 32768, so the
+  reference is exact to 2⁻¹⁶, and §12's 2⁻¹⁴ tolerance has room on top of that.
+- **Each fixture has a fixed stream serial**, `0x46440000 + index`, so the same input gives the
+  same file. Two full runs of the script wrote byte-identical fixtures.
+
+**The seven fixtures** are in `engine/src/asset/testdata/vorbis/`, about 1.4 MB in all, almost
+all of it the reference WAVs. The `.ogg` files total about 80 KB. The fixture meant to span
+many pages (`long3s`) first came out at three pages, so it now has noise added and is encoded
+at quality 0.6, which gives eight pages. The others have three to six pages. The headers alone
+take two pages in every libvorbis file.
+
+**`asset/ogg.zig`** implements §3.2. Implementing it settled several things the design had not:
+- **Two readers share one set of rules.** `scan` walks every page once and allocates nothing,
+  returning the serial, the page count, the codec and the final granule. `Packets` walks the
+  packets, borrowing each from the file unless it spans pages, and gathering it into its own
+  buffer when it does. Both use one `Walk` for the rules between pages, so they cannot
+  disagree about what a valid stream is.
+- **The codec is identified in the container.** The stream's first packet must end on its
+  first page, as every Ogg mapping requires, and is matched against the Vorbis, Opus, FLAC,
+  Speex and Theora signatures. Refusing a codec that is not Vorbis is the decoder's job, from
+  `Info.codec`, in Step 2.
+- **More is refused than §3.2 listed:**
+  - a page that sets reserved flag bits;
+  - a first page that does not begin the stream, or a later one that begins it again;
+  - a continuation flag that disagrees with the packet left open, in either direction;
+  - a granule that goes backwards;
+  - a last page that leaves a packet open, or has no granule (the stream would have no
+    length);
+  - bytes after the last page.
+
+  Bytes after the end are told apart: a page beginning a new stream is `UnsupportedSound`
+  ("a chained file"), and anything else is `InvalidSound`.
+- **No packet-size limit is needed.** A packet that spans pages is gathered from the file, so
+  it can never be larger than the file already in memory.
+
+**Every fixture's final granule equals the reference decode's frame count exactly**, for all
+seven. That confirms what §3.3 relies on: libvorbisfile trims the last block to the granule,
+so Step 3 has an exact length to match.
+
+**A real bug was caught by its own test.** In `parsePage`, `header_size + segments` was summed
+in `u8` because `segments` was the page's byte. A page with 255 segments, which is legal, then
+overflowed: a checked panic in Debug and ReleaseSafe, and a wrong length in an unchecked build.
+The 255-segment test found it, and `segments` is now a `usize`. It is the kind of bug the
+mutation sweep in Step 3 exists to find.
+
+**Guards checked by breaking them.** Disabling each of three checks failed the suite: the CRC
+comparison, the page-sequence check and the serial check (the multiplexed and chained tests).
+
+**What Step 1 does not do:** no Vorbis header is parsed, and `.ogg` is not yet a sound. Those
+are Steps 2 and 3.
+
+**Bar:** all exit 0, with `zig build test` at **2,304/2,305** (one skip, M27's). The suite grew by the nine Ogg tests.

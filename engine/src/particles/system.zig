@@ -13,7 +13,7 @@
 const std = @import("std");
 const core = @import("core");
 const emitter_mod = @import("emitter.zig");
-const trig = @import("trig.zig");
+const trig = core.math.trig;
 
 const Allocator = std.mem.Allocator;
 const Mat4 = core.math.Mat4;

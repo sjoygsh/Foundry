@@ -52,7 +52,6 @@ test {
     _ = emitter;
     _ = expand;
     _ = system;
-    _ = @import("trig.zig");
     _ = @import("tests.zig");
     _ = @import("expand_tests.zig");
 }

@@ -16,7 +16,7 @@ const std = @import("std");
 const core = @import("core");
 const emitter_mod = @import("emitter.zig");
 const system_mod = @import("system.zig");
-const trig = @import("trig.zig");
+const trig = core.math.trig;
 
 const Allocator = std.mem.Allocator;
 const Jobs = core.Jobs;

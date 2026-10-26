@@ -5,7 +5,7 @@
 const std = @import("std");
 const core = @import("core");
 const particles = @import("root.zig");
-const trig = @import("trig.zig");
+const trig = core.math.trig;
 
 const testing = std.testing;
 const Mat4 = core.math.Mat4;
