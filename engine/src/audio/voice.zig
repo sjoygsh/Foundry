@@ -49,6 +49,94 @@ pub fn stepFor(source_rate: u32, device_rate: u32, pitch: f32) f64 {
     return ratio * std.math.clamp(pitch, min_pitch, max_pitch);
 }
 
+/// How a ramp moves between its ends (`music.md` §5.3).
+pub const Curve = enum(u8) {
+    /// Amplitude moves linearly. Two of these crossing dip 3 dB at the middle.
+    linear,
+    /// `√t` going up and `√(1 − t)` going down, so two uncorrelated tracks crossing at the
+    /// same length keep their summed power. `@sqrt` is exactly rounded by IEEE 754, so the
+    /// curve depends on no linked math library.
+    equal_power,
+};
+
+/// One gain, moving towards a target over a fixed number of mixer frames.
+///
+/// **A function of the mixer frame**, never of a count the voice keeps, so a voice that
+/// is skipped for a buffer cannot fall out of step with the clock. Arithmetic only, which
+/// is what the callback rule allows.
+///
+/// A ramp started while another runs waits as `next` until its begin frame. The running
+/// one carries on until then, and the new one starts from wherever that one had got to,
+/// so a fade scheduled ahead never jumps. A third replaces the waiting one.
+pub const Ramp = struct {
+    from: f32 = 1,
+    to: f32 = 1,
+    /// The mixer frame the ramp begins on.
+    begin: u64 = 0,
+    /// Zero holds `to`.
+    frames: u32 = 0,
+    curve: Curve = .linear,
+    /// The voice retires when this ramp ends.
+    stop: bool = false,
+    next: ?Next = null,
+
+    pub const Next = struct {
+        begin: u64,
+        frames: u32,
+        to: f32,
+        curve: Curve,
+        stop: bool,
+    };
+
+    pub fn hold(value: f32) Ramp {
+        return .{ .from = value, .to = value };
+    }
+
+    /// Queues a ramp to `to` beginning at mixer frame `begin`. Zero frames sets the gain
+    /// at `begin`.
+    pub fn start(self: *Ramp, next: Next) void {
+        self.next = next;
+    }
+
+    /// The gain at mixer frame `frame`. Frames are visited in increasing order.
+    pub fn at(self: *Ramp, frame: u64) f32 {
+        if (self.next) |n| if (frame >= n.begin) {
+            self.* = .{
+                .from = self.eval(n.begin),
+                .to = n.to,
+                .begin = n.begin,
+                .frames = n.frames,
+                .curve = n.curve,
+                .stop = n.stop,
+            };
+        };
+        return self.eval(frame);
+    }
+
+    /// Whether a stopping ramp has ended by `frame`. Call after `at` for that frame.
+    pub fn stopped(self: *const Ramp, frame: u64) bool {
+        return self.stop and frame >= self.begin and frame - self.begin >= self.frames;
+    }
+
+    fn eval(self: *const Ramp, frame: u64) f32 {
+        if (frame <= self.begin) return if (self.frames == 0) self.to else self.from;
+        const done = frame - self.begin;
+        // The end is the target exactly, not wherever the arithmetic rounded to.
+        if (done >= self.frames) return self.to;
+        const t: f32 = @floatCast(@as(f64, @floatFromInt(done)) / @as(f64, @floatFromInt(self.frames)));
+        return self.from + (self.to - self.from) * shape(self.curve, t, self.to >= self.from);
+    }
+};
+
+/// How far along a ramp the gain is at `t` in [0, 1): 0 is `from` and 1 is `to`.
+pub fn shape(curve: Curve, t: f32, rising: bool) f32 {
+    return switch (curve) {
+        .linear => t,
+        // Falling, the gain is `to + (from − to)·√(1 − t)`, which is this shape.
+        .equal_power => if (rising) @sqrt(t) else 1.0 - @sqrt(1.0 - t),
+    };
+}
+
 pub const Voice = struct {
     active: bool = false,
     /// The generation of the handle this voice was started for. A command carrying a
@@ -70,16 +158,27 @@ pub const Voice = struct {
     cursor: f64 = 0,
     step: f64 = 1,
 
-    gain: f32 = 1,
+    /// How loud the voice is meant to be: what `setGain` sets and `fadeGain` ramps. Its
+    /// output gain is `level × envelope` (`music.md` §5.3).
+    level: Ramp = .{},
+    /// The voice's shape over time: fades in and out, and crossfades. A stopping fade
+    /// retires the voice where it ends.
+    envelope: Ramp = .{},
     left: f32 = 1,
     right: f32 = 1,
     looping: bool = false,
 
-    /// Adds this voice's contribution to `out`, which is already zeroed.
+    /// Not yet started: the mixer holds it until the buffer that contains `start_at`.
+    pending: bool = false,
+    /// The mixer frame its first sample lands on.
+    start_at: u64 = 0,
+
+    /// Adds this voice's contribution to `out`, which is already zeroed. `frame` is the
+    /// mixer frame of `out`'s first frame, which is what the ramps are timed against.
     ///
     /// Returns whether it is still playing. A `false` return means it ended during this
     /// buffer and its slot is owed a retirement.
-    pub fn mix(self: *Voice, out: []f32, device_channels: u8) bool {
+    pub fn mix(self: *Voice, out: []f32, device_channels: u8, frame: u64) bool {
         if (!self.active or self.frames == 0) return false;
 
         const total: f64 = @floatFromInt(self.frames);
@@ -87,6 +186,14 @@ pub const Voice = struct {
 
         var f: usize = 0;
         while (f < frames_out) : (f += 1) {
+            const now = frame + f;
+            const gain = self.level.at(now) * self.envelope.at(now);
+            if (self.envelope.stopped(now)) {
+                // **A stopping fade retires on its end frame**, which would hold its
+                // target, rather than writing it.
+                self.active = false;
+                return false;
+            }
             const index: usize = @intFromFloat(self.cursor);
             const frac: f32 = @floatCast(self.cursor - @floor(self.cursor));
             const next = self.neighbour(index);
@@ -99,12 +206,12 @@ pub const Voice = struct {
                 // summed. Constant-power gains summed to one channel would make a
                 // centred sound 3 dB quieter than a hard-panned one, which is a strange
                 // thing for panning to do to a listener who has one speaker.
-                out[f] += 0.5 * (left + right) * self.gain;
+                out[f] += 0.5 * (left + right) * gain;
             } else {
                 left *= self.left;
                 right *= self.right;
-                out[f * 2] += left * self.gain;
-                out[f * 2 + 1] += right * self.gain;
+                out[f * 2] += left * gain;
+                out[f * 2 + 1] += right * gain;
             }
 
             self.cursor += self.step;
@@ -205,7 +312,7 @@ test "at the device's own rate a voice reproduces its samples exactly" {
     var out = [_]f32{0} ** 8;
     // Four frames into a four-frame buffer: every sample is written, and the voice is
     // finished by the end of it — a one-shot ends in the buffer it runs out in.
-    try testing.expect(!v.mix(&out, 2));
+    try testing.expect(!v.mix(&out, 2, 0));
     try testing.expect(!v.active);
 
     // Same rate, unity pitch: no interpolation happens at all, and the values must be
@@ -223,7 +330,7 @@ test "a one-shot ends, holds nothing over, and reports its own retirement" {
 
     var out = [_]f32{0} ** 8;
     // Four output frames for a two-frame sound: it ends halfway through the buffer.
-    try testing.expect(!v.mix(&out, 2));
+    try testing.expect(!v.mix(&out, 2, 0));
     try testing.expect(!v.active);
 
     try testing.expectEqual(@as(f32, 1.0), out[0]);
@@ -245,7 +352,7 @@ test "a loop wraps without drifting" {
     var frames: usize = 0;
     while (frames < 30_000) : (frames += 1) {
         out = .{ 0, 0 };
-        try testing.expect(v.mix(&out, 2));
+        try testing.expect(v.mix(&out, 2, 0));
     }
 
     // Where the cursor should be, computed independently: total advance modulo length.
@@ -260,14 +367,14 @@ test "a 2:1 resample takes every other frame, and half-rate interpolates between
     var fast = monoVoice(&source, false);
     fast.step = 2.0;
     var out = [_]f32{0} ** 4;
-    _ = fast.mix(&out, 2);
+    _ = fast.mix(&out, 2, 0);
     try testing.expectEqual(@as(f32, 0.0), out[0]);
     try testing.expectEqual(@as(f32, 2.0), out[2]);
 
     var slow = monoVoice(&source, false);
     slow.step = 0.5;
     var wide = [_]f32{0} ** 8;
-    _ = slow.mix(&wide, 2);
+    _ = slow.mix(&wide, 2, 0);
     // Exactly halfway between neighbours, which is what linear interpolation promises.
     try testing.expectEqual(@as(f32, 0.0), wide[0]);
     try testing.expectEqual(@as(f32, 0.5), wide[2]);
@@ -279,9 +386,9 @@ test "gain scales, and pan splits without changing the total power" {
     const source = [_]f32{1.0};
 
     var v = monoVoice(&source, false);
-    v.gain = 0.25;
+    v.level = .hold(0.25);
     var out = [_]f32{0} ** 2;
-    _ = v.mix(&out, 2);
+    _ = v.mix(&out, 2, 0);
     try testing.expectEqual(@as(f32, 0.25), out[0]);
 
     const gains = panGains(-1);
@@ -289,7 +396,7 @@ test "gain scales, and pan splits without changing the total power" {
     hard.left = gains.left;
     hard.right = gains.right;
     var stereo = [_]f32{0} ** 2;
-    _ = hard.mix(&stereo, 2);
+    _ = hard.mix(&stereo, 2, 0);
     try testing.expectEqual(@as(f32, 1.0), stereo[0]);
     try testing.expectEqual(@as(f32, 0.0), stereo[1]);
 }
@@ -306,7 +413,7 @@ test "a stereo source is a balance, and a mono device ignores pan entirely" {
     };
 
     var out = [_]f32{0} ** 2;
-    _ = v.mix(&out, 2);
+    _ = v.mix(&out, 2, 0);
     try testing.expectApproxEqAbs(@as(f32, 0.70710677), out[0], 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.35355338), out[1], 1e-6);
 
@@ -316,7 +423,7 @@ test "a stereo source is a balance, and a mono device ignores pan entirely" {
     mono.active = true;
     mono.cursor = 0;
     var single = [_]f32{0};
-    _ = mono.mix(&single, 1);
+    _ = mono.mix(&single, 1, 0);
     try testing.expectEqual(@as(f32, 0.75), single[0]);
 }
 
@@ -329,13 +436,82 @@ test "voices sum into the buffer rather than replacing it" {
     var second = monoVoice(&b, false);
 
     var out = [_]f32{0} ** 2;
-    _ = first.mix(&out, 2);
-    _ = second.mix(&out, 2);
+    _ = first.mix(&out, 2, 0);
+    _ = second.mix(&out, 2, 0);
     try testing.expectEqual(@as(f32, 0.75), out[0]);
 }
 
 test "an empty sound is not playable, and says so rather than dividing by zero" {
     var v = monoVoice(&.{}, true);
     var out = [_]f32{0} ** 2;
-    try testing.expect(!v.mix(&out, 2));
+    try testing.expect(!v.mix(&out, 2, 0));
+}
+
+test "each ramp's curve at its start, middle and end" {
+    // Linear, rising from 0 to 1 over 4 frames beginning at frame 10.
+    var up: Ramp = .hold(0);
+    up.start(.{ .begin = 10, .frames = 4, .to = 1, .curve = .linear, .stop = false });
+    try testing.expectEqual(@as(f32, 0), up.at(9)); // before it begins, it holds
+    try testing.expectEqual(@as(f32, 0), up.at(10));
+    try testing.expectEqual(@as(f32, 0.5), up.at(12));
+    try testing.expectEqual(@as(f32, 1), up.at(14)); // the end is the target exactly
+    try testing.expectEqual(@as(f32, 1), up.at(99));
+
+    // Equal power: √t rising and √(1 − t) falling, so the middle is √½ either way.
+    var rise: Ramp = .hold(0);
+    rise.start(.{ .begin = 0, .frames = 4, .to = 1, .curve = .equal_power, .stop = false });
+    var fall: Ramp = .hold(1);
+    fall.start(.{ .begin = 0, .frames = 4, .to = 0, .curve = .equal_power, .stop = false });
+    try testing.expectEqual(@as(f32, 0), rise.at(0));
+    try testing.expectEqual(@as(f32, 1), fall.at(0));
+    try testing.expectApproxEqAbs(@sqrt(@as(f32, 0.5)), rise.at(2), 1e-7);
+    try testing.expectApproxEqAbs(@sqrt(@as(f32, 0.5)), fall.at(2), 1e-7);
+    try testing.expectEqual(@as(f32, 1), rise.at(4));
+    try testing.expectEqual(@as(f32, 0), fall.at(4));
+
+    // A ramp queued ahead lets the running one carry on, then starts from where it got.
+    var chain: Ramp = .hold(0);
+    chain.start(.{ .begin = 0, .frames = 8, .to = 1, .curve = .linear, .stop = false });
+    try testing.expectEqual(@as(f32, 0.125), chain.at(1));
+    chain.start(.{ .begin = 4, .frames = 2, .to = 0, .curve = .linear, .stop = false });
+    try testing.expectEqual(@as(f32, 0.375), chain.at(3));
+    try testing.expectEqual(@as(f32, 0.5), chain.at(4));
+    try testing.expectEqual(@as(f32, 0.25), chain.at(5));
+    try testing.expectEqual(@as(f32, 0), chain.at(6));
+
+    // Visited late, a queued ramp still begins from where the old one was at its begin.
+    var late: Ramp = .hold(0);
+    late.start(.{ .begin = 0, .frames = 4, .to = 1, .curve = .linear, .stop = false });
+    try testing.expectEqual(@as(f32, 0), late.at(0));
+    late.start(.{ .begin = 2, .frames = 4, .to = 0, .curve = .linear, .stop = false });
+    try testing.expectEqual(@as(f32, 0.25), late.at(4));
+
+    // Zero frames sets the value at its begin frame.
+    var snap: Ramp = .hold(0.3);
+    snap.start(.{ .begin = 5, .frames = 0, .to = 0.7, .curve = .equal_power, .stop = false });
+    try testing.expectEqual(@as(f32, 0.3), snap.at(4));
+    try testing.expectEqual(@as(f32, 0.7), snap.at(5));
+}
+
+test "level and envelope multiply, each on its own ramp" {
+    const source = [_]f32{ 1, 1, 1, 1, 1 };
+    var v = monoVoice(&source, false);
+    v.level = .hold(0.5);
+    v.envelope = .hold(0);
+    v.envelope.start(.{ .begin = 0, .frames = 4, .to = 1, .curve = .linear, .stop = false });
+
+    var out = [_]f32{0} ** 5;
+    _ = v.mix(&out, 1, 0);
+    try testing.expectEqualSlices(f32, &[_]f32{ 0, 0.125, 0.25, 0.375, 0.5 }, &out);
+}
+
+test "a stopping fade retires the voice at its end, having written its ramp" {
+    const source = [_]f32{ 1, 1, 1, 1, 1, 1, 1, 1 };
+    var v = monoVoice(&source, true);
+    v.envelope.start(.{ .begin = 2, .frames = 4, .to = 0, .curve = .linear, .stop = true });
+
+    var out = [_]f32{0} ** 8;
+    try testing.expect(!v.mix(&out, 1, 0));
+    try testing.expect(!v.active);
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 1, 1, 0.75, 0.5, 0.25, 0, 0 }, &out);
 }

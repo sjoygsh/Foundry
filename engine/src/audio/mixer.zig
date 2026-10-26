@@ -49,6 +49,27 @@ pub const PlayParams = struct {
     pan: f32 = 0.0,
     pitch: f32 = 1.0,
     looping: bool = false,
+    /// The mixer frame the voice's first sample lands on (`clock`). Null starts it at the
+    /// next callback. A frame already past when the command arrives starts it at once and
+    /// counts in `lateStarts` (`music.md` §5.2).
+    start_at: ?u64 = null,
+    /// The envelope's value when the voice starts: 0 for a voice that will fade in.
+    envelope: f32 = 1.0,
+};
+
+pub const Curve = voice.Curve;
+
+/// A ramp of a voice's envelope (`music.md` §5.3).
+pub const Fade = struct {
+    /// The mixer frame the ramp begins on. Null, or a frame already past, begins it at the
+    /// next callback, and it then runs its whole length.
+    at: ?u64 = null,
+    /// Zero sets the envelope at once.
+    frames: u32,
+    to: f32,
+    curve: Curve = .linear,
+    /// Retire the voice when the ramp ends.
+    stop: bool = false,
 };
 
 pub const InitError = platform.AudioError || error{
@@ -84,6 +105,8 @@ const Command = union(enum) {
     set_pan: struct { voice: VoiceHandle, left: f32, right: f32 },
     set_pitch: struct { voice: VoiceHandle, step: f64 },
     set_master_gain: struct { gain: f32 },
+    fade: struct { voice: VoiceHandle, fade: Fade },
+    fade_gain: struct { voice: VoiceHandle, gain: f32, frames: u32 },
 };
 
 const Play = struct {
@@ -97,12 +120,17 @@ const Play = struct {
     left: f32,
     right: f32,
     looping: bool,
+    start_at: ?u64,
+    envelope: f32,
 };
 
-/// A voice giving its slot back. Callback thread to game thread.
-const Retired = struct {
+/// Callback thread to game thread: a voice's first sample landed on `frame`, or the voice
+/// gave its slot back.
+const Event = struct {
+    kind: enum(u8) { started, retired },
     slot: u32,
     generation: u32,
+    frame: u64 = 0,
 };
 
 /// Game-thread bookkeeping for one voice.
@@ -117,6 +145,8 @@ const Slot = struct {
     /// reference to something it can still hear. `.none` for a voice started from a
     /// sound the mixer was handed directly rather than through content.
     held: asset.AssetHandle = .none,
+    /// The mixer frame the voice's first sample landed on, once `update` has heard.
+    started_at: ?u64 = null,
 };
 
 /// A decoded sound and what keeps it alive.
@@ -161,10 +191,19 @@ pub fn MixerOf(comptime P: type) type {
         // -- owned by the callback thread -----------------------------------------
         voices: []Voice,
         master_gain: f32,
+        /// Frames mixed since the mixer started: the frame number of the next buffer's
+        /// first sample. Published through `clock_frames`.
+        mixed: u64 = 0,
 
         // -- shared, one writer each ----------------------------------------------
         to_audio: ring.Ring(Command),
-        from_audio: ring.Ring(Retired),
+        from_audio: ring.Ring(Event),
+        /// `mixed`, stored with release after each buffer and read with acquire by
+        /// `clock`. **Presentation, never simulation** (`music.md` §5.1).
+        clock_frames: std.atomic.Value(u64) = .init(0),
+        /// Scheduled starts whose frame had passed when they arrived. Written by the
+        /// callback; a diagnostic, so monotonic.
+        late_starts: std.atomic.Value(u32) = .init(0),
 
         pub fn init(
             gpa: Allocator,
@@ -199,12 +238,13 @@ pub fn MixerOf(comptime P: type) type {
             var to_audio: ring.Ring(Command) = try .init(gpa, options.command_capacity);
             errdefer to_audio.deinit(gpa);
 
-            // **Sized so a retirement can never be dropped.** A voice retires at most
-            // once and cannot play again until `update` returns its slot, so at most
-            // `voice_count` retirements can ever be outstanding. A dropped retirement
+            // **Sized so an event can never be dropped.** A voice starts at most once and
+            // retires at most once, and its slot cannot play again until `update` drains
+            // the retirement — and with it, the ring being FIFO, the start before it. So
+            // at most two events per voice are ever outstanding. A dropped retirement
             // would strand a slot forever, which is the one loss this design cannot
             // absorb — so it is made structurally impossible rather than counted.
-            var from_audio: ring.Ring(Retired) = try .init(gpa, voice_count);
+            var from_audio: ring.Ring(Event) = try .init(gpa, 2 * voice_count);
             errdefer from_audio.deinit(gpa);
 
             self.* = .{
@@ -477,6 +517,7 @@ pub fn MixerOf(comptime P: type) type {
             slot.generation = nextGeneration(slot.generation);
             slot.playing = true;
             slot.sound = sound;
+            slot.started_at = null;
             stored.refs += 1;
 
             const handle: VoiceHandle = .{ .index = index, .generation = slot.generation };
@@ -491,6 +532,8 @@ pub fn MixerOf(comptime P: type) type {
                 .left = gains.left,
                 .right = gains.right,
                 .looping = params.looping,
+                .start_at = params.start_at,
+                .envelope = params.envelope,
             } });
 
             if (!started) {
@@ -559,6 +602,48 @@ pub fn MixerOf(comptime P: type) type {
             } });
         }
 
+        /// Ramps the voice's envelope from wherever it is (`music.md` §5.3).
+        pub fn fade(self: *Self, handle: VoiceHandle, params: Fade) void {
+            _ = self.fadeChecked(handle, params);
+        }
+
+        pub fn fadeChecked(self: *Self, handle: VoiceHandle, params: Fade) bool {
+            return self.to_audio.push(.{ .fade = .{ .voice = handle, .fade = params } });
+        }
+
+        /// Ramps the voice's level, the gain `setGain` sets at once, linearly over `frames`
+        /// from the next callback.
+        pub fn fadeGain(self: *Self, handle: VoiceHandle, gain: f32, frames: u32) void {
+            _ = self.fadeGainChecked(handle, gain, frames);
+        }
+
+        pub fn fadeGainChecked(self: *Self, handle: VoiceHandle, gain: f32, frames: u32) bool {
+            return self.to_audio.push(.{ .fade_gain = .{ .voice = handle, .gain = gain, .frames = frames } });
+        }
+
+        /// Frames the device has mixed since the mixer started, as of the last callback:
+        /// the frame the next buffer begins on.
+        ///
+        /// **Presentation, never simulation.** It advances with a thread Foundry does not
+        /// control, so no tick may read it (I9, `music.md` §5.1), and `scene` cannot see
+        /// this module to try.
+        pub fn clock(self: *const Self) u64 {
+            return self.clock_frames.load(.acquire);
+        }
+
+        /// The mixer frame this voice's first sample landed on, or null if it has not
+        /// started as far as `update` has heard, or is no longer playing.
+        pub fn startedAt(self: *const Self, handle: VoiceHandle) ?u64 {
+            const slot = self.liveSlotConst(handle) orelse return null;
+            return slot.started_at;
+        }
+
+        /// Scheduled starts whose frame had already passed when the command reached the
+        /// callback. Each of them started at once instead.
+        pub fn lateStarts(self: *const Self) u32 {
+            return self.late_starts.load(.monotonic);
+        }
+
         pub fn setMasterGain(self: *Self, gain: f32) void {
             _ = self.setMasterGainChecked(gain);
         }
@@ -584,8 +669,13 @@ pub fn MixerOf(comptime P: type) type {
         /// `voices` sounds. That is a loud, immediate failure rather than a slow leak,
         /// which is the right way round.
         pub fn update(self: *Self) void {
-            while (self.from_audio.pop()) |retired| {
-                const slot = &self.slots[retired.slot];
+            while (self.from_audio.pop()) |event| {
+                const slot = &self.slots[event.slot];
+                if (event.kind == .started) {
+                    if (slot.playing and slot.generation == event.generation) slot.started_at = event.frame;
+                    continue;
+                }
+                const retired = event;
                 // A generation that has moved on means this slot was already reclaimed;
                 // the retirement is for a voice two lives ago and is simply old news.
                 if (!slot.playing or slot.generation != retired.generation) continue;
@@ -595,6 +685,7 @@ pub fn MixerOf(comptime P: type) type {
                 const held = slot.held;
                 slot.sound = .none;
                 slot.held = .none;
+                slot.started_at = null;
                 self.free_list.appendAssumeCapacity(retired.slot);
 
                 if (self.sounds.get(sound)) |stored| {
@@ -664,10 +755,21 @@ pub fn MixerOf(comptime P: type) type {
 
             // 3. Mix in slot index order — stable, documented, and the reason two runs of
             //    the stepped device produce identical samples (I9, `audio.md` §8).
+            const channels = self.info.channels;
+            const frames: u64 = out.len / channels;
             for (self.voices, 0..) |*v, index| {
                 if (!v.active) continue;
                 const generation = v.generation;
-                if (!v.mix(out, self.info.channels)) {
+                // A voice waits for the buffer that holds its start frame, and its first
+                // sample lands on that frame rather than at the buffer's start.
+                var offset: usize = 0;
+                if (v.pending) {
+                    if (v.start_at >= self.mixed + frames) continue;
+                    offset = @intCast(v.start_at - self.mixed);
+                    v.pending = false;
+                    self.report(.{ .kind = .started, .slot = @intCast(index), .generation = generation, .frame = v.start_at });
+                }
+                if (!v.mix(out[offset * channels ..], channels, self.mixed + offset)) {
                     self.retire(@intCast(index), generation);
                 }
             }
@@ -680,16 +782,25 @@ pub fn MixerOf(comptime P: type) type {
             for (out) |*sample| {
                 sample.* = std.math.clamp(sample.* * self.master_gain, -1.0, 1.0);
             }
+
+            // 5. The clock moves by exactly this buffer, published last so a game that
+            //    reads it sees every event this buffer pushed.
+            self.mixed += frames;
+            self.clock_frames.store(self.mixed, .release);
         }
 
-        /// 5. A voice stops reading its samples here, and the push is what tells the game
-        ///    thread it may free them.
+        /// A voice stops reading its samples here, and the push is what tells the game
+        /// thread it may free them.
         fn retire(self: *Self, index: u32, generation: u32) void {
+            self.report(.{ .kind = .retired, .slot = index, .generation = generation });
+        }
+
+        fn report(self: *Self, event: Event) void {
             // Sized so this cannot fail (see `init`). Ignoring the result would hide a
             // stranded slot, so the impossible case says so instead of vanishing.
-            if (!self.from_audio.push(.{ .slot = index, .generation = generation })) {
+            if (!self.from_audio.push(event)) {
                 core.assert.unreachableCode(
-                    "audio: the retirement ring was full, which its size forbids",
+                    "audio: the events ring was full, which its size forbids",
                     .{},
                 );
             }
@@ -700,6 +811,12 @@ pub fn MixerOf(comptime P: type) type {
                 .play => |p| {
                     // A `play` addresses its slot directly: the game thread claimed it,
                     // and no other command for that generation can have arrived first.
+                    // Commands drain before a buffer is mixed, so `mixed` is the earliest
+                    // frame this voice can still land on.
+                    var start = self.mixed;
+                    if (p.start_at) |at| {
+                        if (at >= self.mixed) start = at else _ = self.late_starts.fetchAdd(1, .monotonic);
+                    }
                     self.voices[p.voice.index] = .{
                         .active = true,
                         .generation = p.voice.generation,
@@ -708,10 +825,13 @@ pub fn MixerOf(comptime P: type) type {
                         .frames = p.frames,
                         .cursor = 0,
                         .step = p.step,
-                        .gain = p.gain,
+                        .level = .hold(p.gain),
+                        .envelope = .hold(p.envelope),
                         .left = p.left,
                         .right = p.right,
                         .looping = p.looping,
+                        .pending = true,
+                        .start_at = start,
                     };
                 },
                 .stop => |s| {
@@ -727,8 +847,25 @@ pub fn MixerOf(comptime P: type) type {
                     }
                 },
                 .set_gain => |s| {
+                    // At once, and cancelling any `fade_gain` under way: its meaning
+                    // before M30, kept for every existing caller and the public table.
                     const v = self.liveVoice(s.voice) orelse return;
-                    v.gain = s.gain;
+                    v.level = .hold(s.gain);
+                },
+                .fade => |s| {
+                    const v = self.liveVoice(s.voice) orelse return;
+                    const f = s.fade;
+                    v.envelope.start(.{
+                        .begin = @max(f.at orelse self.mixed, self.mixed),
+                        .frames = f.frames,
+                        .to = f.to,
+                        .curve = f.curve,
+                        .stop = f.stop,
+                    });
+                },
+                .fade_gain => |s| {
+                    const v = self.liveVoice(s.voice) orelse return;
+                    v.level.start(.{ .begin = self.mixed, .frames = s.frames, .to = s.gain, .curve = .linear, .stop = false });
                 },
                 .set_pan => |s| {
                     const v = self.liveVoice(s.voice) orelse return;
@@ -1141,4 +1278,189 @@ test "commands for a voice that never existed change nothing" {
     // Untrusted input at the ABI one day, and a handle out of range must be a no-op
     // rather than an index into somebody else's voice.
     try testing.expectEqualSlices(f32, &[_]f32{1.0}, try f.step(1));
+}
+
+// -- M30 Step 4: the clock, scheduled starts and ramps (`music.md` §5) -----------------
+
+test "the clock advances by exactly each buffer, whatever its size" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 4 });
+    defer f.deinit();
+
+    try testing.expectEqual(@as(u64, 0), f.mixer.clock());
+    _ = try f.step(4);
+    try testing.expectEqual(@as(u64, 4), f.mixer.clock());
+    _ = try f.step(7);
+    _ = try f.step(1);
+    try testing.expectEqual(@as(u64, 12), f.mixer.clock());
+}
+
+test "a scheduled start lands on its frame mid-buffer, sample-exact, and reports it" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+
+    const source = [_]f32{ 0.25, -0.5, 0.75 };
+    const sound = try f.add(&source, 1, 48_000);
+    // Frame 6 is in the second buffer, two frames in. The first buffer is silent, and the
+    // voice is held across it rather than started early.
+    const v = try f.mixer.playSound(sound, .{ .start_at = 6 });
+    try expectAllZero(try f.step(4));
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, null), f.mixer.startedAt(v));
+
+    try testing.expectEqualSlices(f32, &[_]f32{ 0, 0, 0.25, -0.5 }, try f.step(4));
+    try testing.expectEqualSlices(f32, &[_]f32{ 0.75, 0, 0, 0 }, try f.step(4));
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.lateStarts());
+
+    // It ended in the third buffer, so its slot is back and the answer has gone with it.
+    try testing.expectEqual(@as(?u64, null), f.mixer.startedAt(v));
+    const looped = try f.mixer.playSound(sound, .{ .start_at = 13, .looping = true });
+    _ = try f.step(4);
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, 13), f.mixer.startedAt(looped));
+}
+
+test "a start already past starts at once and counts as late" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 2 });
+    defer f.deinit();
+
+    _ = try f.step(2);
+    _ = try f.step(2);
+    const sound = try f.add(&[_]f32{ 1, 1 }, 1, 48_000);
+    const v = try f.mixer.playSound(sound, .{ .start_at = 1, .looping = true });
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 1 }, try f.step(2));
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 1), f.mixer.lateStarts());
+    try testing.expectEqual(@as(?u64, 4), f.mixer.startedAt(v));
+
+    // On time is not late: a start on the next buffer's first frame lands there.
+    const w = try f.mixer.playSound(sound, .{ .start_at = 6, .looping = true });
+    _ = try f.step(2);
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 1), f.mixer.lateStarts());
+    try testing.expectEqual(@as(?u64, 6), f.mixer.startedAt(w));
+}
+
+test "a crossfade built by hand from two voices keeps its summed power at the middle" {
+    // Each voice is panned hard to one side, so the left channel is the first voice's gain
+    // and the right channel the second's, and power is left² + right².
+    const f = try Fixture.init(testing.allocator, .{ .channels = 2, .buffer_frames = 8 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
+    inline for (.{ Curve.equal_power, Curve.linear }) |curve| {
+        const start = f.mixer.clock() + 8;
+        const out_voice = try f.mixer.playSound(sound, .{ .pan = -1, .looping = true, .start_at = start });
+        const in_voice = try f.mixer.playSound(sound, .{ .pan = 1, .looping = true, .start_at = start, .envelope = 0 });
+        f.mixer.fade(out_voice, .{ .at = start, .frames = 8, .to = 0, .curve = curve, .stop = true });
+        f.mixer.fade(in_voice, .{ .at = start, .frames = 8, .to = 1, .curve = curve });
+
+        try expectAllZero(try f.step(8));
+        const out = try f.step(8);
+        const middle = 4 * 2;
+        const power = out[middle] * out[middle] + out[middle + 1] * out[middle + 1];
+        switch (curve) {
+            .equal_power => {
+                try testing.expectApproxEqAbs(@as(f32, 1.0), power, 1e-6);
+                // And at every frame of it, not only the middle.
+                for (0..8) |i| {
+                    const l = out[i * 2];
+                    const r = out[i * 2 + 1];
+                    try testing.expectApproxEqAbs(@as(f32, 1.0), l * l + r * r, 1e-6);
+                }
+            },
+            // The reason the curve exists: linear dips by half, 3 dB, at the middle.
+            .linear => try testing.expectApproxEqAbs(@as(f32, 0.5), power, 1e-6),
+        }
+        // The stopping fade retires its voice on its end frame, the next buffer's first;
+        // the other plays on at full.
+        const after = try f.step(8);
+        try testing.expectApproxEqAbs(@as(f32, 0.0), after[0], 1e-6);
+        try testing.expectApproxEqAbs(@as(f32, 1.0), after[1], 1e-6);
+        f.mixer.update();
+        try testing.expect(!f.mixer.isPlaying(out_voice));
+        try testing.expect(f.mixer.isPlaying(in_voice));
+        f.mixer.stop(in_voice);
+        _ = try f.step(8);
+        f.mixer.update();
+    }
+    try testing.expectEqual(@as(u32, 0), f.mixer.lateStarts());
+}
+
+test "a fade with no frame, or a frame past, begins at the next callback and runs its length" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
+    const v = try f.mixer.playSound(sound, .{ .looping = true });
+    _ = try f.step(4);
+    f.mixer.fade(v, .{ .frames = 4, .to = 0 });
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 0.75, 0.5, 0.25 }, try f.step(4));
+    f.mixer.fade(v, .{ .at = 2, .frames = 4, .to = 1 });
+    try testing.expectEqualSlices(f32, &[_]f32{ 0, 0.25, 0.5, 0.75 }, try f.step(4));
+
+    // A stop with no length ends the voice at once.
+    f.mixer.fade(v, .{ .frames = 0, .to = 0, .stop = true });
+    try expectAllZero(try f.step(4));
+    f.mixer.update();
+    try testing.expect(!f.mixer.isPlaying(v));
+}
+
+test "fadeGain ramps the level, setGain still sets it at once, and the two compose with a fade" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
+    const v = try f.mixer.playSound(sound, .{ .looping = true, .gain = 0.5 });
+    try testing.expectEqualSlices(f32, &[_]f32{ 0.5, 0.5, 0.5, 0.5 }, try f.step(4));
+
+    f.mixer.fadeGain(v, 1.0, 4);
+    try testing.expectEqualSlices(f32, &[_]f32{ 0.5, 0.625, 0.75, 0.875 }, try f.step(4));
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 1, 1, 1 }, try f.step(4));
+
+    // A duck on the level while the envelope fades: the product, frame by frame.
+    f.mixer.fadeGain(v, 0.5, 4);
+    f.mixer.fade(v, .{ .frames = 4, .to = 0 });
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 0.65625, 0.375, 0.15625 }, try f.step(4));
+
+    // `setGain` lands at the next callback with no ramp, and cancels one under way.
+    f.mixer.fade(v, .{ .frames = 0, .to = 1 });
+    f.mixer.fadeGain(v, 0.0, 400);
+    f.mixer.setGain(v, 0.25);
+    try testing.expectEqualSlices(f32, &[_]f32{ 0.25, 0.25, 0.25, 0.25 }, try f.step(4));
+}
+
+test "every voice starting and retiring in one buffer fits the events ring" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .voices = 4 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{0.1}, 1, 48_000);
+    var handles: [4]VoiceHandle = undefined;
+    for (&handles) |*h| h.* = try f.mixer.playSound(sound, .{});
+    // Four starts and four retirements, eight events, with no `update` in between.
+    _ = try f.step(4);
+    try testing.expectEqual(@as(usize, 8), f.mixer.from_audio.len());
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
+    for (handles) |h| try testing.expectEqual(@as(?u64, null), f.mixer.startedAt(h));
+}
+
+test "a start reported for a slot's earlier voice does not stamp the voice now in it" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4, .voices = 1 });
+    defer f.deinit();
+
+    const sound = try f.add(&[_]f32{0.1}, 1, 48_000);
+    const old = try f.mixer.playSound(sound, .{});
+    _ = try f.step(4);
+    f.mixer.update();
+    const now = try f.mixer.playSound(sound, .{ .looping = true });
+    try testing.expectEqual(old.index, now.index);
+
+    // The FIFO never delivers this, but a slot is told apart by generation, not trust.
+    try testing.expect(f.mixer.from_audio.push(.{ .kind = .started, .slot = old.index, .generation = old.generation, .frame = 999 }));
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, null), f.mixer.startedAt(now));
+    _ = try f.step(4);
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, 4), f.mixer.startedAt(now));
 }

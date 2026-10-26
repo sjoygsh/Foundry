@@ -1113,3 +1113,96 @@ two records rather than one file rewritten.
 **Bar:** **2,330/2,331** (one skip, M27's), with 14 new tests: 11 in `vorbis.zig` and 3 in
 `sound_pipeline.zig`. Every line exited 0: fmt, test, the four checks, the four
 thirty-frame headless runs and `fdt-check`.
+
+## Resolution — Step 4: the clock, scheduled starts and ramps (2026-10-26)
+
+§5 is implemented in `audio/voice.zig` and `audio/mixer.zig`. Nothing in the public table
+changed, and `setGain`'s meaning did not change either.
+
+**The clock.** The callback keeps `mixed`, the frame number of the next buffer's first sample.
+After clamping each buffer, it adds the buffer's length and publishes the count with a release
+store, so a game that reads `clock()` (acquire) also sees every event that buffer pushed.
+Buffers before `ready` are not mixer frames, and do not count.
+
+**Scheduled starts.**
+- `apply` turns every `play` into a pending voice whose `start_at` is either the frame asked
+  for or `mixed`.
+- An immediate start (`start_at` null) goes through the same path, which keeps one code path
+  and makes `startedAt` answer for every voice.
+- A frame already past counts in `lateStarts()`. A frame exactly at `mixed` is on time.
+- A pending voice is skipped until the buffer that contains its frame. It then mixes into the
+  slice of the buffer from that offset, with that frame number, so its first sample lands on
+  that frame.
+
+**The events ring.**
+- `from_audio` carries `{ started | retired, slot, generation, frame }` and is sized
+  `2 × voices`.
+- A voice starts at most once and retires at most once. Its slot cannot be claimed again until
+  `update` drains the retirement, and so (the ring being FIFO) the start before it too.
+- A voice stopped while still pending pushes only its retirement.
+- `startedAt(voice)` is null until `update` has heard, and again once the slot is no longer
+  live.
+
+**Ramps: the design said "an increment kept in the voice". The step made them a function of
+the mixer frame instead.**
+- `Ramp.at(frame)` computes `from + (to − from)·shape(t)` from `frame − begin`, and keeps no
+  running count. A voice that waits several buffers to start therefore cannot fall out of step
+  with a ramp scheduled to the same frame.
+- The cost is one `f64` division per frame per voice that is fading.
+- The ramp's end frame returns `to` exactly.
+
+**A fade replacing one under way was the case the design had not settled.** The first version
+started a new ramp from the last value produced. That value lags the frame the new ramp begins
+on, so a fade issued right after another one ended started from the old one's second-to-last
+value. The test of a fade issued in the following buffer caught it.
+
+The answer now is that `start` queues the new ramp as `next`. The running ramp carries on
+until the new one's begin frame. The new ramp then starts from the value the old one has *at
+that frame*, even when the voice is first visited after it. A scheduled fade therefore never
+jumps. A third fade issued before the queued one begins replaces it. One queued ramp is all
+`Music` needs: a crossfade or a duck issues one fade per voice at a time.
+
+**Fades with no frame, or a frame already past,** begin at `mixed` and run their whole length.
+They are not counted: a late fade ends late, and §12 requires only that late *starts* stay at
+zero.
+
+**A stopping fade** retires its voice on its end frame, without writing that frame (its target,
+which is silence). `frames 0` with `stop` therefore retires the voice at the next callback,
+with no special case needed.
+
+**Two gains.** `PlayParams.gain` is the initial `level`, and `PlayParams.envelope` the initial
+envelope.
+- `setGain` holds `level` at once, and cancels both a `fadeGain` under way and one queued.
+- `fadeGain` ramps `level` linearly from the next callback.
+- `fade` ramps the envelope with either curve, optionally from a scheduled frame.
+
+A voice's output gain is `level × envelope`. The envelope is exactly 1 unless a fade moved it,
+and `x × 1` is exact, so every earlier mix, pin and test is bit-identical.
+
+**Equal power.** `shape` is `√t` rising and `1 − √(1 − t)` falling. A voice falling from 1 to 0
+therefore follows `√(1 − t)`, and two crossing voices satisfy `a² + b² = 1` at every frame. The
+exit test pans one voice hard left and the other hard right, so each channel is one voice's
+gain:
+- with `equal_power`, the summed power is 1 within 10⁻⁶ at the middle and at every frame;
+- with `linear`, the middle reads 0.5, the 3 dB dip the curve exists to avoid.
+
+**A start reported for an earlier voice.** `update` stamps `started_at` only when the event's
+generation is the slot's. The FIFO never delivers a stale start (a slot is freed only after its
+retirement, which follows its start), so removing the check first survived every test. A test
+now pushes a forged start for a slot's earlier generation, and it holds the check in place: the
+slot is told apart by generation, never by trusting the order alone.
+
+**Guards verified by mutation.** Each was broken, the suite run, and the file restored:
+- mixing a scheduled voice from offset 0 instead of its frame failed the mid-buffer start;
+- not counting a past start failed the lateness test;
+- linear in place of equal power failed the crossfade and the curve test;
+- a queued ramp starting from its own `from` rather than the running ramp's value at its begin
+  failed the chain test;
+- `stopped` never true failed three tests, the stopping fades among them;
+- the clock not advancing failed two tests, the clock's among them;
+- a past fade frame kept as given failed the next-callback fade test;
+- an events ring sized `voices` panicked on the full-buffer test, as its assertion says;
+- the start's generation check removed failed the forged-start test.
+
+**Bar.** `zig build test` passes 2,341 of 2,342 (one skip, M27's), with 11 new tests. fmt, the
+four checks, the four thirty-frame headless runs and `fdt-check` all exit 0.

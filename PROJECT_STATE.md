@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 3 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 4**: the mixer's sample clock, scheduled starts and ramps. No clock, schedule, ramp or stream exists yet, and an `.ogg` with `stream true` is still decoded whole until Step 5. M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 4 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 5**: streamed voices, decoded on the background pool into a ring per stream. No stream, stream ring or underrun counter exists yet, and an `.ogg` with `stream true` is still decoded whole. M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 4 is done (2026-10-26): the mixer's sample clock, scheduled starts and ramps.**
+- The callback counts `mixed` frames and publishes them as `clock()` after each buffer. It is presentation only and reaches no tick (I9).
+- `PlayParams.start_at` starts a voice on that exact frame, mid-buffer. A frame already past starts at once and counts in `lateStarts()`. `startedAt(voice)` reports the frame.
+- The retirement ring became an events ring, `started` or `retired`, sized `2 × voices`.
+- Each voice's gain is `level × envelope`, each on its own ramp. Ramps are a function of the mixer frame, with one queued `next`, so a scheduled fade never jumps.
+- `fade` (linear or equal power, optionally scheduled and stopping) and `fadeGain` are new. `setGain` is unchanged and cancels a level ramp.
+- A hand-built crossfade holds summed power 1 within 1e-6 at every frame.
+- Nine guards each failed the suite when broken.
+
+Bar **2,341/2,342** (one skip, M27's), all exit 0.
 
 **M30 Step 3 is done (2026-10-26): Vorbis audio decode, and `foundry:sound` version 2.**
 - `asset/vorbis.zig` decodes audio packets: floor 1, residue types 0–2, coupling, an unscaled IMDCT through an n/4-point FFT, the overlap and the granule trims. It follows libvorbis 1.3.7 where the specification leaves room.
