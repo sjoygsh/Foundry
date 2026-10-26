@@ -256,22 +256,26 @@ pub const tilegrid: Schema = .{
 };
 
 pub const sound_name = "foundry:sound";
+pub const stream_field = "stream";
 
 /// A decoded sound, loaded into the mixer's pool.
 ///
-/// **Version 1, `source` only** — the shape `foundry:texture` started with, and for the same
-/// reason: a field is added when the thing that reads it exists, appended with a default, and
-/// packages compiled before it keep loading (I8). Loop points are the likely second field and
-/// are named as an open question rather than guessed at now (`audio.md` §11).
+/// **Version 2, and version 1 content still loads** (I8). Version 1 was `source` alone, the
+/// shape `foundry:texture` started with. M30 appended `stream` with a default when compressed
+/// sounds arrived (`music.md` §4): whether a sound stays compressed and is decoded as it
+/// plays is a choice of memory against latency, and the author is the one who knows which a
+/// sound needs. A `.wav` or an `.ogg` derives this record; the loader picks the decoder by
+/// the file's first bytes, never by its extension (ADR-0021). Loop points are M31's.
 ///
 /// The schema is here and the loader is in `audio`, by the split this file's header states:
 /// `fpack` must know the record type without linking a mixer, and what a sound *is* to the
 /// mixer is not a content concept.
 pub const sound: Schema = .{
     .id = SchemaId.fromStringUnchecked(sound_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = source_field, .type = .string },
+        .{ .name = stream_field, .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
     },
 };
 
@@ -301,7 +305,7 @@ pub const kinds = [_]Kind{
     .{ .name = mesh_name, .schema = mesh, .extensions = &.{mesh_extension} },
     .{ .name = model_import_name, .schema = model_import, .extensions = &.{ "gltf", "glb" } },
     .{ .name = tilegrid_name, .schema = tilegrid, .extensions = &.{tilegrid_extension} },
-    .{ .name = sound_name, .schema = sound, .extensions = &.{"wav"} },
+    .{ .name = sound_name, .schema = sound, .extensions = &.{ "wav", "ogg" } },
     .{
         .name = script_name,
         .schema = script,
@@ -409,6 +413,7 @@ test "extensions map to kinds, and nothing else does" {
     try testing.expect(kindForExtension("glb") == &kinds[2]);
     try testing.expect(kindForExtension("fgrid") == &kinds[3]);
     try testing.expect(kindForExtension("wav") == &kinds[4]);
+    try testing.expect(kindForExtension("ogg") == &kinds[4]);
     try testing.expect(kindForExtension("lua") == &kinds[5]);
     try testing.expect(kindForExtension("fcol") == &kinds[6]);
     try testing.expect(kindForExtension("PNG") == null);

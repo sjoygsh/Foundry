@@ -479,22 +479,31 @@ and wins, and the file it points at is yours.
 
 | Accepted |
 | --- |
-| PCM, 8-bit unsigned or 16-, 24- or 32-bit signed |
-| IEEE float, 32-bit |
-| `WAVE_FORMAT_EXTENSIBLE` wrapping either of those |
+| WAV: PCM, 8-bit unsigned or 16-, 24- or 32-bit signed |
+| WAV: IEEE float, 32-bit |
+| WAV: `WAVE_FORMAT_EXTENSIBLE` wrapping either of those |
+| Ogg Vorbis (`.ogg`), one stream, up to 192 kHz, as any current encoder writes it |
 | Mono or stereo |
 
+An `.ogg` derives a `foundry:sound` exactly as a `.wav` does, and the engine tells the two
+apart by the file's first bytes, not its name. Vorbis is about a tenth of the size of
+16-bit WAV, so it is the format for music. A sound record may also say `stream true`, which
+is for compressed sounds only; a `.wav` that says it is refused.
+
 **Anything else is refused with a sentence naming what your file actually is** — ADPCM,
-mu-law and A-law included. That is deliberate: a mod author gets told to transcode rather
+mu-law and A-law included, and Opus, FLAC or Speex inside an Ogg file. Vorbis files using
+floor type 0 (no encoder has written it since before Vorbis 1.0) and chained Ogg files are
+refused too: re-export them. That is deliberate: a mod author gets told to transcode rather
 than left with silence. So is the distinction between a file that is *corrupt* and one that
 is merely *unsupported*: the second one is fine and just needs converting.
 
 Two more refusals worth knowing:
 
-* **A NaN or an infinity in a float WAV refuses the whole file.** This is stricter than the
-  image path, which prefers a wrong-looking sprite to a missing one, and the asymmetry is
-  on purpose: one non-finite sample silences *everything* for the rest of the session,
-  which is the least diagnosable failure audio has.
+* **A NaN or an infinity in a float WAV, or in what a Vorbis file decodes to, refuses the
+  whole file.** This is stricter than the image path, which prefers a wrong-looking sprite
+  to a missing one, and the asymmetry is on purpose: one non-finite sample silences
+  *everything* for the rest of the session, which is the least diagnosable failure audio
+  has.
 * **Any sample rate is fine**, and it does not have to match the device's. A voice
   resamples as it plays, which is the same machinery that plays a sound at a different
   pitch, so a 22 kHz file and a 48 kHz one both work and neither is converted at load.

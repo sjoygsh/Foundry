@@ -1536,6 +1536,7 @@ test "a sound derives from its path exactly as an image does" {
     defer f.deinit();
 
     try f.write("sounds/ui/step.wav", &silent_wav);
+    try f.write("music/theme.ogg", asset.ogg.fixtures[4].ogg);
     try f.write("textures/sprites.png", &one_pixel_png);
 
     try f.compileIt("foundry:core");
@@ -1543,21 +1544,26 @@ test "a sound derives from its path exactly as an image does" {
     var r = try f.open();
     defer r.deinit();
 
-    // Two derived records and no authoring at all. Nothing about the asset kind is
-    // special-cased: `fpack` reads the extension table and a new kind costs it nothing.
-    try testing.expectEqual(@as(u32, 2 + manifest_records), r.record_count);
+    // Three derived records and no authoring at all. Nothing about the asset kind is
+    // special-cased: `fpack` reads the extension table and a new kind costs it nothing. An
+    // `.ogg` is a sound exactly as a `.wav` is (M30).
+    try testing.expectEqual(@as(u32, 3 + manifest_records), r.record_count);
 
     const sound_schema = r.schemaFor(data.SchemaId.fromStringUnchecked("foundry:sound")).?;
-    var found = false;
+    var found: usize = 0;
     for (0..r.record_count) |i| {
         const view = r.record(@intCast(i)).?;
         if (!view.schema_id.eql(sound_schema.id)) continue;
-        found = true;
-        try testing.expectEqualStrings("foundry:sounds.ui.step", view.name);
+        found += 1;
         const fields = r.fieldsOf(view, sound_schema.*);
-        try testing.expectEqualStrings("sounds/ui/step.wav", (try fields.stringAt(0)).?);
+        if (std.mem.eql(u8, view.name, "foundry:sounds.ui.step")) {
+            try testing.expectEqualStrings("sounds/ui/step.wav", (try fields.stringAt(0)).?);
+        } else {
+            try testing.expectEqualStrings("foundry:music.theme", view.name);
+            try testing.expectEqualStrings("music/theme.ogg", (try fields.stringAt(0)).?);
+        }
     }
-    try testing.expect(found);
+    try testing.expectEqual(@as(usize, 2), found);
 }
 
 test "a script derives with its required language and an explicit record suppresses derivation" {

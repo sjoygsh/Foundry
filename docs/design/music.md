@@ -994,3 +994,122 @@ described above.
 Step 3.
 
 **Bar:** all exit 0, with `zig build test` at **2,316/2,317** (one skip, M27's), twelve tests more than Step 1.
+
+## Resolution — Step 3: decoding Vorbis, and `foundry:sound` version 2 (2026-10-26)
+
+**`asset/vorbis.zig` decodes audio** (§3.3). `Decoder` reads a checked stream packet by
+packet into a caller's buffer: the floor, the residue, inverse coupling, the inverse MDCT, and
+overlap-add. `decode` fills a whole `Sound`. The decoder is about 1,500 lines with the
+headers, and about 750 more of tests.
+
+**Every fixture matches the reference within 1.55 × 10⁻⁵** (criterion 1's bound is 2⁻¹⁴, about
+6.1 × 10⁻⁵). That is half of one 16-bit step, so the only difference left is the reference's own
+rounding. The root-mean-square difference is 8.8 × 10⁻⁶ on every fixture. Each fixture also
+decodes to exactly its reference's frame count, and each output is pinned by hash. The same
+hashes hold in Debug and in ReleaseSafe.
+
+**Where the specification leaves room, the decoder follows libvorbis 1.3.7.** It is the oracle
+the tests compare against, and it is what authors' players run. Reading its source settled
+these:
+- **Running out of packet.** In a floor, the channel is unused. In a residue, decoding stops and
+  what was decoded stays. A type 0 partition reads all its entries before adding any of them.
+- **A single-entry codebook** is accepted only when its one codeword is one bit long, and
+  decoding it reads one bit and returns the entry whatever the bit is. Step 2 had accepted a
+  single entry of any length, and that is now refused as underspecified, as libvorbis refuses
+  it.
+- **A book with no used entries** reads nothing and adds nothing when it decodes vectors. As a
+  scalar book, it ends the floor or residue.
+- **Floor values** are masked to 15 bits, with bit 15 marking a point the curve skips, and
+  clamped to 0–255 before the inverse-dB table is read. The table is libvorbis's 256 constants,
+  the same values as the specification's `floor1_inverse_dB_table`.
+- **A residue's classbook** must be big enough to name every classification of a word
+  (`classifications ^ dimensions ≤ entries`). libvorbis refuses a setup that is not, and so does
+  this, as a new refusal at setup. A classbook entry beyond `classifications ^ dimensions` ends
+  the residue.
+- **Type 2 residue** de-interleaves from frame `offset / channels`, starting at channel 0.
+  That only differs from the specification's interleaving when an offset is not a multiple of
+  the channel count, which no encoder writes.
+- **The window follows the blocks' actual sizes**, and the packet's two window flags are read
+  and ignored, as libvorbis's synthesis ignores them. The overlap is `vorbis_synthesis_blockin`'s.
+- **Granules.** The first granule that reaches a packet trims the stream's start, or its end if
+  that packet is the last. The last granule trims the end. Neither trims more frames than the
+  packet made. A granule mid-stream that disagrees is believed, without a trim.
+- **An empty packet is dropped.** A header packet among the audio packets, or a mode index past
+  the count, refuses the file. libvorbis skips those, but skipping would leave the file a
+  different length from the one it claims.
+
+**The decoder's stream contract** is the length its last granule claims, exactly. It never
+hands out a frame past that length. If the packets hold more frames or fewer, the file is
+`InvalidSound`. So is a non-finite sample, which the decoder checks as it copies each sample
+out.
+
+**The inverse MDCT** is unscaled, as libvorbis's `mdct_backward` is. It treats the
+transform as a DCT-IV of `n/2` points: one `n/4`-point complex FFT between two twiddles, then
+unfolded. The twiddles, the FFT roots, the bit-reversal and the window slopes are built per
+block size into the setup's arena, from `core.math.trig`. They count against the setup's memory
+budget. A test checks the transform against its direct O(n²) sum at 64, 256 and 2048 points.
+
+**Codebooks decode through a first-stage table** of up to ten bits. A longer codeword continues
+down an explicit tree from the table's node. Both are built at setup and budgeted. A test
+decodes 13-bit codewords through the tree.
+
+**Speed (criterion 1):** stereo 48 kHz at quality 4 decodes at **1,119× real time** on the
+M5, in ReleaseSafe on one thread (about 54 million frames per second). The bound is 50× on the
+Arc PC's i3, checked at Step 8. Run the timing test with
+`zig build asset-test -Doptimize=ReleaseSafe`. A Debug build prints a figure too, but it means
+little.
+
+**The mutation sweep (§12):**
+- every truncation of `short`;
+- 2,000 seeded single-bit flips across `stereo48_q4`, each with its page's CRC recomputed so
+  the flip reaches the decoder.
+
+Each case decodes or is refused, and none panics. A Debug run, which the bar uses, does 200 of
+the flips so that it stays quick. ReleaseSafe runs all 2,000, and they passed.
+
+**Hand-made packets** cover the two paths no fixture reaches (Step 2's Resolution): residue
+type 0's step interleaving, and a single-entry classbook. They also show that running out of
+packet keeps the partitions already decoded.
+
+**`foundry:sound` version 2** (§4) adds `stream bool (default false)`, and version 1 packages
+still load. `.ogg` is in the extension table beside `.wav`. The mixer's loader picks the decoder
+by the file's first four bytes, `OggS` or anything else, never by its extension. A WAV that says
+`stream true` is refused with `UnsupportedVersion`.
+
+One gap until Step 5: **an Ogg that says `stream true` is decoded whole and kept resident.**
+Step 5 keeps it compressed and decodes it as it plays (§6). That step owns the change, and
+nothing else depends on it. `docs/modding/content-mods.md` now lists Ogg Vorbis and `stream`.
+
+**Integration tests (`engine/tests/sound_pipeline.zig`):**
+- an `.ogg` plays through the existing `play`, sample for sample what `vorbis.decode` gives;
+- a streamed `.wav` is refused, and a streamed `.ogg` loads;
+- an Opus file is `UnsupportedVersion`, and a broken Ogg is `InvalidAsset`.
+
+`fpack`'s derivation test now derives an `.ogg` beside the `.wav`.
+
+**Guards checked by breaking them.** Disabling each of these failed the suite:
+- the finiteness check;
+- the end trim;
+- the one-bit single-entry rule;
+- the classbook-size refusal;
+- the header-among-audio refusal;
+- a type 0 partition reading all its entries before adding any.
+
+The decoder's overrun and short-length checks were backed up by `decode`'s own length checks,
+so disabling either one at first failed nothing. A test now drives `Decoder.read` directly, as
+Step 5's streams will, and both of those mutations now fail it.
+
+The tree builder's codeword-collision refusal cannot be reached, because Step 2 has already
+proved the tree complete. It remains as a guard in case that proof ever changes.
+
+**Not in this step:** no stream, mixer clock or schedule exists yet, and none of the court's
+content has changed, so `dist` staging is not due until Step 7.
+
+**The integration tests' first run corrected two of them.** The null device opens at 48 kHz
+unless asked otherwise, so the `.ogg` test now opens it at the fixture's 44.1 kHz. A sound
+whose first load failed cannot be acquired to reload, so the Opus and broken-Ogg cases are now
+two records rather than one file rewritten.
+
+**Bar:** **2,330/2,331** (one skip, M27's), with 14 new tests: 11 in `vorbis.zig` and 3 in
+`sound_pipeline.zig`. Every line exited 0: fmt, test, the four checks, the four
+thirty-frame headless runs and `fdt-check`.

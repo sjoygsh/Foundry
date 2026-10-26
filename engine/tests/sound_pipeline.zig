@@ -353,3 +353,69 @@ test "a sound requested on the background pool plays the same samples as one acq
     try testing.expectEqualSlices(f32, &[_]f32{ -1.0, 0.0, 0.5, 32767.0 / 32768.0 }, try s.step(4));
     s.mixer.update();
 }
+
+test "an .ogg plays through the same play, decoded as the reference decodes it" {
+    // M30: the loader picks the decoder by the file's first bytes, and the record and the
+    // call are the ones a .wav uses.
+    // A mono device at the file's own rate, so the voice copies samples unchanged.
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 64, .sample_rate = 44_100 });
+    defer s.deinit();
+    const fixture = asset.ogg.fixtures[0];
+    try s.writeFile("music/theme.ogg", fixture.ogg);
+    try s.loadPackage("foundry:core",
+        \\foundry:sound foundry:sounds.chirp {
+        \\    source "music/theme.ogg"
+        \\}
+    );
+    var expected = try asset.vorbis.decode(s.gpa, fixture.ogg, .{});
+    defer expected.deinit(s.gpa);
+
+    _ = try s.mixer.play(chirp_id, .{});
+    try testing.expectEqual(expected.sample_rate, s.plat.audioInfo(s.mixer.device).?.sample_rate);
+    try testing.expectEqualSlices(f32, expected.samples[0..64], try s.step(64));
+}
+
+test "stream is for compressed sounds: a streamed .wav is refused, a streamed .ogg loads" {
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 2 });
+    defer s.deinit();
+    try s.writeWav("sounds/chirp.wav", &.{ 16384, 16384 });
+    try s.writeFile("music/theme.ogg", asset.ogg.fixtures[0].ogg);
+    try s.loadPackage("foundry:core",
+        \\foundry:sound foundry:sounds.chirp {
+        \\    source "sounds/chirp.wav"
+        \\    stream true
+        \\}
+        \\foundry:sound foundry:sounds.theme {
+        \\    source "music/theme.ogg"
+        \\    stream true
+        \\}
+    );
+    try testing.expectError(error.UnsupportedVersion, s.mixer.play(chirp_id, .{}));
+    _ = try s.mixer.play(core.ContentId.fromString("foundry:sounds.theme"), .{});
+}
+
+test "an Opus file is refused as the valid file it is, and a broken Ogg as broken" {
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 2 });
+    defer s.deinit();
+    const gpa = s.gpa;
+    // The first page of a fixture, rewritten to announce Opus, with its CRC recomputed.
+    const page = try gpa.dupe(u8, asset.ogg.fixtures[2].ogg[0..58]);
+    defer gpa.free(page);
+    @memcpy(page[28..36], "OpusHead");
+    page[5] |= 0x04;
+    std.mem.writeInt(u32, page[22..26], 0, .little);
+    std.mem.writeInt(u32, page[22..26], asset.ogg.crc32(page), .little);
+    try s.writeFile("music/opus.ogg", page);
+    page[30] ^= 0xff; // The CRC no longer matches.
+    try s.writeFile("music/broken.ogg", page);
+    try s.loadPackage("foundry:core",
+        \\foundry:sound foundry:sounds.opus {
+        \\    source "music/opus.ogg"
+        \\}
+        \\foundry:sound foundry:sounds.broken {
+        \\    source "music/broken.ogg"
+        \\}
+    );
+    try testing.expectError(error.UnsupportedVersion, s.mixer.play(core.ContentId.fromString("foundry:sounds.opus"), .{}));
+    try testing.expectError(error.InvalidAsset, s.mixer.play(core.ContentId.fromString("foundry:sounds.broken"), .{}));
+}

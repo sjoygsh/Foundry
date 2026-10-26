@@ -361,8 +361,9 @@ pub fn MixerOf(comptime P: type) type {
         /// `self` is borrowed for as long as the loader is registered, so the registry
         /// must be torn down before the mixer is.
         ///
-        /// Split (M27): the WAV decode and conversion on any thread, and a finish that hands
-        /// the samples to the mixer.
+        /// Split (M27): the decode and conversion on any thread, and a finish that hands the
+        /// samples to the mixer. The decoder is chosen by the file's first bytes, `RIFF` or
+        /// `OggS`, never by its extension (M30, `music.md` §4).
         pub fn soundLoader(self: *Self) asset.Loader {
             return .{
                 .schema = asset.schemas.sound.id,
@@ -386,14 +387,24 @@ pub fn MixerOf(comptime P: type) type {
         fn soundDecode(
             _: ?*const anyopaque,
             gpa: Allocator,
-            _: asset.Record,
+            record: asset.Record,
             bytes: []const u8,
         ) asset.LoadError!asset.Decoded {
+            const stream = asset.schemas.boolField(record, asset.schemas.sound, asset.schemas.stream_field) orelse false;
+            const vorbis = bytes.len >= 4 and std.mem.eql(u8, bytes[0..4], "OggS");
+            if (stream and !vorbis) {
+                // Streaming PCM that is already resident would buy nothing and cost a ring.
+                log.warn("{f}: stream is for compressed sounds, and this is not one", .{record.id});
+                return error.UnsupportedVersion;
+            }
             const boxed = try gpa.create(asset.Sound);
             errdefer gpa.destroy(boxed);
-            boxed.* = asset.wav.decode(gpa, bytes, .{}) catch |err| return switch (err) {
+            // `stream true` is decoded whole for now, as a resident sound; M30 Step 5 keeps it
+            // compressed and decodes it as it plays (`music.md` §6).
+            const decoded = if (vorbis) asset.vorbis.decode(gpa, bytes, .{}) else asset.wav.decode(gpa, bytes, .{});
+            boxed.* = decoded catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
-                // A valid WAV this decoder does not handle. The file is fine and the
+                // A valid file this decoder does not handle. The file is fine and the
                 // answer for the author is different: transcode, do not debug.
                 error.UnsupportedSound => error.UnsupportedVersion,
                 error.SoundTooLarge => error.LoadFailed,

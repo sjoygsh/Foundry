@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 2 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 3**: decoding Vorbis audio, and `foundry:sound` version 2. No audio packet is decoded yet, and `.ogg` is not yet a sound. M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 3 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 4**: the mixer's sample clock, scheduled starts and ramps. No clock, schedule, ramp or stream exists yet, and an `.ogg` with `stream true` is still decoded whole until Step 5. M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 3 is done (2026-10-26): Vorbis audio decode, and `foundry:sound` version 2.**
+- `asset/vorbis.zig` decodes audio packets: floor 1, residue types 0–2, coupling, an unscaled IMDCT through an n/4-point FFT, the overlap and the granule trims. It follows libvorbis 1.3.7 where the specification leaves room.
+- The output matches the reference within 1.55e-5 (RMS 8.8e-6), and seven decodes are pinned by hash.
+- Speed is 1,119× real time on the M5 in ReleaseSafe.
+- Every truncation and 200 seeded bit flips (2,000 in ReleaseSafe) each decode or are refused, and none panics.
+- Hand-made packets cover residue type 0, single-entry classbooks and long codewords.
+- `foundry:sound` v2 adds `stream` (default false). `.ogg` derives a sound, and the loader picks the decoder by the file's magic bytes. `stream true` on a WAV is refused.
+- Eight guards each failed the suite when disabled.
+
+Bar **2,330/2,331** (one skip, M27's), all exit 0.
 
 **M30 Step 2 is done (2026-10-26): Vorbis headers and setup.**
 - `asset/vorbis.zig`'s `readHeaders` checks, in order:
