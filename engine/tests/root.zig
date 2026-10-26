@@ -33,6 +33,7 @@ pub const model_content = @import("model_content.zig");
 pub const model_loaders = @import("model_loaders.zig");
 pub const settings_startup = @import("settings_startup.zig");
 pub const sound_pipeline = @import("sound_pipeline.zig");
+pub const music_sequencing = @import("music_sequencing.zig");
 pub const sprite_animation = @import("sprite_animation.zig");
 pub const tilemap_pipeline = @import("tilemap_pipeline.zig");
 pub const ui_text = @import("ui_text.zig");
@@ -57,6 +58,7 @@ test {
     _ = model_loaders;
     _ = settings_startup;
     _ = sound_pipeline;
+    _ = music_sequencing;
     _ = sprite_animation;
     _ = tilemap_pipeline;
     _ = ui_text;

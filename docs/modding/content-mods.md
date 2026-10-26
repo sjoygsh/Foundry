@@ -521,6 +521,45 @@ same point in the waveform it started at. A tone whose frequency completes a who
 of cycles inside the file wraps silently; one that does not puts a click on every pass, and
 no amount of engine is going to hide it.
 
+### Music
+
+A game's soundtrack is two record types, so a mod changes the music by overriding them, with
+no code:
+
+```fdt
+foundry:music_playlist mygame:music.calm {
+    tracks    [ mygame:music.calm_a  mygame:music.calm_b ]   # foundry:sound records
+    order     "shuffle"        # or "sequential", the default
+    loop      true             # start again after the last track (the default)
+    crossfade 3                # seconds, between tracks and into this playlist (default 2)
+    gain      1                # 0 to 4
+    tempo     96               # beats per minute; 0, the default, means no beat grid
+    beats_per_bar 4            # 1 to 32
+    first_beat    0            # seconds into each track where beat one falls
+}
+
+foundry:music_stinger mygame:music.door {
+    sound     mygame:sounds.door_sting
+    quantize  "bar"            # "now", "beat" (the default) or "bar"
+    gain      1
+    duck      0.5              # the music's level beneath it; 1 is no duck
+    duck_fade 0.1              # seconds into the duck and back out
+}
+```
+
+Which playlist plays when is the game's decision; what is in it is yours. Tracks follow one
+another with an equal-power crossfade, and a track shorter than twice the crossfade plays
+without one. A playlist's tracks share its tempo, so a game switching to another playlist
+does it on the music's next bar line, and a stinger lands on the next beat or bar of
+whatever is playing. Stream your tracks (`stream true`) and leave stingers resident: a
+resident stinger can start a tenth of a second after it is asked for, a streamed one needs a
+second.
+
+Overriding a playlist replaces it whole, as every record override does. It takes effect at
+the next track boundary, so a track already playing is never cut. A playlist with no tracks
+or more than 64, an unknown `order` or `quantize`, a crossfade above 30 seconds, a tempo
+above 400, or a track that is not a `foundry:sound` is refused by name.
+
 ## 9. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just

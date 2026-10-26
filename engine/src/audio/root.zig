@@ -39,6 +39,7 @@ const asset = @import("asset");
 pub const mixer = @import("mixer.zig");
 pub const ring = @import("ring.zig");
 const stream = @import("stream.zig");
+const music = @import("music.zig");
 pub const voice = @import("voice.zig");
 
 /// Phantom tag for `VoiceHandle`. Never instantiated; it exists so a voice handle cannot
@@ -65,6 +66,14 @@ pub const Options = mixer.Options;
 pub const PlayParams = mixer.PlayParams;
 pub const Fade = mixer.Fade;
 pub const Curve = mixer.Curve;
+
+/// Playlists, crossfades and stingers on the mixer's clock (`music.md` §8).
+pub const Music = music.Music;
+pub const MusicOf = music.MusicOf;
+pub const MusicOptions = music.Options;
+pub const MusicError = music.Error;
+pub const MusicStart = music.Start;
+pub const music_stinger_lookahead_seconds = music.stinger_lookahead_seconds;
 pub const InitError = mixer.InitError;
 pub const PlayError = mixer.PlayError;
 pub const VoiceError = mixer.VoiceError;
@@ -92,6 +101,7 @@ test {
     _ = mixer;
     _ = ring;
     _ = stream;
+    _ = music;
     _ = voice;
 }
 

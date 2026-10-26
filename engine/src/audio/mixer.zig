@@ -121,7 +121,7 @@ const Command = union(enum) {
     set_pitch: struct { voice: VoiceHandle, step: f64 },
     set_master_gain: struct { gain: f32 },
     fade: struct { voice: VoiceHandle, fade: Fade },
-    fade_gain: struct { voice: VoiceHandle, gain: f32, frames: u32 },
+    fade_gain: struct { voice: VoiceHandle, at: ?u64, gain: f32, frames: u32 },
 };
 
 const Play = struct {
@@ -929,7 +929,37 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn fadeGainChecked(self: *Self, handle: VoiceHandle, gain: f32, frames: u32) bool {
-            return self.to_audio.push(.{ .fade_gain = .{ .voice = handle, .gain = gain, .frames = frames } });
+            return self.fadeGainAtChecked(handle, null, gain, frames);
+        }
+
+        /// `fadeGain` beginning at mixer frame `at`, as `fade` can: how a duck lands on the
+        /// frame a stinger starts (`music.md` §8.4). Null, or a frame already past, begins it
+        /// at the next callback.
+        pub fn fadeGainAt(self: *Self, handle: VoiceHandle, at: ?u64, gain: f32, frames: u32) void {
+            _ = self.fadeGainAtChecked(handle, at, gain, frames);
+        }
+
+        pub fn fadeGainAtChecked(self: *Self, handle: VoiceHandle, at: ?u64, gain: f32, frames: u32) bool {
+            return self.to_audio.push(.{ .fade_gain = .{ .voice = handle, .at = at, .gain = gain, .frames = frames } });
+        }
+
+        pub const SoundInfo = struct {
+            /// Device frames the sound lasts at pitch 1: its frames through the voice's rate
+            /// ratio, rounded up. A resampled voice accumulates its step, so its real end can
+            /// differ from this by a frame; nothing scheduled depends on that frame.
+            frames: u64,
+            streamed: bool,
+        };
+
+        /// What `play` would start, without starting it: loads the sound if need be.
+        pub fn soundInfo(self: *Self, id: core.ContentId) PlayError!SoundInfo {
+            const held = try self.assets.acquireOf(self.gpa, id, asset.schemas.sound.id);
+            defer self.assets.release(held);
+            const payload = self.assets.payloadOf(held) orelse return error.AssetNotFound;
+            const stored = self.sounds.getConst(payload.asHandle(SoundHandle)) orelse return error.UnknownSound;
+            const step = voice.stepFor(stored.sound.sample_rate, self.info.sample_rate, 1);
+            const frames: f64 = @floatFromInt(stored.frameCount());
+            return .{ .frames = @intFromFloat(@ceil(frames / step)), .streamed = stored.compressed != null };
         }
 
         /// Frames the device has mixed since the mixer started, as of the last callback:
@@ -1191,7 +1221,7 @@ pub fn MixerOf(comptime P: type) type {
                 },
                 .fade_gain => |s| {
                     const v = self.liveVoice(s.voice) orelse return;
-                    v.level.start(.{ .begin = self.mixed, .frames = s.frames, .to = s.gain, .curve = .linear, .stop = false });
+                    v.level.start(.{ .begin = @max(s.at orelse self.mixed, self.mixed), .frames = s.frames, .to = s.gain, .curve = .linear, .stop = false });
                 },
                 .set_pan => |s| {
                     const v = self.liveVoice(s.voice) orelse return;
@@ -2019,4 +2049,21 @@ test "a streamed sound is proved whole when it is added: one that would fail par
 
     try testing.expectError(error.InvalidSound, f.mixer.insertStreamed(bytes));
     try testing.expectEqual(@as(u32, 0), f.mixer.soundCount());
+}
+
+test "fadeGainAt begins the level's ramp on its frame, and a frame already past at the next callback" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+    const sound = try f.add(&[_]f32{1.0}, 1, 48_000);
+    const v = try f.mixer.playSound(sound, .{ .looping = true });
+
+    // From frame 6, over 4 frames, to 0: a duck landing mid-buffer.
+    f.mixer.fadeGainAt(v, 6, 0, 4);
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 1, 1, 1 }, try f.step(4));
+    try testing.expectEqualSlices(f32, &[_]f32{ 1, 1, 1, 0.75 }, try f.step(4));
+    try testing.expectEqualSlices(f32, &[_]f32{ 0.5, 0.25, 0, 0 }, try f.step(4));
+
+    // Frame 2 has gone: the ramp back up begins at the next callback, frame 12.
+    f.mixer.fadeGainAt(v, 2, 1, 4);
+    try testing.expectEqualSlices(f32, &[_]f32{ 0, 0.25, 0.5, 0.75 }, try f.step(4));
 }

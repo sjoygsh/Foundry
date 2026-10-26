@@ -692,6 +692,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+            // `foundry:music_playlist` and `foundry:music_stinger` (ADR-0066): a soundtrack is
+            // content, so its record types are the engine's to declare.
+            asset.music.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own music schemas were refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
 
             var diags: data.Diagnostics = .init(gpa, .default);
             defer diags.deinit(gpa);

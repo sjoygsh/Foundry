@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 5 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 6**: music records (`foundry:music_playlist`, `foundry:music_stinger`) and `audio.Music`. No music record, sequencer, crossfade policy or stinger exists yet, and no sample streams or hands the mixer its background pool (the court does in Step 7). M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 6 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 7**: the court's soundtrack (`make_court_music.py`, the tracks and stingers, the records, `samples/court/music.zig`, the `nocturne` mod and the evidence log), proved on the Mac. No sample plays music yet, and none hands the mixer its background pool. M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 6 is done (2026-10-26): music records and `audio.Music`.**
+- `foundry:music_playlist` and `foundry:music_stinger` (`asset/music.zig`), with every refusal named, at its line by `fpack` and the editor. A track that is not a sound is refused where it resolves.
+- `audio.Music` schedules playlists on the mixer's clock: equal-power crossfades, Fisher–Yates shuffle from a seed with no repeat across cycles, switches on the next bar, and stingers on the next beat or bar with a duck. A reload takes effect at the next boundary.
+- Two public mixer calls: `fadeGainAt` (a level ramp on a scheduled frame) and `soundInfo` (length and streaming). `Music` defers a duck's release until its descent has begun, because a gain holds one queued ramp.
+- Lookahead settled: one second for tracks (a streamed track's first decode); 0.1 s for resident stingers. On the M5's real device, 0–1 of 400 scheduled plays slipped, each by exactly one 512-frame buffer.
+- Criterion 5 is pinned: a sequenced mix with five starts, each on the frame written out in its test and the frame the mixer reports (`2692657964278199496`).
+- Sixteen guards each failed the suite when broken.
+
+Bar **2,369/2,372** (three skips: M27's, and the stream-margin and command-delivery measurements, which run only in ReleaseSafe), all exit 0.
 
 **M30 Step 5 is done (2026-10-26): streamed voices.**
 - `stream true` keeps an `.ogg` compressed. The load decodes it whole once, in pieces, as its proof (`vorbis.prove`), and a voice decodes it into a one-second ring per stream as it plays (`audio/stream.zig`).

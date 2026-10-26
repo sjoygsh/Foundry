@@ -56,6 +56,9 @@ pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 pub const ogg = @import("ogg.zig");
 /// Vorbis I, the codec inside it (ADR-0065).
 pub const vorbis = @import("vorbis.zig");
+/// `foundry:music_playlist` and `foundry:music_stinger`, a soundtrack as content (ADR-0066).
+/// Here for `particle_emitter`'s reason: `fpack` checks them with no mixer.
+pub const music = @import("music.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -155,5 +158,6 @@ test {
     _ = particle_emitter;
     _ = ogg;
     _ = vorbis;
+    _ = music;
     _ = wav;
 }

@@ -296,8 +296,10 @@ pub fn compile(
     return identity;
 }
 
-/// Whether every `foundry:particle_emitter` in a written package decodes (ADR-0064). A refusal
-/// names the record and its field, at the line that declared it when one did.
+/// Whether every `foundry:particle_emitter`, `foundry:music_playlist` and `foundry:music_stinger`
+/// in a written package decodes (ADR-0064, ADR-0066). A refusal names the record and its field,
+/// at the line that declared it when one did. A playlist's tracks resolve across packages, so
+/// whether each is a sound is checked where they resolve, at load.
 fn checkMeanings(
     gpa: Allocator,
     bytes: []const u8,
@@ -315,17 +317,24 @@ fn checkMeanings(
     var ok = true;
     var i: u32 = 0;
     while (reader.record(i)) |view| : (i += 1) {
-        if (!view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) continue;
         const schema = reader.schemaFor(view.schema_id) orelse continue;
-        _ = asset.particle_emitter.decode(reader.fieldsOf(view, schema.*)) catch |err| {
-            ok = false;
-            const why = asset.particle_emitter.describe(err);
-            if (declarationOf(docs, view.id)) |origin| {
-                try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "particle emitter '{s}' {s}", .{ view.name, why });
-            } else {
-                try diags.addFmt(gpa, .err, .whole(dir), 1, "", "particle emitter '{s}' {s}", .{ view.name, why });
-            }
-        };
+        const fields = reader.fieldsOf(view, schema.*);
+        const what: []const u8, const why: []const u8 = if (view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) blk: {
+            _ = asset.particle_emitter.decode(fields) catch |err| break :blk .{ "particle emitter", asset.particle_emitter.describe(err) };
+            continue;
+        } else if (view.schema_id.eql(asset.music.playlist.id)) blk: {
+            _ = asset.music.decodePlaylist(fields) catch |err| break :blk .{ "music playlist", asset.music.describe(err) };
+            continue;
+        } else if (view.schema_id.eql(asset.music.stinger.id)) blk: {
+            _ = asset.music.decodeStinger(fields) catch |err| break :blk .{ "music stinger", asset.music.describe(err) };
+            continue;
+        } else continue;
+        ok = false;
+        if (declarationOf(docs, view.id)) |origin| {
+            try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' {s}", .{ what, view.name, why });
+        } else {
+            try diags.addFmt(gpa, .err, .whole(dir), 1, "", "{s} '{s}' {s}", .{ what, view.name, why });
+        }
     }
     return ok;
 }
@@ -402,6 +411,14 @@ pub fn registerAvailableSchemas(
         },
     };
 
+    asset.music.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's music schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -437,6 +454,8 @@ pub const engine_schema_names = [_][]const u8{
     asset.tilemap.tilemap_name,
     asset.ui_theme.name,
     asset.particle_emitter.name,
+    asset.music.playlist_name,
+    asset.music.stinger_name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
@@ -2581,4 +2600,39 @@ test "fpack imports an explicit glTF model end to end and deterministically" {
     const rendered = try f.rendered(&diagnostic);
     try testing.expect(std.mem.indexOf(u8, rendered, "dropped 1 degenerate") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "empty collision mesh") != null);
+}
+
+test "music records compile, and a playlist or stinger out of range is refused at its line" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("music.fdt",
+        \\foundry:music_playlist demo:calm { tracks [ demo:a demo:b ] order "shuffle" tempo 96 }
+        \\foundry:music_stinger demo:sting { sound demo:a quantize "bar" }
+    );
+    try f.compileIt("demo:content");
+    var reader = try f.open();
+    defer reader.deinit();
+    const view = recordNamed(&reader, "demo:calm").?;
+    const playlist = try asset.music.decodePlaylist(reader.fieldsOf(view, reader.schemaFor(view.schema_id).?.*));
+    try testing.expectEqual(@as(f32, 96), playlist.tempo);
+    try testing.expectEqual(asset.music.Order.shuffle, playlist.order);
+
+    const cases = [_]struct { source: []const u8, says: []const u8 }{
+        .{ .source = "\nfoundry:music_playlist demo:calm { tracks [ demo:a ] tempo 500 }", .says = "music playlist 'demo:calm' has a tempo" },
+        .{ .source = "\nfoundry:music_playlist demo:calm { tracks [ demo:a ] order \"random\" }", .says = "music playlist 'demo:calm' has an order" },
+        .{ .source = "\nfoundry:music_stinger demo:sting { sound demo:a quantize \"soon\" }", .says = "music stinger 'demo:sting' has a quantize" },
+        .{ .source = "\nfoundry:music_stinger demo:sting { sound demo:a duck 2 }", .says = "music stinger 'demo:sting' has a duck" },
+    };
+    // A fixture per case, because its diagnostics accumulate.
+    for (cases) |case| {
+        var g = try Fixture.init();
+        defer g.deinit();
+        try g.write("music.fdt", case.source);
+        try testing.expectError(error.ContentInvalid, g.compileIt("demo:content"));
+        try testing.expectEqual(@as(usize, 0), g.bytes.items.len);
+        var buf: [2048]u8 = undefined;
+        const text = try g.rendered(&buf);
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, "music.fdt:2:"));
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, case.says));
+    }
 }

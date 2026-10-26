@@ -1356,3 +1356,144 @@ which runs only in ReleaseSafe. There are 13 new tests:
 - two in `sound_pipeline.zig`.
 
 fmt, the four checks, the four thirty-frame headless runs and `fdt-check` all exit 0.
+
+## Resolution — Step 6: music records and `audio.Music` (2026-10-26)
+
+§7 and §8 are implemented: `asset/music.zig` (both records) and `audio/music.zig` (`Music`).
+Nothing in the public table changed.
+
+**The records** are in `asset` beside `particle_emitter`, with §7's fields and defaults.
+- Both are registered where the emitter is, in the engine's content registry and in the
+  compiler's.
+- The compiler's `checkMeanings` decodes them, so `fpack` and the editor refuse a bad one at
+  its line, by the same decoder the engine runs: "music playlist 't:calm' has a tempo that
+  is …".
+- A track, or a stinger's sound, that is not a `foundry:sound` is refused where the IDs
+  resolve, when `Music` reads the record (`NotASound`). A playlist may name another
+  package's sounds.
+- `.fdt` text cannot spell a non-finite number, so that refusal is tested on decoded values.
+
+**Two public mixer calls were added**, both game-thread and both callable by any game, so
+`Music` is still unprivileged:
+- **`fadeGainAt(voice, at, gain, frames)`:** a level ramp that begins on a scheduled frame.
+  §8.4's duck must end on the stinger's first frame, and `fadeGain` begins at the next
+  callback. `fade` already took a frame; the level ramp now can too.
+- **`soundInfo(id)`:** a sound's length in device frames, and whether it streams. `Music`
+  needs the next track's length before it starts the track, to decide where it starts. The
+  length is `ceil(frames / step)`. A resampled voice accumulates its step, so its real end
+  can differ by a frame. No scheduled start depends on that frame: an end only ends a voice.
+
+**A gain ramp holds one queued ramp** (Step 4), and a duck needs two: down, then back up. If
+both were sent at once, the release would replace the descent before the descent began.
+- `Music` therefore defers the release, and sends it from `update` once the clock has passed
+  the descent's begin frame, when the descent is running and the queue is free.
+- A `setGain` during a duck takes the voice's queue too, so it re-queues the release behind
+  itself.
+- The release multiplies the playlist's gain by the music's gain as it is sent, not as it was
+  when the stinger was played. The setGain-under-duck test caught both of these: the music
+  either stayed ducked for good or came back from the pause.
+
+**Scheduling is just in time.** A track's successor is scheduled once `clock + lookahead`
+reaches the earliest frame it could start on. `Music` holds only the head track, the one every
+later decision is relative to. Its arithmetic, all in `u64` frames from `f64` seconds rounded
+once:
+- **Tracks:**
+  - the successor starts at `start + frames − crossfade`, with its envelope at 0, and both
+    fades are `equal_power` over the crossfade, the old one stopping;
+  - entering a playlist fades in over its crossfade.
+- **The 2× edge** (§8.2 left it open): a crossfade happens only when both tracks are at
+  least twice the crossfade. Otherwise the successor starts at the head's end, with no fade
+  either way. Entering a playlist fades in only if its first track is long enough.
+- **Grid points:** `start + round((first_beat + n · beats · 60 / tempo) · rate)`, for the
+  smallest `n` at or after the earliest frame.
+  - A switch takes the head's grid of `beats_per_bar`, with the earliest frame
+    `max(clock + lookahead, head.start)`.
+  - It is clamped to the head's end, so a switch asked late in a track lands where the track
+    ends.
+  - The old head fades over the new playlist's crossfade on the same frame, or stops on it
+    with no crossfade.
+- **Stingers** take the head's grid of one beat (`beat`) or one bar (`bar`), or none (`now`).
+  - The duck ramps down over `duck_fade`, ending on the stinger's first frame, and back up
+    over `duck_fade` from its last.
+  - A second stinger in a duck extends it.
+  - A track starting inside a duck starts at the ducked level, with its own release.
+- **Shuffle:** Fisher–Yates per cycle, from a `core.rng.Pcg32` seeded by `Options.seed`. A
+  cycle whose first track would repeat the last one played swaps it with the cycle's last.
+- **`loop false`:** after the last track nothing is scheduled, and the head plays out;
+  `current()` is then null.
+- **`stop`:** ramps every music voice to 0 over its time with `stop`, scheduled starts
+  included, and forgets the playlist. Stingers already playing finish.
+
+**Reload** (§8.5). `contentChanged` marks the playlist, and the record is read again at the
+next boundary, never before, so the track playing is never cut. A changed track list starts a
+new cycle of the new list there. An unchanged one keeps its place. Stingers are read at every
+`stinger` call.
+
+**The lookahead, settled.** §8.4 asked for the command-delivery latency to be measured, and
+the lookahead lowered if the measurement allowed.
+- On the M5's real CoreAudio device, at 48 kHz with 512-frame buffers, a test played 400
+  silent voices, each scheduled for the clock it had just read, three times over. **0, 1
+  and 1** of the 400 slipped, each by **exactly one buffer** (10.7 ms).
+- One buffer is also the structural bound: a command pushed while a callback is already
+  mixing waits for the next callback.
+- So the lookahead splits in two:
+  - **Tracks keep one second.** What binds them is a streamed track's first decode, which
+    Step 5 measured at 265–272 ms behind the gallery on the Mac. The PC's figure is Step 8's,
+    so lowering it now would be a guess.
+  - **A resident stinger takes `stinger_lookahead_seconds`, 0.1 s**, about nine buffers. A
+    streamed stinger takes the track lookahead.
+- §8.4's "known cost", a stinger waiting up to 1.6 s at 96 bpm, becomes at most a beat
+  plus 0.1 s for a resident stinger: about 0.7 s at 96 bpm.
+- The test runs only in ReleaseSafe with a real backend, and skips otherwise; it is the
+  bar's third skip.
+
+**Criterion 3's evidence.** `Music` keeps a ring of its last 64 asked starts (`starts()`,
+`startCount()`). Step 7's log compares each with `Mixer.startedAt`, and the tests here do it
+after every buffer.
+
+**Criterion 5, pinned.** The sequenced mix runs on the stepped null device with immediate
+tasks: playlist A at 360 bpm in two-beat bars, its crossfade, a stinger on the beat with its
+duck, a switch on the bar to playlist B, and B looping into itself.
+- Each of its five starts equals arithmetic written out in the test (1,024; 10,624; 18,624;
+  42,624; 61,664), and the frame the mixer reports.
+- Two runs give the same samples, and their Wyhash is pinned at `2692657964278199496`.
+- The switch is placed where the next beat (34,624) and the next bar (42,624) differ, so
+  quantizing to a beat instead of a bar fails the pin. In the first scenario they coincided,
+  and that mutation passed.
+
+**Guards verified by mutation.** Each was broken, the suite run, and the file restored. Each
+of these failed it:
+- the crossfade boundary taken as the head's end;
+- a linear fade in place of equal power;
+- a switch quantized to the beat, not the bar;
+- the 2× edge removed;
+- the shuffle's no-repeat swap removed;
+- scheduling with no lookahead (the starts were late);
+- a duck's release sent at once;
+- `contentChanged` ignored;
+- the tracks-are-sounds check removed;
+- a streamed stinger given the short lookahead;
+- the same playlist restarted by a second `play`;
+- the compiler's playlist check removed;
+- the tempo limit removed;
+- `setGain` dropping the duck factor;
+- `setGain` not re-queueing a release;
+- a release using the gain from before the pause.
+
+Three of these first survived, and each now has a test that holds it:
+- the bar mutation, until the switch was moved off a frame where beat and bar coincide;
+- `contentChanged`, until the playlist was re-read only on it, as the design's API says. It
+  had been re-read at every boundary, which made the call do nothing;
+- the no-repeat swap, until a two-track shuffle over twenty cycles was added. With four
+  tracks and seed 7, no cycle repeated its predecessor's last track.
+
+**Bar.** `zig build test` passes 2,369 of 2,372. The three skips are M27's and the two
+measurements, the stream margin and command delivery, which run only in ReleaseSafe. There are
+17 new tests:
+- two in `asset/music.zig`;
+- one each in `mixer.zig` and `compiler.zig`;
+- thirteen in `engine/tests/music_sequencing.zig`.
+
+fmt, the four checks, the four thirty-frame headless runs and `fdt-check` all exit 0. The
+ReleaseSafe integration run passes everything except the ui_theme float comparison Step 5
+reported.
