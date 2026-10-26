@@ -1497,3 +1497,178 @@ measurements, the stream margin and command delivery, which run only in ReleaseS
 fmt, the four checks, the four thirty-frame headless runs and `fdt-check` all exit 0. The
 ReleaseSafe integration run passes everything except the ui_theme float comparison Step 5
 reported.
+
+## Resolution — Step 7: the court's soundtrack, proved on the Mac (2026-10-26)
+
+§9 is implemented: `scripts/m30/make_court_music.py`, the court's music and records,
+`samples/court/music.zig`, the `nocturne` mod and the evidence log. Nothing in the public
+table changed. One engine change was found necessary and made (the setup's memory, below).
+
+**The music.** The script synthesises every piece in Python (chords, bass, soft percussion and
+a melody, 48 kHz stereo) and encodes it with Step 1's reference tool at quality 4 (`0.4`), each
+with a fixed serial.
+- The court's pieces are at 96 bpm in 4/4:
+  - tracks in `content/music/tracks/`: `title` (10 bars, 25 s), `calm_a` and `calm_b` (20
+    bars, 50 s each) and `chase` (13 bars, 32.5 s);
+  - stingers in `content/music/stingers/`: `beacon` (1.6 s), `gate` (2.5 s) and `ending`
+    (3 s).
+- `nocturne`'s pieces are at 72 bpm in 3/4, so its bars are also 2.5 s: `nocturne_a` and
+  `nocturne_b` (16 bars, 40 s each) and its own `beacon`.
+- All ten files come to **1.8 MB**, against 47 MB as 16-bit WAV. §9 estimated 3 MB against
+  27 MB; the synthetic music compresses better than that estimate assumed.
+- The files sit under `tracks/` and `stingers/`, because a sound's ID derives from its path
+  and the playlists and stingers want the short names (`court:music.calm` is the playlist,
+  `court:music.tracks.calm_a` its sound).
+
+**The records** (`court.fdt`):
+- the four tracks are `foundry:sound` records with `stream true`; the stingers derive
+  resident sounds from their paths;
+- the three playlists are at tempo 96 in 4/4, the calm one shuffled at gain 0.8;
+- every crossfade is **one bar (2.5 s), not the 2 s default**: a track then begins on its
+  predecessor's bar line, so their beats coincide through the crossfade. With 2 s, two
+  tracks at 96 bpm would overlap 0.125 s off the beat;
+- the three stingers, with ducks of 0.5, 0.4 and none.
+
+`court:music.main`, of the court's own schema `court:music_set`, says which record plays when,
+so `music.zig` names no music itself (I5).
+
+**Two places the design was sharpened:**
+- **The chase is not at the hearing distance.** §9 said chase while the warden is within the
+  sound set's `hearing_distance`. That is 14 m, and the court is smaller than that: the warden
+  is always within it, so the chase would never end. The music set has its own
+  `chase_distance`, 3 m, which the warden comes within only when it passes near the player.
+  The design's two-second hold is `chase_hold`. Both are counted in playing ticks, so a pause holds the chase where it
+  was.
+- **The ending lands on a beat, not a bar.** The ending fades the music over a second
+  (`ending_fade`), and a bar at 96 bpm is 2.5 s, so a bar-quantized ending could arrive after
+  more than a second of silence. The stinger is asked first, so it takes its beat from the
+  music before `stop` fades it.
+
+**`music.zig`** maps the game's state to calls, as `sounds.zig` maps events:
+- the title plays `title`;
+- `playing` plays `calm`, or `chase` while the warden has been within `chase_distance` in the
+  last `chase_hold` seconds;
+- entering `paused` calls `setGain(0.3, 0.25)`, and leaving it `setGain(1, 0.25)`;
+- the beacon and gate events play their stingers;
+- won, caught and fell play `ending` and then `stop(1.0)`.
+
+It asks for a playlist only when the answer changes. It reads the game and the game never
+reads it (I9): the scripted runs' replays still match a fresh simulation at every tick. The
+court now hands the mixer `engine.tasks()`, so its streams decode on the background pool.
+`Sounds.frame` no longer calls `Mixer.update`; the host calls it, then `Music.update`, inside
+one profiler scope, `audio`, which is criterion 4's measure.
+
+**The evidence** (`FOUNDRY_COURT_MUSIC_LOG=on|off`, any other value refusing to start).
+`Evidence.check` takes each start from `Music.starts`, waits for `Mixer.startedAt`, and counts
+it:
+- exact, or missed if it began on another frame;
+- cancelled if it retired before it began, as a stop retires the track scheduled behind the
+  one fading out. Nothing was heard late, so it is not a miss;
+- lost if the sequencer's ring overwrote it before it was read.
+
+The log has a line per start, and the counters every 600 frames (ten seconds at 60 Hz) and at
+exit. A scripted run now also fails unless the music is clean: no start missed or lost, and
+no underrun, late start or refused call.
+
+**The ten-minute run is a fourth script, `soundtrack`.** `play.zig` gains a `wait` step (frames
+of doing nothing, in any phase), and the win route is split at the ledge beacon. One pass:
+- 30 s on the title, past its loop;
+- play, and 15 s standing where the warden passes, so the music turns to the chase and back;
+- the first beacon, and a 5 s pause;
+- the other two beacons, then a minute far from the warden, long enough for the calm
+  playlist to cross from one track to the next;
+- the gate and a win;
+- caught, then fell, each restarted;
+- back to the title.
+
+Five passes and Quit come to **40,553 frames, 11.3 minutes**. The cost collector's bound grew
+from 4,096 frames to 65,536, so a run keeps every frame, and it moved to the heap.
+
+**Found and fixed: a streamed sound's setup held a third more than it used.**
+- Criterion 4's second half was measured in a court test, by counting what the mixer
+  allocates for each track. The four tracks held **3.91 MB**, against 30.24 MB as 16-bit
+  WAV: 7.7 times smaller, short of the 8.
+- The files are 1.26 MB. The rest was each track's setup header: **662 KiB of arena for
+  about 470 KiB of tables**. The arena's growth was the slack, plus the VQ multiplicands,
+  which are needed only while the values are expanded.
+- `vorbis.parseSetup` now parses the packet twice. The first pass, into scratch, measures
+  what it asks for. The second fills one allocation of exactly that size, plus each
+  allocation's worst-case alignment padding. The multiplicands go to scratch, freed when the
+  parse ends.
+- The second parse reads the same bits, so it asks for the same allocations in the same
+  order, and decoding is unchanged: every decoder pin and fixture still passes.
+- The tracks now hold **3.18 MB: 9.5 times smaller** than their WAV. The test holds it to the
+  eighth.
+
+**Tests.** Seven new court tests:
+- in `music.zig`, each phase's playlist, an inert soundtrack, the chase hold, and what a clean
+  run is;
+- in `music_tests.zig`, against the real files on the stepped null device with immediate
+  tasks:
+  - the tracks stream within the eighth and the stingers stay resident;
+  - the title's switch to calm lands on its bar and a beacon on its beat, with the evidence
+    agreeing;
+  - `nocturne` replaces the calm playlist (72 bpm, 3/4, its two tracks) and the beacon's
+    sound, and plays them on its own 40,000-frame beat.
+
+The build compiles `nocturne` against core and court, as it compiles `noon`, and installs it as
+an optional package, never selected by default.
+
+**Guards verified by mutation.** Each was broken, `court-test` run, and the file restored. Each
+of these failed it:
+- the chase hold ignored;
+- an exact start counted as missed;
+- underruns left out of a clean run;
+- `playing` ignoring the chase;
+- the setup buffer without its alignment padding;
+- `stream true` removed from a track;
+- `nocturne`'s stinger written as a new record instead of an override.
+
+**Runtime evidence:** M5, SDL3 `cocoa`, Metal, ReleaseSafe, 4× MSAA and shadows.
+- `zig build dist -Dapp=court` staged the bundle with all seven `.ogg` files (revision
+  `a6ca12f+m30-step7`).
+- Its zip was extracted into scratch and made read-only, then run with `PATH=/usr/bin:/bin`
+  and a disposable preferences root. The 50 bundle files hash the same after the runs.
+
+| Run | Frames | Starts asked / on their frame / cancelled / pending | Underruns, late starts, commands dropped, refused | `audio` median / p95 |
+| --- | --- | --- | --- | --- |
+| soundtrack 1 | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0015 / 0.0033 ms |
+| soundtrack 2 | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0015 / 0.0041 ms |
+| soundtrack 3 | 39,534 (interrupted) | 78 / 74 / 4 / 0 | 0, 0, 0, 0 | 0.0006 / 0.0025 ms |
+| nocturne soundtrack | 40,553 | 86 / 80 / 5 / 1 | 0, 0, 0, 0 | 0.0006 / 0.0016 ms |
+
+- **No start missed**, against criterion 3. The one pending at exit was asked within the
+  second before Quit.
+- `audio`'s p95 is about a twenty-fifth of the 0.10 ms budget.
+- Every run played all 573 sounds it asked for and dropped no event or skinned draw.
+  Its replay matched a fresh simulation at every tick.
+- **The third run did not finish its script.** Losing the window's focus pauses the game
+  (M26 Step 12), and a script stops at a pause it did not ask for, as interrupted.
+  - The first attempt lost focus at tick 22,650, in its third pass. Its music was clean to
+    that point: 44 asked, 42 exact, 2 cancelled.
+  - The second lost it at tick 38,616, in the minute's wait of its fifth pass, after 11.0
+    minutes.
+  - Both happened while the window sat idle beside the ledge. What took the focus is not
+    known from inside the run. Runs 1, 2 and `nocturne` never lost it.
+  - Criteria 2–4 are measured over the run's time, and the second attempt's 39,534 frames
+    are more than ten minutes, with nothing missed, underrun, late, dropped or refused.
+  - What it did not reach is its last pass's endings, which runs 1, 2, `nocturne` and the
+    scripted endings below cover.
+- **Criterion 6:** `nocturne.fpk` and its music were copied into the user mod root and
+  selected with `FOUNDRY_COURT_PACKAGES=nocturne:content`, then removed by exact path.
+  - The calm tracks and the beacon's stinger that started were `nocturne`'s.
+  - The title, chase, gate and ending were the court's.
+- **Criterion 7:** the scripted endings are unchanged.
+  - Base win: 1,219 frames, 73 of 73 sounds.
+  - Caught: 110 frames, 5 of 5.
+  - Fell: 186 frames, 10 of 10.
+  - `nocturne` win: 1,215 frames, 73 of 73.
+  - Each matched its replay and finished its menu-driven script, with music clean.
+  - Frame work's p95 stayed under 1.1 ms in every run.
+- The 2D samples' headless runs pass in the bar, unchanged.
+
+**Listening.** The owner is offered a listening check, `FOUNDRY_COURT_PLAY` unset, from the
+same bundle. It is not an exit criterion (§12).
+
+**Bar.** `zig build test` passes 2,376 of 2,379, with the same three skips (M27's, the stream margin and command delivery). fmt, the four checks, the four thirty-frame
+headless runs and `fdt-check` all exit 0. `dist -Dapp=court` stages.

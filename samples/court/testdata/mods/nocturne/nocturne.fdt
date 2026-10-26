@@ -1,0 +1,13 @@
+# Overrides replace whole records (music.md §9). The court's calm playlist becomes two tracks
+# of this package's own, at 72 bpm in 3/4, and the beacon's stinger plays this package's
+# sound. The game's code chooses when each plays; what plays is content.
+foundry:sound nocturne:music.nocturne_a { source "music/nocturne_a.ogg" stream true }
+foundry:sound nocturne:music.nocturne_b { source "music/nocturne_b.ogg" stream true }
+
+foundry:music_playlist court:music.calm {
+    tracks [ nocturne:music.nocturne_a  nocturne:music.nocturne_b ]
+    order "sequential"  crossfade 2.5  gain 0.9  tempo 72  beats_per_bar 3
+}
+foundry:music_stinger court:music.beacon {
+    sound nocturne:music.beacon  quantize "beat"  duck 0.6  duck_fade 0.15
+}

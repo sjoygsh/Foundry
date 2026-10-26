@@ -163,6 +163,57 @@ sound_set court:sounds.main {
     click court:sounds.click
 }
 
+# The court's soundtrack (music.md §9), written by scripts/m30/make_court_music.py at 96 bpm
+# in 4/4. Tracks stream, and stingers stay resident so they can land a tenth of a second
+# after they are asked for. Each crossfade is one bar, so a track's beats meet the next's.
+foundry:sound court:music.tracks.title { source "music/tracks/title.ogg" stream true }
+foundry:sound court:music.tracks.calm_a { source "music/tracks/calm_a.ogg" stream true }
+foundry:sound court:music.tracks.calm_b { source "music/tracks/calm_b.ogg" stream true }
+foundry:sound court:music.tracks.chase { source "music/tracks/chase.ogg" stream true }
+
+foundry:music_playlist court:music.title {
+    tracks [ court:music.tracks.title ]
+    crossfade 2.5  tempo 96  beats_per_bar 4
+}
+foundry:music_playlist court:music.calm {
+    tracks [ court:music.tracks.calm_a  court:music.tracks.calm_b ]
+    order "shuffle"  crossfade 2.5  gain 0.8  tempo 96  beats_per_bar 4
+}
+foundry:music_playlist court:music.chase {
+    tracks [ court:music.tracks.chase ]
+    crossfade 2.5  tempo 96  beats_per_bar 4
+}
+
+foundry:music_stinger court:music.beacon {
+    sound court:music.stingers.beacon  quantize "beat"  duck 0.5  duck_fade 0.1
+}
+foundry:music_stinger court:music.gate {
+    sound court:music.stingers.gate  quantize "bar"  duck 0.4  duck_fade 0.2
+}
+# The ending lands on a beat, not a bar: the music fades out beneath it over a second, and
+# a bar at 96 bpm is two and a half.
+foundry:music_stinger court:music.ending {
+    sound court:music.stingers.ending  quantize "beat"  duck 1
+}
+
+# Which music plays when (`music.zig`). The warden is chased at `chase_distance`, well
+# inside the sound set's hearing distance, which covers the whole court; the chase lasts
+# `chase_hold` seconds past the last moment the warden was that close.
+@schema music_set {
+    title id  calm id  chase id
+    beacon id  gate id  ending id
+    chase_distance f32  chase_hold f32
+    pause_gain f32  pause_fade f32
+    ending_fade f32
+}
+music_set court:music.main {
+    title court:music.title  calm court:music.calm  chase court:music.chase
+    beacon court:music.beacon  gate court:music.gate  ending court:music.ending
+    chase_distance 3  chase_hold 2
+    pause_gain 0.3  pause_fade 0.25
+    ending_fade 1
+}
+
 # Every string the court shows. A translation overrides this one record.
 @schema text {
     title string  goal string  goal_detail string  controls string

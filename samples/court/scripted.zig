@@ -19,6 +19,7 @@ pub const ScriptKind = enum {
     win,
     caught,
     fell,
+    soundtrack,
 
     pub fn parse(text: []const u8) ?ScriptKind {
         return std.meta.stringToEnum(ScriptKind, text);
@@ -29,6 +30,7 @@ pub const ScriptKind = enum {
             .win => &play.win,
             .caught => &play.caught,
             .fell => &play.fell,
+            .soundtrack => &play.soundtrack,
         };
     }
 };
@@ -43,6 +45,8 @@ pub const ScriptDriver = struct {
     script: *const play.Script,
     step: usize = 0,
     ticks: u32 = 0,
+    /// Frames spent in the current `wait`.
+    waited: u32 = 0,
     done: bool = false,
     /// Why the script stopped short, if it did. Null with `done` set means it succeeded.
     failure: ?Failure = null,
@@ -106,6 +110,15 @@ pub const ScriptDriver = struct {
                     if (game.ended() and isEnding(phase)) return self.fail(.wrong_ending);
                     return out;
                 },
+                .wait => |frames| {
+                    if (self.waited < frames) {
+                        self.waited += 1;
+                        return out;
+                    }
+                    self.waited = 0;
+                    self.step += 1;
+                    continue;
+                },
                 else => {},
             }
             // A move. It needs a game in play; an ending is for the next `expect` to judge.
@@ -145,7 +158,7 @@ pub const ScriptDriver = struct {
                     if (g.progress >= 1.0) self.step += 1;
                 },
                 .stand => {},
-                .press, .expect => unreachable,
+                .press, .expect, .wait => unreachable,
             }
             return out;
         }

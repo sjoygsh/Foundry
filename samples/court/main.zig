@@ -5,9 +5,10 @@
 //! fixed ticks from one `Intent`. A menu's choice reaches the game as that intent's action.
 //!
 //! Host bootstrap: `--msaa=1|4`, `--shadows=on|off`, and for scripted runs
-//! `FOUNDRY_COURT_FRAMES`, `FOUNDRY_COURT_PLAY=win|caught|fell`, `FOUNDRY_COURT_WORKERS`,
-//! `FOUNDRY_COURT_SAVE_DIR` (a disposable preferences root) and `FOUNDRY_COURT_OVERLAY=1`
-//! (the debug overlay, also F1).
+//! `FOUNDRY_COURT_FRAMES`, `FOUNDRY_COURT_PLAY=win|caught|fell|soundtrack`, `FOUNDRY_COURT_WORKERS`,
+//! `FOUNDRY_COURT_SAVE_DIR` (a disposable preferences root), `FOUNDRY_COURT_OVERLAY=1`
+//! (the debug overlay, also F1) and `FOUNDRY_COURT_MUSIC_LOG=on|off` (`music.zig`'s
+//! evidence: every scheduled start, and the counters every ten seconds).
 const std = @import("std");
 const app = @import("app");
 const asset = @import("asset");
@@ -26,6 +27,7 @@ const menus_mod = @import("menus.zig");
 const hud = @import("hud.zig");
 const scripted = @import("scripted.zig");
 const sounds_mod = @import("sounds.zig");
+const music_mod = @import("music.zig");
 const Preferences = @import("prefs.zig").Preferences;
 const Text = @import("text.zig").Text;
 const Settings = @import("settings.zig").Settings;
@@ -283,13 +285,19 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     for (diags.items.items) |d| log.warn("content: {s}", .{d.message});
     const packages = try mods.contentPackages(gpa);
     defer gpa.free(packages);
+    const music_log = if (os.envVar("FOUNDRY_COURT_MUSIC_LOG")) |val| blk: {
+        if (std.mem.eql(u8, val, "on")) break :blk true;
+        if (std.mem.eql(u8, val, "off")) break :blk false;
+        log.err("unknown FOUNDRY_COURT_MUSIC_LOG '{s}' (expected on|off)", .{val});
+        return error.InvalidMusicLog;
+    } else false;
     const workers = if (os.envVar("FOUNDRY_COURT_WORKERS")) |s| std.fmt.parseInt(u16, s, 10) catch return error.InvalidWorkers else null;
 
     // A scripted play-through is a proof: an unknown name, a wrong ending or a run that
     // does not finish fails the process instead of leaving a window walking nowhere.
     const play_mode: ?scripted.ScriptKind = if (os.envVar("FOUNDRY_COURT_PLAY")) |val|
         scripted.ScriptKind.parse(val) orelse {
-            log.err("unknown FOUNDRY_COURT_PLAY '{s}' (expected win|caught|fell)", .{val});
+            log.err("unknown FOUNDRY_COURT_PLAY '{s}' (expected win|caught|fell|soundtrack)", .{val});
             return error.InvalidPlayScript;
         }
     else
@@ -339,7 +347,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     screens.panels_open = engine.os.envVar("FOUNDRY_COURT_OVERLAY") != null;
 
     // The mixer is the game's (audio.md §7). No device is a configuration, not a fault.
-    const mixer: ?*audio.Mixer = audio.Mixer.init(gpa, engine.platform, &engine.assets, .{}) catch |err| blk: {
+    // Its streams decode on the engine's background pool, beside the frame (music.md §6.2).
+    const mixer: ?*audio.Mixer = audio.Mixer.init(gpa, engine.platform, &engine.assets, .{ .tasks = engine.tasks() }) catch |err| blk: {
         log.warn("no audio device ({t}); the court is silent", .{err});
         break :blk null;
     };
@@ -354,6 +363,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         m.setMasterGain(prefs.volume.value);
     }
     var sounds: sounds_mod.Sounds = .{ .mixer = mixer, .set = sounds_mod.SoundSet.find(&engine.store) };
+    // Torn down before the mixer, whose voices it fades.
+    var soundtrack = music_mod.Soundtrack.init(gpa, mixer, &engine.assets, music_mod.MusicSet.find(&engine.store), engine.step_delta.toSecondsF32(), music_log);
+    defer soundtrack.deinit();
 
     var content = render3d.Content.init(gpa, &renderer, &engine.assets, .default);
     defer content.deinit();
@@ -381,7 +393,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         fresh.warden_stride = game.warden_stride;
     }
     var replay_ticks: u64 = 0;
-    var costs: Costs = .{};
+    const costs = try gpa.create(Costs);
+    defer gpa.destroy(costs);
+    costs.* = .{};
 
     var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
     var menus: menus_mod.Menus = .{};
@@ -480,6 +494,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
                 defer scope.end();
                 try game.step(intent, step.delta.toSecondsF32());
                 sounds.onEvents(&game);
+                soundtrack.onEvents(&game);
             }
             if (replay) |*fresh| {
                 const scope = engine.beginScope("court.replay");
@@ -506,7 +521,17 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             break :blk false;
         };
         skin_dropped += renderer.frameStats().skin_budget_dropped;
+        {
+            // Criterion 4's measure (music.md §1): the main thread's audio work.
+            const scope = engine.beginScope("audio");
+            defer scope.end();
+            if (mixer) |m| m.update();
+            soundtrack.update();
+        }
         sounds.frame(&game);
+        soundtrack.frame(&game);
+        // Every ten seconds at the court's 60 Hz.
+        if (music_log and engine.frame_index % 600 == 0) soundtrack.report("so far");
         // The null device has no thread: a frame's worth of audio is mixed here, so voices
         // end and a long headless run plays every sound it starts.
         if (comptime platform.backend == .null) if (mixer) |m| {
@@ -540,6 +565,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     log.info("sounds: {d} asked for, {d} played, {d} dropped; {d} mixer command(s) and {d} event(s) dropped", .{
         sounds.requested, sounds.played, sounds.dropped, commands_dropped, game.events_dropped,
     });
+    soundtrack.report("at exit");
     if (script_driver) |d| {
         log.info("replay: {d} tick hashes matched a fresh simulation", .{replay_ticks});
         log.info("play '{s}': {d} of {d} step(s) in {d} frames", .{ @tagName(play_mode.?), d.step, d.script.steps.len, d.ticks });
@@ -556,6 +582,11 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             log.err("play '{s}' dropped something: {d} sound(s), {d} mixer command(s), {d} event(s), {d} skinned draw(s), {d} frame(s)", .{
                 @tagName(play_mode.?), sounds.dropped, commands_dropped, game.events_dropped, skin_dropped, skipped,
             });
+            return error.PlayScriptFailed;
+        }
+        // Criteria 2 and 3: every start on its frame, and nothing late, underrun or refused.
+        if (!soundtrack.clean()) {
+            log.err("play '{s}': the music was not clean (see the line above)", .{@tagName(play_mode.?)});
             return error.PlayScriptFailed;
         }
     }
@@ -631,6 +662,8 @@ test {
     _ = @import("game_tests.zig");
     _ = @import("menus.zig");
     _ = @import("sounds.zig");
+    _ = @import("music.zig");
+    _ = @import("music_tests.zig");
     _ = @import("prefs.zig");
     _ = @import("text.zig");
     _ = @import("hud.zig");

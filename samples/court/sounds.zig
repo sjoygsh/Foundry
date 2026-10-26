@@ -160,11 +160,10 @@ pub const Sounds = struct {
         _ = self.start(set.click, .{ .gain = 0.5 });
     }
 
-    /// Once per frame: the mixer's own frame, the ambience from the title onward, and the
+    /// Once per frame, after the mixer's update: the ambience from the title onward, and the
     /// moving gate followed as the player turns.
     pub fn frame(self: *Sounds, game: *const game_mod.Game) void {
         const mixer = self.mixer orelse return;
-        mixer.update();
         const set = self.set orelse return;
         if (self.ambience.isNone() or !mixer.isPlaying(self.ambience)) {
             self.ambience = self.start(set.ambience, .{ .gain = set.ambience_gain, .looping = true });

@@ -1,7 +1,29 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 6 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 7**: the court's soundtrack (`make_court_music.py`, the tracks and stingers, the records, `samples/court/music.zig`, the `nocturne` mod and the evidence log), proved on the Mac. No sample plays music yet, and none hands the mixer its background pool. M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 7 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 8**: Windows/Vulkan on the Arc PC. That means a fresh clone in a worktree, the null and Vulkan suites, the decoder's speed test and pins against the Mac's, the stream margin, and the relocated court's soundtrack run three times (with and without validation), plus its endings. Nothing has run on the PC for M30 yet. M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 7 is done (2026-10-26): the court's soundtrack, on the Mac.**
+- `scripts/m30/make_court_music.py` synthesises and encodes the court's music at 96 bpm in 4/4: four streamed tracks and three resident stingers. It also writes `nocturne`'s at 72 bpm in 3/4. All ten files come to 1.8 MB.
+- The court's records: three playlists with one-bar crossfades, three stingers, and `court:music.main`, which says which plays when.
+- `samples/court/music.zig`:
+  - title, calm, and chase within 3 m with a 2 s hold;
+  - beacon and gate stingers;
+  - the pause duck, and the ending stinger with a 1 s fade.
+- The mixer now decodes on the engine's background pool. `FOUNDRY_COURT_MUSIC_LOG=on` writes every start's asked and actual frame, and a scripted run fails unless the music is clean.
+- `FOUNDRY_COURT_PLAY=soundtrack` is a new 11.3-minute script (five passes) built on a new `wait` step.
+- `testdata/mods/nocturne` replaces the calm playlist and the beacon's stinger, with no code.
+- Found and fixed: a streamed sound's Vorbis setup sat in a grown arena (662 KiB for 470 KiB of tables), which put the court's tracks at 7.7×, short of criterion 4's eighth. `parseSetup` now parses twice into one exact allocation, and the tracks are 9.5× smaller than 16-bit WAV.
+- Relocated read-only ReleaseSafe bundle on the M5 with Metal:
+  - two complete soundtrack runs and a `nocturne` run: 86 starts asked each, 80 on their frame, 5 cancelled by a stop, none missed;
+  - zero underruns, late starts, dropped commands or refusals;
+  - `audio` p95 0.0016–0.0041 ms against 0.10 ms;
+  - the scripted endings unchanged.
+- The third run lost window focus twice, while idle at the ledge, so its script stopped as interrupted. The second attempt still had 11.0 minutes of clean music (Resolution).
+- Seven guards each failed `court-test` when broken. The owner is offered a listening check.
+
+Bar **2,376/2,379** (the same three skips), all exit 0, and `dist -Dapp=court` stages.
+
 
 **M30 Step 6 is done (2026-10-26): music records and `audio.Music`.**
 - `foundry:music_playlist` and `foundry:music_stinger` (`asset/music.zig`), with every refusal named, at its line by `fpack` and the editor. A track that is not a sound is refused where it resolves.

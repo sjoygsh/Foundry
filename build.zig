@@ -840,6 +840,19 @@ pub fn build(b: *std.Build) void {
                     .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
                 });
                 court_test_options.addOptionPath("noon_package", noon.fpk);
+                // M30's content-only music mod (`music.md` §9). Its tracks are sources, so
+                // the sources go beside its package as the court's do.
+                const nocturne = release.compilePackage(b, fpack, .{
+                    .dir = "samples/court/testdata/mods/nocturne",
+                    .stem = "nocturne",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                court_test_options.addOptionPath("nocturne_package", nocturne.fpk);
+                court_test_options.addOptionPath("nocturne_sources", b.path("samples/court/testdata/mods/nocturne"));
+                court_test_options.addOptionPath("sources", b.path(pkg.dir));
+                // Optional in the installation, never automatically selected.
+                b.getInstallStep().dependOn(&b.addInstallFileWithDir(nocturne.fpk, .prefix, "content/nocturne.fpk").step);
+                b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = b.path("samples/court/testdata/mods/nocturne"), .install_dir = .prefix, .install_subdir = "content/nocturne" }).step);
             }
             if (std.mem.eql(u8, pkg.stem, "sandbox3d")) {
                 // Staged as the install stages it: the sources and the compiled assets in the

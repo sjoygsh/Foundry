@@ -229,7 +229,9 @@ pub const Block = struct {
 /// Everything the setup header declares, parsed once per sound and shared read-only by every
 /// stream of it (`music.md` §6.1). It owns its memory.
 pub const Setup = struct {
-    arena: std.heap.ArenaAllocator,
+    /// Every table below, in one allocation of exactly the size they need (`parseSetup`).
+    gpa: Allocator,
+    buffer: []align(setup_align) u8,
     codebooks: []const Codebook,
     floors: []const Floor1,
     residues: []const Residue,
@@ -239,10 +241,13 @@ pub const Setup = struct {
     blocks: [2]Block,
 
     pub fn deinit(self: *Setup) void {
-        self.arena.deinit();
+        self.gpa.free(self.buffer);
         self.* = undefined;
     }
 };
+
+/// The strictest alignment of anything a setup allocates.
+const setup_align = @max(@alignOf(Codebook), @alignOf(Floor1), @alignOf(Residue), @alignOf(Mapping), @alignOf(Mode));
 
 /// The three headers of a checked stream, and its length.
 pub const Headers = struct {
@@ -360,16 +365,34 @@ fn skipBytes(bits: *Bits, n: u32) DecodeError!void {
     bits.pos += @as(usize, n) * 8;
 }
 
-/// Allocation from the setup's arena, counted against `Limits.max_setup_bytes` first.
+/// Allocation for the setup, counted against `Limits.max_setup_bytes` first.
 const Budget = struct {
+    /// Where what the setup keeps is allocated.
     arena: Allocator,
+    /// Where what only the parse needs is, if not in `arena`.
+    scratch: ?Allocator = null,
     left: usize,
+    /// What `alloc` has been asked for, and how many times: the size of the setup's buffer.
+    requested: usize = 0,
+    count: usize = 0,
 
     fn alloc(self: *Budget, comptime T: type, n: u64) DecodeError![]T {
+        try self.charge(T, n);
+        self.requested += @intCast(n * @sizeOf(T));
+        self.count += 1;
+        return self.arena.alloc(T, @intCast(n));
+    }
+
+    /// Memory the parse needs and the setup does not keep.
+    fn temp(self: *Budget, comptime T: type, n: u64) DecodeError![]T {
+        try self.charge(T, n);
+        return (self.scratch orelse self.arena).alloc(T, @intCast(n));
+    }
+
+    fn charge(self: *Budget, comptime T: type, n: u64) DecodeError!void {
         const bytes = std.math.mul(u64, n, @sizeOf(T)) catch return tooLarge();
         if (bytes > self.left) return tooLarge();
         self.left -= @intCast(bytes);
-        return self.arena.alloc(T, @intCast(n));
     }
 
     fn tooLarge() DecodeError {
@@ -379,14 +402,34 @@ const Budget = struct {
 };
 
 /// Vorbis I §4.2.4.
+///
+/// A streamed sound keeps its setup for as long as it is loaded, so the setup is held in one
+/// allocation of the size it needs, not in an arena that grew to fit it (M30 Step 7: an arena
+/// held 662 KiB of a quality-4 stereo setup's 470 KiB). The packet is parsed twice: once into
+/// scratch to measure, once into the buffer. The second parse reads the same bits, so it asks
+/// for the same allocations in the same order, and each needs at most `setup_align` padding.
 pub fn parseSetup(gpa: Allocator, packet: []const u8, info: Info, limits: Limits) DecodeError!Setup {
-    var arena: std.heap.ArenaAllocator = .init(gpa);
-    errdefer arena.deinit();
-    var budget: Budget = .{ .arena = arena.allocator(), .left = limits.max_setup_bytes };
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    var measure: Budget = .{ .arena = scratch.allocator(), .left = limits.max_setup_bytes };
+    _ = try parseSetupInto(&measure, packet, info);
+
+    const buffer = try gpa.alignedAlloc(u8, .fromByteUnits(setup_align), measure.requested + measure.count * setup_align);
+    errdefer gpa.free(buffer);
+    var fixed: std.heap.FixedBufferAllocator = .init(buffer);
+    var budget: Budget = .{ .arena = fixed.allocator(), .scratch = scratch.allocator(), .left = limits.max_setup_bytes };
+    var setup = try parseSetupInto(&budget, packet, info);
+    setup.gpa = gpa;
+    setup.buffer = buffer;
+    return setup;
+}
+
+/// The setup's tables, allocated through `budget`; `gpa` and `buffer` are the caller's to set.
+fn parseSetupInto(budget: *Budget, packet: []const u8, info: Info) DecodeError!Setup {
     var bits = try checkPreamble(packet, 5, "setup");
 
     const codebooks = try budget.alloc(Codebook, try field(&bits, 8) + 1);
-    for (codebooks, 0..) |*book, i| book.* = try parseCodebook(&bits, &budget, i);
+    for (codebooks, 0..) |*book, i| book.* = try parseCodebook(&bits, budget, i);
 
     // Time-domain transforms: placeholders in Vorbis I, each of which must be zero.
     const times = try field(&bits, 6) + 1;
@@ -395,13 +438,13 @@ pub fn parseSetup(gpa: Allocator, packet: []const u8, info: Info, limits: Limits
     };
 
     const floors = try budget.alloc(Floor1, try field(&bits, 6) + 1);
-    for (floors, 0..) |*floor, i| floor.* = try parseFloor(&bits, &budget, codebooks, i);
+    for (floors, 0..) |*floor, i| floor.* = try parseFloor(&bits, budget, codebooks, i);
 
     const residues = try budget.alloc(Residue, try field(&bits, 6) + 1);
-    for (residues, 0..) |*residue, i| residue.* = try parseResidue(&bits, &budget, codebooks, i);
+    for (residues, 0..) |*residue, i| residue.* = try parseResidue(&bits, budget, codebooks, i);
 
     const mappings = try budget.alloc(Mapping, try field(&bits, 6) + 1);
-    for (mappings, 0..) |*mapping, i| mapping.* = try parseMapping(&bits, &budget, info, floors.len, residues.len, i);
+    for (mappings, 0..) |*mapping, i| mapping.* = try parseMapping(&bits, budget, info, floors.len, residues.len, i);
 
     const modes = try budget.alloc(Mode, try field(&bits, 6) + 1);
     for (modes, 0..) |*mode, i| {
@@ -414,11 +457,11 @@ pub fn parseSetup(gpa: Allocator, packet: []const u8, info: Info, limits: Limits
         mode.mapping = @intCast(mapping);
     }
     if (!try framing(&bits)) return invalid("the setup header's framing bit is not set", .{});
-    // Before the arena is copied out below, so it holds these allocations too.
-    const blocks: [2]Block = .{ try buildBlock(&budget, info.blocksize[0]), try buildBlock(&budget, info.blocksize[1]) };
+    const blocks: [2]Block = .{ try buildBlock(budget, info.blocksize[0]), try buildBlock(budget, info.blocksize[1]) };
 
     return .{
-        .arena = arena,
+        .gpa = undefined,
+        .buffer = undefined,
         .codebooks = codebooks,
         .floors = floors,
         .residues = residues,
@@ -614,7 +657,8 @@ fn parseValues(bits: *Bits, budget: *Budget, lookup: u32, entries: u32, dimensio
     if (lookup_values * value_bits > bits.bytes.len * 8 - bits.pos) {
         return invalid("codebook {d}'s lookup values run past the end of the setup header", .{index});
     }
-    const multiplicands = try budget.alloc(u32, lookup_values);
+    // Needed only to expand the values below, so not kept.
+    const multiplicands = try budget.temp(u32, lookup_values);
     for (multiplicands) |*m| m.* = try field(bits, value_bits);
 
     const values = try budget.alloc(f32, @as(u64, entries) * dimensions);

@@ -3,15 +3,20 @@ const std = @import("std");
 const core = @import("core");
 const log = core.log.scoped(.court);
 
+/// About eighteen minutes at 60 Hz, so a ten-minute run keeps every frame (M30 Step 7). It
+/// is large, so a host allocates it rather than holding it on the stack.
 pub const Costs = struct {
-    const capacity = 4096;
+    const capacity = 1 << 16;
     frame: [capacity]i64 = undefined,
     character: [capacity]i64 = undefined,
     skin: [capacity]i64 = undefined,
+    audio: [capacity]i64 = undefined,
     len: usize = 0,
     character_len: usize = 0,
     skin_len: usize = 0,
+    audio_len: usize = 0,
     omitted: usize = 0,
+    scratch: [capacity]i64 = undefined,
 
     pub fn add(self: *Costs, recorder: *const core.profile.Recorder) void {
         const frame = recorder.latest() orelse return;
@@ -21,8 +26,10 @@ pub const Costs = struct {
         }
         var character: i64 = 0;
         var skin: i64 = 0;
+        var audio: i64 = 0;
         var moved = false;
         var skinned = false;
+        var mixed = false;
         // Waiting for the display is presentation, not work, as the pacing sleep is. Where a
         // FIFO swapchain makes the wait depends on the system: Wayland's is in acquiring the
         // next image (M26 Step 7), and the Windows PC's was in presenting the last (Step 12),
@@ -39,6 +46,10 @@ pub const Costs = struct {
                 skin += span.durationNs();
                 skinned = true;
             }
+            if (std.mem.eql(u8, name, "audio")) {
+                audio += span.durationNs();
+                mixed = true;
+            }
         }
         self.frame[self.len] = frame.total_ns - presenting;
         self.len += 1;
@@ -50,16 +61,20 @@ pub const Costs = struct {
             self.skin[self.skin_len] = skin;
             self.skin_len += 1;
         }
+        if (mixed) {
+            self.audio[self.audio_len] = audio;
+            self.audio_len += 1;
+        }
     }
 
-    pub fn report(self: *const Costs) void {
-        var scratch: [capacity]i64 = undefined;
+    pub fn report(self: *Costs) void {
         for ([_]struct { name: []const u8, values: []const i64, budget: f64 }{
             .{ .name = "frame work (no pacing sleep, image acquire or present; includes scripted replay)", .values = self.frame[0..self.len], .budget = 16.67 },
             .{ .name = "character (whole game tick and sound dispatch upper bound)", .values = self.character[0..self.character_len], .budget = 0.25 },
             .{ .name = "render.skin (one warden)", .values = self.skin[0..self.skin_len], .budget = 0.25 },
+            .{ .name = "audio (Mixer.update and Music.update, music.md criterion 4)", .values = self.audio[0..self.audio_len], .budget = 0.10 },
         }) |metric| {
-            const summary = core.profile.summarise(metric.values, &scratch);
+            const summary = core.profile.summarise(metric.values, &self.scratch);
             log.info("cost {s}: {d} frames, median {d:.4}ms p95 {d:.4}ms; budget {d:.2}ms", .{
                 metric.name, summary.count, ms(summary.median_ns), ms(summary.p95_ns), metric.budget,
             });
@@ -83,12 +98,16 @@ test "court: costs collect all frames and sum tick spans without exceeding their
     recorder.close(.{ .ns = 9 });
     recorder.open("render.skin", .{ .ns = 10 });
     recorder.close(.{ .ns = 12 });
+    recorder.open("audio", .{ .ns = 12 });
+    recorder.close(.{ .ns = 13 });
     recorder.open("render.acquire", .{ .ns = 13 });
     recorder.close(.{ .ns = 16 });
     recorder.open("render.present", .{ .ns = 17 });
     recorder.close(.{ .ns = 19 });
     recorder.endFrame(.{ .ns = 20 });
-    var costs: Costs = .{};
+    const costs = try t.allocator.create(Costs);
+    defer t.allocator.destroy(costs);
+    costs.* = .{};
     for (0..Costs.capacity + 1) |_| costs.add(&recorder);
     try t.expectEqual(Costs.capacity, costs.len);
     try t.expectEqual(@as(usize, 1), costs.omitted);
@@ -96,4 +115,5 @@ test "court: costs collect all frames and sum tick spans without exceeding their
 
     try t.expectEqual(@as(i64, 7), costs.character[0]);
     try t.expectEqual(@as(i64, 2), costs.skin[0]);
+    try t.expectEqual(@as(i64, 1), costs.audio[0]);
 }

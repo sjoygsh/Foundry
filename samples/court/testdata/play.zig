@@ -17,6 +17,8 @@ pub const Step = union(enum) {
     wait_gate,
     /// Stand still until the game stops playing: the ending is expected to arrive by itself.
     stand,
+    /// Do nothing for this many frames, in any phase: a player listening (M30 Step 7).
+    wait: u32,
     /// Press one menu key, as a person does: the arrows, Enter or Escape.
     press: Key,
     /// Wait for a phase. An ending other than the one named here fails the script.
@@ -44,7 +46,11 @@ const route_open = [_]Step{
 
 /// Around the warden's patrol by the south, over the low wall, across the gap, to the gate
 /// and through it.
-const route_rest = [_]Step{
+const route_rest = route_ledge ++ route_gate;
+
+/// Around the warden by the south, over the low wall and across the gap, lighting the other
+/// two beacons.
+const route_ledge = [_]Step{
     .{ .walk = .{ .to = .{ -3.5, 0, 4.5 }, .face = .{ -3.5, 0.5, 1.4 }, .within = 0.3 } },
     .{ .walk = .{ .to = .{ -3.5, 0, 1.4 }, .face = .{ -3.5, 0.5, 0 }, .within = 0.25 } },
     .{ .jump = .{ .to = .{ -3.5, 0, 0.3 }, .face = .{ -3.5, 0.5, 0 }, .land_z = 0.8 } },
@@ -55,6 +61,10 @@ const route_rest = [_]Step{
     .{ .jump = .{ .to = .{ 0, 0, -3.5 }, .face = .{ 0, 0.5, -3.5 }, .land_z = -3.3 } },
     .{ .walk = .{ .to = .{ 1.2, 0, -5.5 }, .face = .{ 2, 0.5, -5.5 }, .within = 0.25 } },
     .{ .use = "court:beacon.ledge" },
+};
+
+/// From the ledge beacon to the gate, and through it.
+const route_gate = [_]Step{
     .{ .walk = .{ .to = .{ 0, 0, -7 }, .face = .{ 0, 1.25, -9 }, .within = 0.25 } },
     .wait_gate,
     .{ .walk = .{ .to = .{ 0, 0, -8.6 }, .face = .{ 0, 1.25, -9 }, .within = 0.05 } },
@@ -76,6 +86,50 @@ pub const win: Script = .{ .tick_limit = 3000, .quits = true, .steps = &(start +
     .{ .press = .down },
     .{ .press = .accept },
     .{ .expect = .title },
+    .{ .press = .down },
+    .{ .press = .down },
+    .{ .press = .accept },
+}) };
+
+/// One pass of the soundtrack's run (music.md §9, M30 Step 7), from the title back to it:
+/// the title's music past its loop; play, standing where the warden passes, so the music
+/// turns to the chase and back; a beacon's stinger; a pause; the other beacons, then a minute
+/// far from the warden, long enough for the calm playlist to cross from one track to the
+/// next; the gate's stinger and a win; caught, and fell, each restarted; back to the title.
+const soundtrack_pass = [_]Step{
+    .{ .wait = 1800 },
+    .{ .press = .accept },
+    .{ .expect = .playing },
+    .{ .wait = 900 },
+} ++ route_open ++ [_]Step{
+    .{ .press = .back },
+    .{ .expect = .paused },
+    .{ .wait = 300 },
+    .{ .press = .accept },
+    .{ .expect = .playing },
+} ++ route_ledge ++ [_]Step{
+    .{ .wait = 3600 },
+} ++ route_gate ++ [_]Step{
+    .{ .wait = 300 },
+    .{ .press = .accept },
+    .{ .expect = .playing },
+    .{ .walk = .{ .to = .{ 0, 0, 2.5 }, .face = .{ 0, 1.65, 0 }, .within = 0.2 } },
+    .stand,
+    .{ .expect = .caught },
+    .{ .wait = 180 },
+    .{ .press = .accept },
+    .{ .expect = .playing },
+    .{ .walk = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
+    .{ .expect = .fell },
+    .{ .wait = 180 },
+    .{ .press = .down },
+    .{ .press = .accept },
+    .{ .expect = .title },
+};
+
+/// Five passes, a little over ten minutes at 60 Hz, then Quit from the title: the
+/// soundtrack's run. Criteria 2 and 3 read its music log.
+pub const soundtrack: Script = .{ .tick_limit = 60_000, .quits = true, .steps = &(soundtrack_pass ** 5 ++ [_]Step{
     .{ .press = .down },
     .{ .press = .down },
     .{ .press = .accept },
