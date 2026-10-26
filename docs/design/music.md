@@ -901,3 +901,96 @@ comparison, the page-sequence check and the serial check (the multiplexed and ch
 are Steps 2 and 3.
 
 **Bar:** all exit 0, with `zig build test` at **2,304/2,305** (one skip, M27's). The suite grew by the nine Ogg tests.
+
+## Resolution — Step 2: Vorbis headers and setup (2026-10-26)
+
+**`asset/vorbis.zig`** reads the three headers (§3.3), with every setup-time refusal in §3.4.
+- **`readHeaders`** runs in a fixed order, so nothing is allocated from a field that has not
+  been checked:
+  1. `ogg.scan` checks the container, and refuses a codec that is not Vorbis by name ("the
+     stream is Opus, not Vorbis; re-export as Ogg Vorbis").
+  2. The length is checked against `Limits.max_frames`, and a stream with zero frames is
+     refused.
+  3. The identification header is parsed.
+  4. The comment header is checked.
+  5. The setup header is parsed, the only step that allocates.
+- **`Setup`** owns an arena holding every codebook, floor, residue, mapping and mode. Step 3's
+  decoder and Step 5's streams share it read-only, as §6.1 planned.
+
+What implementing it settled:
+- **A memory budget for the setup**, `Limits.max_setup_bytes`, 32 MiB by default. Every arena
+  allocation is checked against it before it is made, and exceeding it is `SoundTooLarge`.
+  §3.4 had bounded the frame count but not the setup. An ordered codebook can declare 2²⁴
+  entries in a few bits, so without this a hostile file could make the setup allocate
+  gigabytes. The fixtures' setups need 124–566 KB. A test confirms the budget refuses before
+  allocating, with a failing allocator.
+- **Lookup values must fit in the packet.** A type-2 book's multiplicands are read from the
+  packet, so a count beyond its remaining bits is refused before anything is allocated.
+- **Codewords are stored bit-reversed.** Codewords are defined most significant bit first,
+  but Vorbis reads bits least significant first. Reversing them once at setup lets Step 3
+  compare directly. The specification's worked example (§3.2.1, lengths 2 4 4 4 4 2 3 3) is
+  a test.
+- **Trees:**
+  - complete trees and single-entry books are accepted, as libvorbis accepts them;
+  - an overspecified tree is refused by name;
+  - an underspecified tree with more than one entry is refused.
+
+  Disabling the overspecified check showed that the underspecified check also catches every
+  overspecified tree: an assignment with no room left always leaves a free branch behind. The
+  first check therefore only gives the refusal its right name. That is recorded here so a
+  later session does not mistake it for the only guard.
+- **More is refused than §3.4 listed:**
+  - a codebook with no dimensions or no entries;
+  - an ordered codebook whose runs pass its entries, or whose lengths pass 32 bits;
+  - a floor with more than 65 points (Vorbis I §7.2.2), or two points at one x;
+  - a residue book that has no value table (a residue decodes vectors);
+  - a mapping type other than 0, or a non-zero reserved field;
+  - a channel coupled with itself, which covers any coupling in mono;
+  - a submap index past the count.
+
+  An unsupported Vorbis version is `UnsupportedSound`. A zero channel count or a zero rate is
+  `InvalidSound`.
+- **Values are computed in `f32`, as libvorbis computes them**:
+  `multiplicand × delta + minimum + last`, left to right. `float32_unpack` is exact in `f64`
+  before the cast, so an exponent near the top overflows to infinity, and the finiteness
+  check refuses it.
+- **Floor 1 precomputes its sort order and neighbours** at setup, so Step 3's curve does no
+  searching per packet.
+
+**What the fixtures hold.** libvorbis 1.3.7 writes:
+- 32 to 44 codebooks, with at most 6,561 entries, 8 dimensions and 22-bit codewords;
+- two floors, all type 1;
+- two modes. The exception is `stereo22_qm1`, at 22.05 kHz and quality −0.1, which has one
+  mapping and one mode, with block sizes 1024/1024.
+
+`long3s` (22.05 kHz, quality 0.6) uses 512/1024 blocks, and the rest use 256/2048. Mono uses
+residue type 1, and coupled stereo uses residue type 2, except `stereo22_qm1`, which uses
+type 1.
+
+**Two paths no fixture reaches**, both for Step 3:
+- **Residue type 0**, which no current libvorbis writes. Step 3 tests its decode on a
+  hand-made packet against the specification's algorithm.
+- **A single-entry codebook.** libvorbis decodes one by reading one bit and returning the
+  entry whatever its value. Step 3 does the same, and tests it the same way.
+
+**Tests:** twelve:
+- the bit reader;
+- `ilog`, `float32_unpack` and `lookup1_values` against the specification;
+- codeword assignment and both tree refusals;
+- every fixture's headers against its reference WAV's channels, rate and length;
+- a minimal hand-written setup, then 24 copies of it, each with one field out of range, every
+  one refused with the right error;
+- every truncation of the minimal setup, and of a real one;
+- the memory budget;
+- the identification header's ten cases;
+- the comment header;
+- another codec, zero frames and too many frames.
+
+**Guards checked by breaking them:** disabling the underspecified-tree check, the finiteness
+check and the mapping's floor index each failed the suite. The overspecified check is the case
+described above.
+
+**What Step 2 does not do:** no audio packet is decoded, and `.ogg` is not yet a sound. That is
+Step 3.
+
+**Bar:** all exit 0, with `zig build test` at **2,316/2,317** (one skip, M27's), twelve tests more than Step 1.

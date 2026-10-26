@@ -54,6 +54,8 @@ pub const particle_emitter = @import("particle_emitter.zig");
 pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 /// Ogg, the container a Vorbis file is (ADR-0065).
 pub const ogg = @import("ogg.zig");
+/// Vorbis I, the codec inside it (ADR-0065).
+pub const vorbis = @import("vorbis.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -152,5 +154,6 @@ test {
     _ = ui_theme;
     _ = particle_emitter;
     _ = ogg;
+    _ = vorbis;
     _ = wav;
 }

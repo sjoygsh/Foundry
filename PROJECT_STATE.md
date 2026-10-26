@@ -1,7 +1,22 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-26
-**Current handoff: M30 Step 1 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066, accepted 2026-10-26). **Stop before Step 2**: Vorbis headers and setup. No Vorbis decoding exists yet, and `.ogg` is not yet a sound. M29 is complete (tag `m29`) and pushed.
+**Current handoff: M30 Step 2 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 3**: decoding Vorbis audio, and `foundry:sound` version 2. No audio packet is decoded yet, and `.ogg` is not yet a sound. M29 is complete (tag `m29`) and pushed.
+
+**M30 Step 2 is done (2026-10-26): Vorbis headers and setup.**
+- `asset/vorbis.zig`'s `readHeaders` checks, in order:
+  1. the container;
+  2. that the codec is Vorbis (otherwise named);
+  3. the length;
+  4. the identification header;
+  5. the comment header;
+  6. the setup: codebooks with validated Huffman trees and `f32` value tables, floor 1 with precomputed neighbours, residues, mappings and modes.
+- The setup's memory is bounded before it is allocated (`max_setup_bytes`, 32 MiB). The fixtures need 124–566 KB.
+- 24 single-field corruptions of a hand-written setup are each refused, and so is every truncation.
+- No fixture uses residue type 0 or a single-entry codebook, so Step 3 tests those on hand-made packets.
+- The underspecified-tree, finiteness and mapping-index guards each failed the suite when disabled. The overspecified check is subsumed by the underspecified one, and only names the refusal.
+
+Bar **2,316/2,317** (one skip, M27's), all exit 0.
 
 **M30 Step 1 is done (2026-10-26): the Ogg container, and the reference fixtures.**
 - `sinCosTurns` moved from `particles` to `core.math.trig`, with the particles pins unchanged.
