@@ -1,6 +1,6 @@
 # Design: M30 — Audio II: compressed audio, streamed music and music sequencing
 
-**Status:** Accepted 2026-10-26, when the owner asked for Step 1, with §14 as written. Step 1 of nine is done; its Resolution follows §15.
+**Status:** Accepted 2026-10-26, when the owner asked for Step 1, with §14 as written. **Complete 2026-10-27, tag `m30`:** all nine steps are done, and their Resolutions follow §15.
 **Date:** 2026-10-26
 **Baseline:** `e4ea4b5`, tag `m29`. M0–M29 are complete.
 **Decisions:**
@@ -1785,3 +1785,82 @@ did.
 - `%USERPROFILE%\src\Foundry-m30`;
 - `%USERPROFILE%\m30` (the bundle, scripts, the relocated install and the evidence in `s8`);
 - `%USERPROFILE%\idle-m30.ps1`.
+
+## Resolution — Step 9: Close M30 (2026-10-27)
+
+M30 is complete. §1's seven criteria hold as written:
+- criteria 1 and 5 by the decoder's and the mixer's tests, which hold on both machines;
+- criteria 2–4, 6 and 7 from relocated ReleaseSafe installs, on macOS/Metal (Step 7) and on
+  Windows/Vulkan (Step 8).
+
+The pins are one value on both machines. Every item of §13 now names its owner in the roadmap.
+
+**Contract discrepancies, resolved in their documents:**
+- `audio.md`:
+  - §11 has a dated note answering its questions:
+    - question 3, streaming, is done;
+    - question 5 is partly answered, by `stream`, with loop points going to M31;
+    - questions 1 and 2 go to M31, and question 4 to M45.
+  - §12's note records compressed formats and sequencing as done. It also corrects the
+    "game policy, not engine mechanism" bullet: the mechanism is `audio.Music` on the mixer's
+    clock, and which playlist plays when stays the game's.
+- `background.md` §1: the M30 line says done, and how streamed voices use the pool.
+- ADR-0023:
+  - A dated note under its revisit triggers records that the first two fired and were
+    answered by ADR-0065 and ADR-0066, beside the decision rather than by reopening it.
+  - The ADR is append-only, and nothing in its decisions changed.
+- `docs/ROADMAP.md`: the intent lines gain §14 item 15's "also" clauses.
+  - **M31:** voice stealing by priority, loop points within a file, and seeking by granule.
+  - **M45:** audio device change and enumeration.
+  - **M48:** M30's music: the clock, scheduled starts, fades and `audio.Music`.
+  - **M49:** music in the Lua audio bindings.
+  - **M60:** audio streamed from disk.
+  - **M110:** a music and sound editor with preview. §13 named it, though §15 left it off the
+    closing list.
+- **Found by Steps 1–8, already recorded where they belong:**
+  - the two-pass, exact Vorbis setup allocation (Step 7);
+  - one-bar crossfades and the 3 m chase distance (Step 7);
+  - the ending stinger on the beat (Step 7);
+  - frame-pure ramps with one queued `next` (Step 4);
+  - the deferred duck release (Step 6);
+  - the lookahead of one second for tracks and 0.1 s for stingers (Steps 6 and 8).
+
+**Decisions:**
+- ADR-0065 and ADR-0066 say they are implemented (tag `m30`), and `CLAUDE.md` §4.1's rows say
+  so.
+- `CLAUDE.md` §4.3: `asset` names the Vorbis decoder and the music records; `audio` names the
+  clock, scheduled starts, ramps, streamed voices and `audio.Music`.
+- §9's deferred row records M30 done.
+- `AGENTS.md`:
+  - the Vorbis reference section names the court's music script beside the fixtures';
+  - it says how to run the three optimized-only measurements: the decoder's speed and full
+    sweep, the stream margin, and command delivery.
+  - The bar itself is unchanged, because no step added a build step or a check.
+- The ROADMAP, the design index, the README and this document's status say M30 is done.
+
+**Revisit conditions:** none fired.
+- Decoding is 301× real time on the i3 and 1,119× on the M5.
+- No mutation or real file crashed the decoder.
+- No playlist needed a second tempo.
+- No run underran. ADR-0066's first condition is about a real game's load. The nearest
+  figure is Step 8's synthetic worst case, a stream queued behind the whole gallery, which
+  arrived 60 ms inside its margin with no underrun. The court never meets that case.
+
+**Open for the owner, not M30's:** the Mac's ReleaseSafe-only `ui_theme` test failure (Step 5).
+It passes in ReleaseSafe on Windows, which fits a macOS libm last bit. It is untouched by
+M30, and the bar runs Debug, where it passes.
+
+**The PC is packed up.** These were removed by exact path, 3.66 GB:
+- `src\Foundry-m30`;
+- `%USERPROFILE%\m30`, after the read-only install's ACL was reset;
+- `idle-m30.ps1`;
+- Zig's global cache in `LocalAppData`.
+
+No Foundry scheduled task remains. The toolchains (`.local\zig`, the Vulkan SDK) and everything
+else on the machine are untouched. A later Windows step clones afresh.
+
+**Bar** at the closing tree, in full:
+- `zig fmt --check`, the four `check` variants, the four thirty-frame headless runs and
+  `fdt-check` pass;
+- `zig build test` passes **2,376/2,379**, with three skips: M27's, the stream margin and
+  command delivery.

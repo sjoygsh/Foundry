@@ -1,7 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M30 Step 8 of nine is done** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before Step 9**: close M30. That means resolving the contract discrepancies music.md §15 names, moving ADR-0065/0066 into `CLAUDE.md` §4.1, updating the roadmap, the indexes and `AGENTS.md`, packing up the PC by exact path, and tagging `m30`. Nothing since M29 is pushed.
+**Current handoff: M30 is complete (2026-10-27, tag `m30`)** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before M31's design** (Audio III: spatialisation, buses and effects, plus voice stealing, loop points and seeking). Nothing since M29 is pushed; the tag `m30` is local.
+
+**M30 Step 9 is done (2026-10-27): M30 closed.**
+- Contract discrepancies resolved where they were written:
+  - `audio.md` §11 (questions 1, 3, 4 and 5) and §12 (compressed formats and sequencing done, and the "game policy" bullet corrected);
+  - `background.md` §1;
+  - a dated note on ADR-0023's first two revisit triggers.
+- The roadmap's intent lines gain M30's "also" clauses: M31 (voice stealing, loop points, seeking), M45 (device change), M48 and M49 (music in the table and Lua), M60 (disk streaming) and M110 (a music and sound editor).
+- ADR-0065 and ADR-0066 are implemented. `CLAUDE.md` §4.1, §4.3 and §9, `AGENTS.md`'s Vorbis section (the court's music script and the optimized-only measurements), the ROADMAP, the design index and the README all say M30 is done.
+- No revisit condition fired.
+- The PC is packed up by exact path (3.66 GB), with its toolchains kept.
+- Open for the owner, not M30's: the Mac's ReleaseSafe-only `ui_theme` failure, which passes on Windows.
+
+Bar **2,376/2,379** (three skips), the full bar, all exit 0.
 
 **M30 Step 8 is done (2026-10-27): Windows/Vulkan on the Arc A750.**
 - A fresh clone on the PC, `Foundry-m30`, with Steps 1–7 fetched from a bundle, detached at `df08ace`. The harness is `scripts/m30/windows.ps1`: `build` over SSH, then `desktop` from a scheduled task in the console session.

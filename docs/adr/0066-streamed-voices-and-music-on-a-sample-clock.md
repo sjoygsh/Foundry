@@ -1,6 +1,6 @@
 # ADR-0066: Streamed voices decode on the background pool, and music is sequenced on a sample clock
 
-**Status:** Accepted 2026-10-26 (the owner asked for M30 Step 1; `docs/design/music.md`); being implemented in M30
+**Status:** Accepted 2026-10-26 (the owner asked for M30 Step 1; `docs/design/music.md`); implemented in M30 (tag `m30`, 2026-10-27)
 **Date:** 2026-10-26
 
 ## Context

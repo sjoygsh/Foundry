@@ -1,6 +1,6 @@
 # ADR-0065: Foundry decodes its own Ogg Vorbis
 
-**Status:** Accepted 2026-10-26 (the owner asked for M30 Step 1; `docs/design/music.md`); being implemented in M30
+**Status:** Accepted 2026-10-26 (the owner asked for M30 Step 1; `docs/design/music.md`); implemented in M30 (tag `m30`, 2026-10-27)
 **Date:** 2026-10-26
 
 ## Context

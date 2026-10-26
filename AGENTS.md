@@ -447,11 +447,21 @@ into a scratch directory, checks them against these hashes, and builds
 | `https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.gz` | `0e982409a9c3fc82ee06e08205b1355e5c6aa4c36bca58146ef399621b0ce5ab` |
 
 ```sh
-python3 -I scripts/m30/make_fixtures.py <scratch-dir>   # rewrites engine/src/asset/testdata/vorbis/
+python3 -I scripts/m30/make_fixtures.py <scratch-dir>     # rewrites engine/src/asset/testdata/vorbis/
+python3 -I scripts/m30/make_court_music.py <scratch-dir>  # rewrites the court's and nocturne's music
 ```
 
 The same inputs give the same bytes, so a rerun that changes a fixture means the tool or the
 script changed.
+
+Three of M30's measurements mean something only optimized, so the Debug bar skips two and
+shrinks the third. Run them when the decoder, the mixer or the background pool changes:
+- `zig build asset-test -Doptimize=ReleaseSafe` prints the decoder's speed and runs all
+  2,000 flips;
+- `zig build integration-test -Doptimize=ReleaseSafe` prints the stream margin and, with a
+  real audio backend, command delivery.
+
+On the Windows target, `scripts/m30/windows.ps1` runs both.
 
 ### Staging a release
 

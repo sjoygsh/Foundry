@@ -63,8 +63,10 @@ section supplies the contract the roadmap line leaves implicit.
 - Asynchronous acquisition for mods, `asset_acquire` with a pending state, and jobs for native
   mods: M48's table. A mod's `asset_acquire` stays synchronous (§6.6).
 - Level and scene streaming around a point, and unloading by distance: M60.
-- Streamed music and compressed audio decoded while playing: M30. Its design is
-  [`music.md`](music.md) (proposed 2026-10-26).
+- Streamed music and compressed audio decoded while playing: M30. **Done in M30**
+  ([`music.md`](music.md), ADR-0065 and ADR-0066, tag `m30`): a streamed voice's decode runs
+  on this pool, one task per stream, into a ring the mixer reads, and arrival is
+  presentation alone, as §6 requires.
 - Texture streaming by mip level and compressed formats: M93.
 - Runtime-created meshes, materials and textures: M28. M27 gives them the finish path they will
   use. **Done in M28** ([`runtime-geometry.md`](runtime-geometry.md), ADR-0063):

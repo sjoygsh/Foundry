@@ -553,6 +553,17 @@ engine-implemented nodes a mod configures, not a function pointer.
 Named rather than resolved, per the standing rule that implementation must not settle these
 opportunistically.
 
+> **2026-10-27, at M30's close** ([`music.md`](music.md) §13): question 3 is answered and
+> question 5 partly, and the rest have owners.
+> 1. Voice stealing goes to **M31**, whose buses give priorities something to attach to.
+> 2. Buses are already **M31**'s line.
+> 3. Streaming is **done in M30** (music.md §6, ADR-0066). A streamed sound stays compressed in
+>    memory and is decoded into a ring per stream on the background pool. The voice model
+>    gained a source, as ADR-0023 promised, and was not redesigned.
+> 4. Device change and enumeration go to **M45**, beside input's device handling.
+> 5. `foundry:sound` grew one field in M30: version 2's `stream` (music.md §4). Loop points
+>    within a file go to **M31**, with seeking.
+
 1. **Voice stealing policy, and where it lives.** Oldest, quietest, or by a priority the game
    supplies — and whether the mixer owns it or hands `NoFreeVoice` back forever. Due when
    something actually exhausts the pool.
@@ -573,7 +584,15 @@ opportunistically.
 ## 12. Deliberately not here
 
 > **2026-10-26:** compressed formats, streaming (§11, question 3) and music sequencing are
-> M30's, designed in [`music.md`](music.md) (proposed).
+> M30's, designed in [`music.md`](music.md).
+>
+> **2026-10-27, at M30's close:** all three are done (tag `m30`).
+> - **Compressed formats:** Foundry decodes its own Ogg Vorbis in `asset` (ADR-0065).
+> - **Music sequencing:** the bullet below was wrong about where it lives. A crossfade that
+>   lands on a frame, and a stinger that lands on a beat, need a sample clock and scheduled
+>   starts, which only the mixer has. So the mechanism is `audio.Music` over the mixer's
+>   clock, ramps and scheduled starts (ADR-0066, music.md §5 and §8). The policy, meaning which
+>   playlist plays when, stays the game's, as the court's `music.zig` shows.
 
 > **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
 > owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that

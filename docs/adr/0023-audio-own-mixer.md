@@ -131,6 +131,16 @@ Two format decisions inside the mixer:
   scoped permissive one, with the mixer and the voice model unchanged either way.
 * **Streaming is needed before that**, for long ambient tracks that should not be resident.
   This is an addition to the voice model, not a reopening of this decision.
+
+> **2026-10-27, at M30's close:** the first two triggers fired, and were answered beside this
+> decision rather than by reopening it.
+> - ADR-0065: Foundry writes its own Vorbis decoder.
+> - ADR-0066: streamed voices on the background pool.
+> - The court's streamed music is held in 9.5 times less memory than its 16-bit WAV.
+> - The mixer, its device and the voice model remain this ADR's. The voice gained a streamed
+>   source, a sample clock and ramped gains, as the second trigger said it would.
+>
+> The remaining triggers stand.
 * **Profiling shows mixing is a measurable cost** at the voice counts a real game uses.
   Deinterleaved buffers and SIMD are the answer, and both are internal to the module.
 * **The device abstraction proves wrong on a second platform.** The interface here is designed
