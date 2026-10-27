@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–10 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–11 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1739,3 +1739,91 @@ its loop, the warden behind the low wall and the gate, the pause muffle, the thr
 across a restart, and `nocturne`'s longer room and echo. It is not an exit criterion.
 
 Next is Step 11: Windows/Vulkan on the Arc PC.
+
+## Resolution — Step 11: Windows/Vulkan on the Arc PC (2026-10-27)
+
+Criteria 5–9 hold on the Arc A750 (i3-10105F, Windows 11, WASAPI through SDL3), at `e5e4d78`.
+No engine or sample code changed in this step.
+
+**How it ran:**
+- **The clone:** `main` at `m30` from GitHub, then M31's eleven unpushed commits from a git
+  bundle, so the PC built exactly the Mac's commit and nothing went to GitHub.
+- **The harness:** `scripts/m31/windows.ps1`, M30's with M31's expectations.
+  - `build` mode, over SSH: the suites, the optimized tests and a relocated, read-only
+    ReleaseSafe install.
+  - `desktop` mode, from a scheduled task in the player's session: the court, where nothing
+    took focus.
+  - Every run is at `-j2` and below-normal priority, gated on the PC's CPU.
+
+**The suites:**
+- `zig build test -Dplatform=null -Drhi=null`: 2,416/2,429 (13 skipped).
+- `zig build test vulkan-test -Drhi=vulkan`: 2,697/2,721 (24 skipped), validation and
+  synchronization required by the test binaries themselves.
+- ReleaseSafe `asset-test court-test`: 268/269 (one skip), which covers the seek sweep, the
+  court's mix, occlusion and preferences tests.
+- ReleaseSafe `integration-test`: 148/153 (five skipped), with none failing.
+  - **Criterion 5:** both pins pass unchanged, so the M31 sequenced mix
+    (`11458463935403524307`) and M30's are equal on the PC, in ReleaseSafe on x86_64, to the
+    Mac's. No difference to record.
+  - **`ui_theme`** passes here, as in M30. Its failure is the Mac's alone.
+
+**Criterion 6:**
+- **Mixing speed:** the court-shaped load (32 voices, 16 spatial, six buses, four effects)
+  mixes at **39× real time on the i3**, single-threaded in ReleaseSafe, against 20×. The M5
+  does about 100×.
+- **Command delivery** on the player's device: 400 plays at 48 kHz in 512-frame buffers,
+  none slipped.
+
+**The court**, from the relocated install, `env`-scrubbed, with disposable preferences and
+user roots. The install hashed the same after the runs, and no preferences were written.
+
+| Run | Layers | Steps | Frames | `audio` p95 | Starts on frame | Deepest limiting |
+| --- | --- | --- | --- | --- | --- | --- |
+| soundtrack 1 | off | 208/208 | 40,554 | 0.0177 ms | 81 of 82, 1 pending | 0.0 dB |
+| soundtrack 2 | off | 208/208 | 40,552 | 0.0204 ms | 81 of 82, 1 pending | 0.0 dB |
+| soundtrack 3 | off | 208/208 | 40,555 | 0.0173 ms | 81 of 82, 1 pending | 0.0 dB |
+| soundtrack | validation | 208/208 | 40,551 | 0.0162 ms | 81 of 82, 1 pending | 0.0 dB |
+| `nocturne` | off | 208/208 | 40,553 | 0.0180 ms | 75 of 81, 5 retired, 1 pending | 0.0 dB |
+| `nocturne` win | validation | 46/46 | 1,209 | 0.0364 ms | 16 of 17 | −0.3 dB |
+| win | validation | 46/46 | 1,209 | 0.0349 ms | 15 of 17 | 0.0 dB |
+| caught | validation | 7/7 | 100 | 0.0033 ms | 1 of 4 | 0.0 dB |
+| fell | validation | 6/6 | 177 | 0.0097 ms | 1 of 4 | 0.0 dB |
+| win | off | 46/46 | 1,211 | 0.0258 ms | 15 of 17 | −0.9 dB |
+| caught | off | 7/7 | 100 | 0.0039 ms | 1 of 4 | 0.0 dB |
+| fell | off | 6/6 | 177 | 0.0112 ms | 1 of 4 | 0.0 dB |
+
+- **Every run is clean on every count:**
+  - no start missed, no underrun, late start, dropped command or refusal;
+  - no steal, misroute or sample past the ceiling;
+  - every sound asked for was played;
+  - every replay matched a fresh simulation at every tick;
+  - the endings are unchanged.
+- **Validation** logged its live info line and nothing else in each of the six runs under it.
+- **Criterion 6, main thread:** the `audio` scope's p95 is 0.016–0.036 ms against 0.10, about
+  four times the Mac's figure on the slower CPU. The highest are the short win runs, whose
+  1,200 frames are mostly the ending's busiest seconds.
+- **Criterion 7:** `nocturne` was selected and played clean. It retired five starts before
+  they began, the same count as the Mac's `nocturne` run in Step 10.
+- **Each pause swept the world's low-pass:** ten sweeps a soundtrack run, two a win.
+- **The limiter acted in the court on the PC,** which it never did on the Mac. In two win
+  endings the victory stinger met the music at device timing that differs from the Mac's,
+  and the limiter took the peak down by 0.3 and 0.9 dB, with no sample past the ceiling. The
+  simulation is identical, so the overlap that reached the ceiling is a matter of buffer
+  timing, not of the game.
+
+**Criterion 8, the sliders kept across a restart:** proven by the court's preference tests,
+which pass on the PC in ReleaseSafe. Scripted runs write no preferences, by design (§8).
+
+**Listening:** the owner listened to the court on the Mac (Step 10's runs) and on the PC
+(these runs) and reported that the sound was right on both.
+
+**Bar:** the tree is Step 10's, whose full bar passed, plus this step's PowerShell harness
+and documents. No Zig, content or build file changed, so the bar was not rerun.
+
+**PC paths to remove at the close, by exact name:**
+- `%USERPROFILE%\src\Foundry-m31`
+- `%USERPROFILE%\m31`
+- `%USERPROFILE%\state-m31.ps1`
+- Zig's cache under `%LOCALAPPDATA%\zig`
+
+Next is Step 12: close M31.

@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 10 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 11** (Windows/Vulkan on the Arc PC: clone, the null and Vulkan suites, the mixing-speed test against 20× on the i3, the pins against the Mac's, and the relocated court three times for ten minutes, with and without validation, plus its endings). The PC has no Foundry clone since M30's close. Nothing of M31 is pushed.
+**Current handoff: M31 Step 11 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 12** (close M31: the contract discrepancies in `audio.md`, `playable3d.md`, ADR-0023, ADR-0066 and the roadmap's intent lines; ADR-0067/0068 into `CLAUDE.md` §4.1; `AGENTS.md`, the indexes and README; pack up the PC by exact path; tag `m31`). The PC holds `src\Foundry-m31`, `m31` and `state-m31.ps1` under the profile. Nothing of M31 is pushed.
+
+**M31 Step 11 is done (2026-10-27): Windows/Vulkan on the Arc PC.**
+- Cloned at `m30`, with M31's commits from a git bundle, so the PC built `e5e4d78` exactly. Harness: `scripts/m31/windows.ps1`.
+- Null suite 2,416/2,429 (13 skipped), Vulkan 2,697/2,721 (24 skipped), ReleaseSafe `asset-test court-test` 268/269 and `integration-test` 148/153 with none failing (`ui_theme` passes on Windows).
+- Criterion 5: both pins equal the Mac's. Criterion 6: mixing speed **39× real time** on the i3 against 20×; the court's `audio` p95 0.016–0.036 ms against 0.10.
+- From a relocated, read-only ReleaseSafe install in the desktop session: three ten-minute soundtrack runs off validation, one under it, `nocturne`, and the three endings with and without validation, all clean on every count, replays matched, validation logs clean.
+- The limiter acted on the PC (−0.3 and −0.9 dB in two win endings) with no sample past the ceiling; on the Mac it never did.
+- The owner listened on the Mac and the PC and reported the sound right on both.
+- No Zig, content or build file changed, so Step 10's bar stands.
 
 **M31 Step 10 is done (2026-10-27): the court's mix, proved on the Mac.**
 - The warden's steps, the gate and the beacons are spatial voices, placed by the engine from the walker's eye and occluded by one ray against the level. `sounds.zig`'s `place` is gone.
