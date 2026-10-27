@@ -19,6 +19,7 @@ const core = @import("core");
 const asset = @import("asset");
 
 const voice = @import("voice.zig");
+const effects = @import("effects.zig");
 
 const Allocator = std.mem.Allocator;
 const ContentId = core.ContentId;
@@ -59,16 +60,29 @@ pub const Tree = struct {
     channels: u8,
     /// `block * channels` samples per bus below the root.
     buffers: []f32,
+    /// Every bus's effects end to end, in chain order; bus `k`'s are
+    /// `units[unit_first[k]..][0..unit_count[k]]`.
+    unit_first: []u16,
+    unit_count: []u8,
     // -- the game thread's ----------------------------------------------------------
     /// The decoded records, for telling a parameter change from a change of shape.
     records: []asset.mix.Bus,
     /// Each voice's bus in this tree, read by the callback once, when the tree is installed.
     voice_bus: []u16,
+    /// Each unit's parameters as last sent, for a reload's comparison and `setEffect`'s checks.
+    effect_values: []asset.mix.Effect,
     // -- the callback's, once installed -----------------------------------------------
     /// The record's gain, changed by a reload.
     base: []f32,
     /// The game's gain (`setBusGain`), ramped.
     level: []voice.Ramp,
+    /// The effects' state.
+    units: []effects.Unit,
+
+    /// Bus `index`'s effects, in order.
+    pub fn chain(self: *Tree, index: u16) []effects.Unit {
+        return self.units[self.unit_first[index]..][0..self.unit_count[index]];
+    }
 
     pub fn count(self: *const Tree) usize {
         return self.ids.len;
@@ -96,6 +110,9 @@ pub const Tree = struct {
             if (ra.effect_count != rb.effect_count) return false;
             for (ra.effects(), rb.effects()) |ea, eb| if (!ea.eql(eb)) return false;
         }
+        // The same effects, with the same memory: a changed delay time or reverb size is a
+        // change of shape, since it sizes what the callback holds.
+        for (self.effect_values, other.effect_values) |a, b| if (!effects.fixedEql(a, b)) return false;
         return true;
     }
 
@@ -109,6 +126,11 @@ pub const Tree = struct {
         gpa.free(self.voice_bus);
         gpa.free(self.base);
         gpa.free(self.level);
+        for (self.units) |*unit| unit.deinit(gpa);
+        gpa.free(self.units);
+        gpa.free(self.unit_first);
+        gpa.free(self.unit_count);
+        gpa.free(self.effect_values);
         gpa.destroy(self);
     }
 };
@@ -116,7 +138,7 @@ pub const Tree = struct {
 /// Builds the tree of every bus whose chain of parents reaches `root`, from `store`. `block`
 /// is the frames each bus buffer holds and `voices` the voice count, so `voice_bus` has a place
 /// for each. Bus records that do not reach `root` are left out; they may be another root's.
-pub fn build(gpa: Allocator, store: *const asset.Store, root: ContentId, block: usize, channels: u8, voices: usize) BuildError!*Tree {
+pub fn build(gpa: Allocator, store: *const asset.Store, root: ContentId, block: usize, channels: u8, rate: u32, voices: usize) BuildError!*Tree {
     // The root: a bus with no parent.
     const root_record = store.lookup(root) orelse return error.NotABus;
     if (!root_record.schema_id.eql(asset.mix.bus.id)) return error.NotABus;
@@ -193,6 +215,10 @@ pub fn build(gpa: Allocator, store: *const asset.Store, root: ContentId, block: 
     errdefer gpa.free(tree.base);
     tree.level = try gpa.alloc(voice.Ramp, n);
     errdefer gpa.free(tree.level);
+    tree.unit_first = try gpa.alloc(u16, n);
+    errdefer gpa.free(tree.unit_first);
+    tree.unit_count = try gpa.alloc(u8, n);
+    errdefer gpa.free(tree.unit_count);
 
     tree.ids[0] = root;
     tree.records[0] = root_bus;
@@ -200,12 +226,35 @@ pub fn build(gpa: Allocator, store: *const asset.Store, root: ContentId, block: 
         tree.ids[k] = all.items[i].id;
         tree.records[k] = all.items[i].bus;
     }
+    var units: usize = 0;
     for (tree.records, 0..) |record, k| {
         tree.parents[k] = if (record.parent) |p| tree.indexOf(p).? else 0;
         tree.base[k] = record.gain;
         tree.level[k] = .hold(1);
+        tree.unit_first[k] = @intCast(units);
+        tree.unit_count[k] = record.effect_count;
+        units += record.effect_count;
     }
     @memset(tree.voice_bus, 0);
+
+    // Each effect decoded where its ID resolves, and its state allocated now, on this thread.
+    tree.effect_values = try gpa.alloc(asset.mix.Effect, units);
+    errdefer gpa.free(tree.effect_values);
+    tree.units = try gpa.alloc(effects.Unit, units);
+    errdefer gpa.free(tree.units);
+    var made: usize = 0;
+    errdefer for (tree.units[0..made]) |*unit| unit.deinit(gpa);
+    for (tree.records, 0..) |record, k| for (record.effects()) |id| {
+        const effect_record = store.lookup(id) orelse return error.InvalidBus;
+        const value = asset.mix.decodeEffect(effect_record.schema_id, effect_record.fields) catch |err| {
+            log.warn("{f}: {s} {s}", .{ id, asset.mix.noun(effect_record.schema_id) orelse "effect", asset.mix.describe(err) });
+            return error.InvalidBus;
+        };
+        _ = k;
+        tree.effect_values[made] = value;
+        tree.units[made] = try effects.Unit.init(gpa, value, rate, channels);
+        made += 1;
+    };
 
     // Post-order: each bus after all of its children, siblings by index, which is ascending
     // content ID. The root is not in `order`; the callback finishes with it.

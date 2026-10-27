@@ -13,6 +13,7 @@ const asset = @import("asset");
 
 const ring = @import("ring.zig");
 const bus = @import("bus.zig");
+const effects = @import("effects.zig");
 const spatial = @import("spatial.zig");
 const streaming = @import("stream.zig");
 const voice = @import("voice.zig");
@@ -171,6 +172,8 @@ const Command = union(enum) {
     bus_gain: struct { index: u16, gain: f32, frames: u32 },
     /// A reload changed a bus record's gain.
     bus_base: struct { index: u16, gain: f32 },
+    /// New parameters for one effect, of its kind and fixed fields (`setEffect`, §9).
+    effect: struct { unit: u16, effect: asset.mix.Effect, frames: u32 },
 };
 
 const Play = struct {
@@ -1035,7 +1038,7 @@ pub fn MixerOf(comptime P: type) type {
         /// make is refused by name, and the mix carries on as it was.
         pub fn useMix(self: *Self, root: core.ContentId) MixError!void {
             if (self.retiring.items.len >= max_pending_swaps) return error.SwapPending;
-            const tree = try bus.build(self.gpa, self.assets.store, root, self.info.buffer_frames, self.info.channels, self.voices.len);
+            const tree = try bus.build(self.gpa, self.assets.store, root, self.info.buffer_frames, self.info.channels, self.info.sample_rate, self.voices.len);
             errdefer tree.destroy();
             try self.handOver(tree);
         }
@@ -1046,7 +1049,7 @@ pub fn MixerOf(comptime P: type) type {
         pub fn contentChanged(self: *Self) MixError!void {
             const current = self.mirror orelse return;
             if (self.retiring.items.len >= max_pending_swaps) return error.SwapPending;
-            const candidate = try bus.build(self.gpa, self.assets.store, current.ids[0], self.info.buffer_frames, self.info.channels, self.voices.len);
+            const candidate = try bus.build(self.gpa, self.assets.store, current.ids[0], self.info.buffer_frames, self.info.channels, self.info.sample_rate, self.voices.len);
             if (!candidate.sameShape(current)) {
                 errdefer candidate.destroy();
                 return self.handOver(candidate);
@@ -1057,6 +1060,35 @@ pub fn MixerOf(comptime P: type) type {
                 if (!self.to_audio.push(.{ .bus_base = .{ .index = @intCast(k), .gain = record.gain } })) return error.CommandQueueFull;
                 current.records[k].gain = record.gain;
             }
+            // An effect's new parameters, a filter's ramped over one buffer so a reload does
+            // not click (§8.3).
+            for (candidate.effect_values, 0..) |value, u| {
+                if (std.meta.eql(value, current.effect_values[u])) continue;
+                const frames: u32 = @intCast(current.block);
+                if (!self.to_audio.push(.{ .effect = .{ .unit = @intCast(u), .effect = value, .frames = frames } })) return error.CommandQueueFull;
+                current.effect_values[u] = value;
+            }
+        }
+
+        /// New parameters for effect `slot` of bus `id`, ramped over `frames` where the effect
+        /// ramps (a filter's frequency, Q and gain), at once otherwise (§9). Refused for a bus
+        /// or slot that is not there, an effect of another kind, a changed field that sizes
+        /// memory (a delay's time, a reverb's size or predelay, a limiter's lookahead: those
+        /// are a reload's), or values out of their records' ranges.
+        pub fn setEffect(self: *Self, id: core.ContentId, slot: u8, effect: asset.mix.Effect, frames: u32) void {
+            _ = self.setEffectChecked(id, slot, effect, frames);
+        }
+
+        pub fn setEffectChecked(self: *Self, id: core.ContentId, slot: u8, effect: asset.mix.Effect, frames: u32) bool {
+            effect.validate() catch return false;
+            const tree = self.mirror orelse return false;
+            const index = tree.indexOf(id) orelse return false;
+            if (slot >= tree.unit_count[index]) return false;
+            const unit = tree.unit_first[index] + slot;
+            if (!effects.fixedEql(tree.effect_values[unit], effect)) return false;
+            if (!self.to_audio.push(.{ .effect = .{ .unit = unit, .effect = effect, .frames = frames } })) return false;
+            tree.effect_values[unit] = effect;
+            return true;
         }
 
         /// Sends `tree` to the callback with every voice's bus in it, and keeps the one it
@@ -1635,6 +1667,8 @@ pub fn MixerOf(comptime P: type) type {
             self.mixVoices(tree, out);
             for (tree.order) |k| {
                 const from = tree.buffer(k, frames);
+                // Its effects, in order, before its gain (§8.1).
+                for (tree.chain(k)) |*unit| unit.process(from, ch);
                 const parent = tree.parents[k];
                 const into = if (parent == 0) out else tree.buffer(parent, frames);
                 for (0..frames) |f| {
@@ -1642,6 +1676,7 @@ pub fn MixerOf(comptime P: type) type {
                     for (0..ch) |c| into[f * ch + c] += from[f * ch + c] * gain;
                 }
             }
+            for (tree.chain(0)) |*unit| unit.process(out, ch);
             for (0..frames) |f| {
                 const gain = tree.base[0] * tree.level[0].at(self.mixed + f) * self.master_gain;
                 for (out[f * ch ..][0..ch]) |*sample| sample.* = std.math.clamp(sample.* * gain, -1.0, 1.0);
@@ -1812,6 +1847,10 @@ pub fn MixerOf(comptime P: type) type {
                 .bus_base => |s| {
                     const tree = self.tree orelse return;
                     if (s.index < tree.count()) tree.base[s.index] = s.gain;
+                },
+                .effect => |s| {
+                    const tree = self.tree orelse return;
+                    if (s.unit < tree.units.len) tree.units[s.unit].set(s.effect, s.frames);
                 },
                 .spatial => |s| {
                     const v = self.liveVoice(s.voice) orelse return;

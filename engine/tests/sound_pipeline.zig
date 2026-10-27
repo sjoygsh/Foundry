@@ -814,3 +814,82 @@ test "a reload that changes a gain keeps the tree, and one that changes its shap
     s.mixer.update();
     try testing.expectEqual(@as(usize, 0), s.mixer.retiring.items.len);
 }
+
+// -- M31 Step 7: effects on buses (`mixing.md` §9) ------------------------------------------
+
+const fx_source =
+    \\foundry:audio_bus t:bus.master { effects [ t:fx.muffle t:fx.echo ] }
+    \\foundry:audio_filter t:fx.muffle { shape "lowpass" frequency 500 }
+    \\foundry:audio_delay t:fx.echo { time 0.25 wet 0 }
+    \\foundry:audio_bus t:bus.world { parent t:bus.master effects [ t:fx.room ] }
+    \\foundry:audio_reverb t:fx.room { decay 1.2 wet 0.3 }
+    \\foundry:sound t:s.buzz { source "buzz.wav" }
+;
+
+fn buzzStack(keep: *std.ArrayList([]u8)) !*Stack {
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 256 });
+    errdefer s.deinit();
+    // The device's Nyquist frequency, which a 500 Hz low-pass all but removes.
+    var frames: [48_000]i16 = undefined;
+    for (&frames, 0..) |*f, i| f.* = if (i % 2 == 0) 16384 else -16384;
+    try s.writeWav("buzz.wav", &frames);
+    try addPackage(s, keep, "t:content", fx_source);
+    return s;
+}
+
+fn peakOf(s: *Stack, buffers: usize) !f32 {
+    var peak: f32 = 0;
+    for (0..buffers) |_| {
+        s.mixer.update();
+        for (try s.step(256)) |x| peak = @max(peak, @abs(x));
+    }
+    return peak;
+}
+
+test "a bus's filter shapes what reaches it, and setEffect retunes it in place" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try buzzStack(&keep);
+    defer s.deinit();
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    _ = try s.mixer.play(id("t:s.buzz"), .{ .looping = true });
+    _ = try peakOf(s, 4);
+    try testing.expect(try peakOf(s, 4) < 0.01);
+    // Opened to a high-pass at the same frequency: the buzz comes through nearly whole.
+    try testing.expect(s.mixer.setEffectChecked(id("t:bus.master"), 0, .{ .filter = .{ .shape = .highpass, .frequency = 500 } }, 0));
+    _ = try peakOf(s, 2);
+    try testing.expect(try peakOf(s, 4) > 0.45);
+
+    // Refused: no such bus or slot, another kind, a delay's time, values out of range.
+    try testing.expect(!s.mixer.setEffectChecked(id("t:bus.nowhere"), 0, .{ .filter = .{ .shape = .lowpass, .frequency = 500 } }, 0));
+    try testing.expect(!s.mixer.setEffectChecked(id("t:bus.master"), 2, .{ .filter = .{ .shape = .lowpass, .frequency = 500 } }, 0));
+    try testing.expect(!s.mixer.setEffectChecked(id("t:bus.master"), 0, .{ .delay = .{ .time = 0.25 } }, 0));
+    try testing.expect(!s.mixer.setEffectChecked(id("t:bus.master"), 1, .{ .delay = .{ .time = 0.5 } }, 0));
+    try testing.expect(s.mixer.setEffectChecked(id("t:bus.master"), 1, .{ .delay = .{ .time = 0.25, .wet = 0.5 } }, 0));
+    try testing.expect(!s.mixer.setEffectChecked(id("t:bus.master"), 0, .{ .filter = .{ .shape = .lowpass, .frequency = 5 } }, 0));
+}
+
+test "a reload that retunes an effect keeps the tree, and one that resizes it swaps the tree" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try buzzStack(&keep);
+    defer s.deinit();
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    s.mixer.update();
+    _ = try s.step(256);
+    s.mixer.update();
+    const first = s.mixer.mirror.?;
+    try addPackage(s, &keep, "m:wet", "foundry:audio_reverb t:fx.room { decay 3 wet 0.6 }");
+    try s.mixer.contentChanged();
+    try testing.expectEqual(first, s.mixer.mirror.?);
+    try testing.expectEqual(@as(f32, 3), first.effect_values[2].reverb.decay);
+    try addPackage(s, &keep, "m:size", "foundry:audio_reverb t:fx.room { size 1.5 }");
+    try s.mixer.contentChanged();
+    try testing.expect(first != s.mixer.mirror.?);
+    s.mixer.update();
+    _ = try s.step(256);
+    s.mixer.update();
+    try testing.expectEqual(@as(usize, 0), s.mixer.retiring.items.len);
+}

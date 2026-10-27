@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–6 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–7 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1365,3 +1365,71 @@ the store borrows a package's bytes:
 **Bar:** the full bar, all exit 0. `zig build test` is **2,412/2,415** (three skips).
 
 Next is Step 7: filters, the delay and the reverb.
+
+## Resolution — Step 7: filters, delay and reverb (2026-10-27)
+
+Buses now run their effects. Each bus applies its chain in order to its buffer before its
+gain, and the root before its gain, the master gain and the clamp. The filter, delay and
+reverb are built. The compressor and limiter are accepted into a chain and pass audio through
+until Step 8.
+
+**`audio/effects.zig` is new:** `Unit` holds one effect's state, with `init` on the game
+thread when the tree is built, `process` in the callback, and `set` for new parameters.
+`bus.build` decodes each bus's effects where their IDs resolve and allocates their units,
+flattened per tree with each bus's slice. `Tree.effect_values` keeps the parameters as last
+sent, on the game thread.
+
+**What §9 left open, and the answers:**
+- **The filter's ramp runs in fixed sub-blocks of 32 frames**, not "8 sub-blocks per
+  buffer". A sub-block of fixed length sweeps at the same rate whatever the device's buffer
+  is.
+  - The frequency moves on a logarithmic scale, and Q and gain linearly.
+  - The coefficients are recomputed at each sub-block while a ramp runs, and once at its end,
+    exactly to the target.
+  - A reload's change ramps over one buffer, and `setEffect`'s over the frames it is given.
+  - A change of shape within a filter is a parameter change: the shape switches at once and
+    the frequency ramps.
+  - A frequency at or above 0.49 of the device rate is held there, below Nyquist, where every
+    shape is defined.
+- **The reverb's lines:**
+  - Each line's length is the next prime at or above its nominal length times `size`, and
+    above the line before it. Primes are mutually prime, which is what "mutually prime
+    lengths" needed.
+  - Damping is a one-pole per line with coefficient `1 − 0.8·damping`. At 0 it is exactly no
+    filter.
+  - The input is the channels' mean after the predelay. The left output is the even lines
+    and the right the odd, each times ½. A mono device hears their mean.
+- **What is fixed per tree** is what sizes memory: a delay's `time`, a reverb's `size` and
+  `predelay`, and the limiter's `lookahead` (Step 8). `effects.fixedEql` decides it.
+  - A reload that changes one of these is a change of shape, and swaps the tree.
+  - A reload that changes anything else sends `effect` commands and keeps every tail.
+  - `setEffect` refuses a change to a fixed field, since that is a reload's job.
+- **`setEffect(bus, slot, effect, frames)`** validates by the records' ranges and refuses a
+  bus or slot that is not there or an effect of another kind.
+
+**Measured** (`effects.zig`'s tests):
+- each of the six shapes at f₀/2, f₀ and 2f₀, from a settled sine, is within 0.1 dB of the
+  RBJ formula computed independently in `f64` with `std.math`;
+- the reverb's T30, extrapolated from its impulse response's Schroeder integral, is within
+  10% of `decay` at 0.3, 0.6, 1.5, 3 and 5 s, and damping shortens it;
+- the delay's echoes land on exactly frame `round(time · rate)` and its multiples, at `wet`
+  and then `wet · feedback`, with silence everywhere else;
+- a 12,000-frame sweep from 20 kHz to 800 Hz on a full-scale Nyquist signal stays finite and
+  bounded, and ends exactly on the target's coefficients.
+
+**Integration** (`sound_pipeline`):
+- a root's low-pass all but removes a Nyquist buzz, and `setEffect` retunes it to a
+  high-pass that passes it;
+- every `setEffect` refusal;
+- a reload that changes a reverb's decay and wet keeps the tree and its values;
+- a reload that changes its size swaps the tree and frees the old one.
+
+**Guards verified by breaking them**, each in its own run:
+- a wrong Hadamard normalisation failed the reverb's decay;
+- one low-pass coefficient off by 1% failed the magnitude test;
+- skipping the root's chain failed the bus filter test;
+- ignoring a delay's time in `fixedEql` failed its unit test and `setEffect`'s refusals.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,420/2,423** (three skips).
+
+Next is Step 8: the compressor, the limiter, `mixerLatency()` and the mixing-speed test.

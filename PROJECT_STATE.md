@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 6 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 7** (`audio`: the biquad filter's six shapes and ramps, the delay, the FDN reverb, and `setEffect`). Effect chains are accepted and checked but not yet run. Nothing of M31 is pushed.
+**Current handoff: M31 Step 7 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 8** (`audio`: the compressor, the lookahead limiter, `mixerLatency()` and the mixing-speed timing test). The compressor and limiter are accepted into chains but pass audio through. Nothing of M31 is pushed.
+
+**M31 Step 7 is done (2026-10-27): filters, delay and reverb.**
+- `audio/effects.zig` holds:
+  - the biquad, with RBJ coefficients for six shapes, a ramp in 32-frame sub-blocks, and a log-scale frequency;
+  - the delay;
+  - the eight-line FDN reverb, with prime line lengths, a Hadamard matrix, per-line gains for `decay`, one-pole damping and a predelay.
+- Effects are allocated at tree build and run per bus before its gain.
+- `setEffect` retunes an effect in place. A reload that changes a field which sizes memory swaps the tree; any other parameter change keeps it.
+- Measured: every shape within 0.1 dB of RBJ, the reverb's T30 within 10% from 0.3 to 5 s, and the delay's echoes exact to the frame.
+- Four guards were verified by breaking them.
+
+Bar **2,420/2,423** (three skips), the full bar, all exit 0.
 
 **M31 Step 6 is done (2026-10-27): the bus tree.**
 - `audio/bus.zig` builds the tree from `foundry:audio_bus` records under a root. The root is index 0, the rest go by ascending content ID, and they mix post-order.
