@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 1 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068, accepted 2026-10-27). **Stop before Step 2** (`asset`: seeking by granule, with a page index built in the proving pass). No mixer behaviour has changed yet: buses, spatial voices, stealing and loop regions in voices do not exist, only their records. Nothing of M31 is pushed.
+**Current handoff: M31 Step 2 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 3** (`audio`: `start_frame` and loop regions on resident and streamed voices). No mixer behaviour has changed yet. Nothing of M31 is pushed.
+
+**M31 Step 2 is done (2026-10-27): seeking by granule.**
+- `vorbis.Decoder.seek(index, frame)` gives exactly a whole decode's samples from any frame.
+- How it works:
+  - `prove` records a `Checkpoint` at each page that begins with a packet: its offset, sequence, and the counters after that packet. That is 40 B a page, 3.4–6.3 KB/min on the court's tracks.
+  - A seek resumes the reader there (`ogg.Packets.resumeAt`), decodes that one packet for its overlap, restores the counters, and drops frames up to the target.
+- It allocates nothing after `reserve`. `Compressed` keeps the index.
+- A lying checkpoint found an unchecked `made + step` in `trim`, which now saturates.
+- Three guards were verified by breaking them.
+
+Bar **2,389/2,392** (three skips), the full bar, all exit 0. ReleaseSafe `asset-test`, with the full 2,000-flip sweep including seeks, is 215/215. Decoder speed is unchanged at 961×.
 
 **M31 Step 1 is done (2026-10-27): arithmetic, and the records.**
 - The owner's "Begin" accepted the design. Acceptance is recorded in the design, ADR-0067, ADR-0068 and `CLAUDE.md` §4.1.

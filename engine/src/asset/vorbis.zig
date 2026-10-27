@@ -1277,6 +1277,27 @@ const Scratch = struct {
     u: []f32,
 };
 
+/// Where a seek may begin (`mixing.md` §6.1): a page that starts with a fresh packet, and what
+/// the decoder had counted once that packet was decoded.
+///
+/// A Vorbis packet's output depends on its own bits and on the second half of the packet
+/// before it, and on nothing earlier. So a seek decodes this page's first packet with its output
+/// thrown away, which leaves exactly the overlap the next packet needs, restores the counters
+/// below, and reads on: the frames that follow are those a whole decode gives, bit for bit.
+/// Only `prove` makes these, from bytes it has just decoded whole.
+pub const Checkpoint = struct {
+    /// The page's first byte.
+    offset: u64,
+    /// The page's sequence number.
+    sequence: u32,
+    /// Frames emitted once the page's first packet was decoded. Increasing along the index.
+    emitted: u64,
+    /// The decoder's `made` and `position` at the same moment: libvorbis's granule bookkeeping,
+    /// which only the end of the stream still uses.
+    made: u64,
+    position: u64,
+};
+
 /// Decodes a checked stream's audio into frames, packet by packet: Vorbis I §4.3, and
 /// libvorbis's `vorbis_synthesis_blockin` for the overlap and the granule's trims. It borrows
 /// the bytes and the headers, and owns a few long blocks of memory per channel.
@@ -1309,6 +1330,9 @@ pub const Decoder = struct {
     position: ?u64 = null,
     emitted: u64 = 0,
     done: bool = false,
+    /// When set, `read` records a checkpoint at every page that begins with a packet, once the
+    /// granule bookkeeping has a position. `prove` sets it.
+    index: ?*std.ArrayList(Checkpoint) = null,
 
     pub fn init(gpa: Allocator, bytes: []const u8, headers: *const Headers) DecodeError!Decoder {
         const ch = headers.info.channels;
@@ -1379,6 +1403,52 @@ pub const Decoder = struct {
         for (0..3) |_| _ = try self.packets.next(self.gpa) orelse return invalid("the stream ends inside its headers", .{});
     }
 
+    /// Positions the decoder so the next `read` gives frame `frame` onward, exactly as a whole
+    /// decode has them (`mixing.md` §6.1). `index` is `prove`'s for these bytes; an empty one
+    /// decodes from the start. `frame` may be the stream's length, after which `read` gives 0.
+    ///
+    /// The work is one packet decoded and thrown away, plus at most a page's frames dropped.
+    /// Allocates nothing once `reserve` has been called. A frame past the end, or a checkpoint
+    /// that does not fit these bytes, is refused rather than trusted.
+    pub fn seek(self: *Decoder, index: []const Checkpoint, frame: u64) DecodeError!void {
+        if (frame > self.headers.frames) return invalid("a seek to frame {d} of {d}", .{ frame, self.headers.frames });
+        const serial = self.packets.walk.serial;
+        try self.rewind();
+        // The last checkpoint at or before `frame`.
+        var lo: usize = 0;
+        var hi: usize = index.len;
+        while (lo < hi) {
+            const mid = lo + (hi - lo) / 2;
+            if (index[mid].emitted <= frame) lo = mid + 1 else hi = mid;
+        }
+        if (lo > 0) {
+            const at = index[lo - 1];
+            // A count past the length is never chosen: no frame a seek accepts reaches it.
+            if (at.offset >= self.packets.bytes.len) {
+                return invalid("a seek checkpoint does not fit the stream", .{});
+            }
+            self.packets.resumeAt(@intCast(at.offset), serial, at.sequence);
+            const packet = try self.packets.next(self.gpa) orelse return invalid("a seek checkpoint is past the stream's end", .{});
+            if (packet.data.len == 0) return invalid("a seek checkpoint names an empty packet", .{});
+            // Decoded only for the overlap it leaves; what it made is the frames before `at`.
+            self.previous_n = 0;
+            self.made = null;
+            self.position = null;
+            try self.decodePacket(packet);
+            self.ready_frames = 0;
+            self.ready_read = 0;
+            self.made = at.made;
+            self.position = at.position;
+            self.emitted = at.emitted;
+        }
+        var discard: [512 * max_channels]f32 = undefined;
+        const ch = self.headers.info.channels;
+        while (self.emitted < frame) {
+            const want: usize = @intCast(@min(frame - self.emitted, discard.len / ch));
+            if (try self.read(discard[0 .. want * ch]) == 0) return invalid("the stream ends before frame {d}", .{frame});
+        }
+    }
+
     fn take(rest: *[]f32, n: usize) []f32 {
         const out = rest.*[0..n];
         rest.* = rest.*[n..];
@@ -1402,6 +1472,9 @@ pub const Decoder = struct {
             if (self.done) return 0;
             self.ready_frames = 0;
             self.ready_read = 0;
+            const page_start = self.packets.atPageStart();
+            const offset = self.packets.pos;
+            const sequence = self.packets.walk.pages;
             const packet = try self.packets.next(self.gpa) orelse {
                 self.done = true;
                 if (self.emitted != self.headers.frames) {
@@ -1413,6 +1486,16 @@ pub const Decoder = struct {
             if (self.emitted + (self.ready_frames - self.ready_read) > self.headers.frames) {
                 return invalid("the stream's packets hold more frames than its last granule claims", .{});
             }
+            // An empty packet changes nothing, so a seek could not rebuild the overlap from it.
+            if (self.index) |index| if (page_start and packet.data.len > 0) {
+                if (self.made) |made| if (self.position) |position| try index.append(self.gpa, .{
+                    .offset = offset,
+                    .sequence = sequence,
+                    .emitted = self.emitted + (self.ready_frames - self.ready_read),
+                    .made = made,
+                    .position = position,
+                });
+            };
         }
         const frames = @min(self.ready_frames - self.ready_read, out.len / ch);
         const from = self.ready[self.ready_read * ch ..][0 .. frames * ch];
@@ -1541,7 +1624,9 @@ pub const Decoder = struct {
     /// this packet made.
     fn trim(self: *Decoder, packet: ogg.Packet, n: u16) void {
         const step: u64 = if (self.previous_n == 0) 0 else self.previous_n / 4 + n / 4;
-        const made = if (self.made) |m| m + step else 0;
+        // Saturating, as `position` is below: a seek restores this count from a checkpoint,
+        // and one that lies must not overflow it.
+        const made = if (self.made) |m| m +| step else 0;
         self.made = made;
         const have: u64 = self.ready_frames - self.ready_read;
         if (self.position) |p| {
@@ -1589,6 +1674,9 @@ pub const Proven = struct {
     headers: Headers,
     /// The most memory a packet spanning pages needed, for `Decoder.reserve`.
     spanning: usize,
+    /// Where a seek may begin, for `Decoder.seek`. Owned by the caller, from the allocator
+    /// `prove` was given.
+    index: []Checkpoint,
 };
 
 /// Decodes the whole file and keeps none of it: the proving pass a streamed sound gets at load
@@ -1601,11 +1689,15 @@ pub fn prove(gpa: Allocator, bytes: []const u8, limits: Limits) DecodeError!Prov
     errdefer headers.deinit();
     var decoder = try Decoder.init(gpa, bytes, &headers);
     defer decoder.deinit();
+    // The seek index is built in the same pass (`mixing.md` §6.1): a checkpoint per page.
+    var index: std.ArrayList(Checkpoint) = .empty;
+    errdefer index.deinit(gpa);
+    decoder.index = &index;
     var piece: [1024 * max_channels]f32 = undefined;
     const ch = headers.info.channels;
     // `read` refuses a stream that ends short or runs long, and a sample that is not finite.
     while (try decoder.read(piece[0 .. piece.len / ch * ch]) != 0) {}
-    return .{ .headers = headers, .spanning = decoder.packets.spanning.capacity };
+    return .{ .headers = headers, .spanning = decoder.packets.spanning.capacity, .index = try index.toOwnedSlice(gpa) };
 }
 
 // -- tests ------------------------------------------------------------------------------------
@@ -2287,13 +2379,43 @@ test "a header among the audio packets, and a non-finite sample, are refused" {
     try testing.expectError(error.InvalidSound, decoder.read(&out));
 }
 
-/// Decodes `bytes`, which may be anything: a refusal is fine, a panic fails the test.
+/// Decodes `bytes`, which may be anything: a refusal is fine, a panic fails the test. A file
+/// that proves is then sought into with its own index and with `stale`, the index of the file
+/// it was mutated from (`mixing.md` §14: the sweep extended to seeks).
 fn decodeOrRefuse(bytes: []const u8) !void {
+    return decodeOrRefuseWith(bytes, &.{});
+}
+
+fn decodeOrRefuseWith(bytes: []const u8, stale: []const Checkpoint) !void {
     var sound = decode(testing.allocator, bytes, .{}) catch |err| switch (err) {
         error.InvalidSound, error.UnsupportedSound, error.SoundTooLarge => return,
         error.OutOfMemory => return err,
     };
-    sound.deinit(testing.allocator);
+    defer sound.deinit(testing.allocator);
+    var proven = prove(testing.allocator, bytes, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        // It decoded whole a moment ago, so its proving pass cannot disagree.
+        else => return error.TestUnexpectedResult,
+    };
+    defer proven.headers.deinit();
+    defer testing.allocator.free(proven.index);
+    var decoder = try Decoder.init(testing.allocator, bytes, &proven.headers);
+    defer decoder.deinit();
+    const frames = proven.headers.frames;
+    var out: [256 * max_channels]f32 = undefined;
+    const ch = proven.headers.info.channels;
+    for ([_][]const Checkpoint{ proven.index, stale }) |index| {
+        for ([_]u64{ 0, frames / 3, frames / 2, frames -| 1, frames }) |frame| {
+            decoder.seek(index, frame) catch |err| switch (err) {
+                error.InvalidSound, error.UnsupportedSound => continue,
+                else => return err,
+            };
+            _ = decoder.read(out[0 .. out.len / ch * ch]) catch |err| switch (err) {
+                error.InvalidSound, error.UnsupportedSound => continue,
+                else => return err,
+            };
+        }
+    }
 }
 
 test "every truncation of the short fixture decodes or is refused" {
@@ -2313,6 +2435,9 @@ test "seeded single-bit flips, each page resealed, decode or are refused" {
     try starts.append(testing.allocator, f.len);
     const copy = try testing.allocator.dupe(u8, f);
     defer testing.allocator.free(copy);
+    var original = try prove(testing.allocator, f, .{});
+    defer original.headers.deinit();
+    defer testing.allocator.free(original.index);
     var rng = core.rng.Pcg32.init(0x464c_4950, 0);
     for (0..flips) |_| {
         const bit = rng.below(@intCast(f.len * 8));
@@ -2323,7 +2448,7 @@ test "seeded single-bit flips, each page resealed, decode or are refused" {
         while (starts.items[page + 1] <= byte) page += 1;
         const range = copy[starts.items[page]..starts.items[page + 1]];
         if (range.len >= ogg.header_size) resealPage(range);
-        try decodeOrRefuse(copy);
+        try decodeOrRefuseWith(copy, original.index);
         @memcpy(copy, f);
     }
 }
@@ -2420,6 +2545,7 @@ test "a proven stream rewinds to the same frames, and after its reserve never al
         defer expected.deinit(testing.allocator);
         var proven = try prove(testing.allocator, f.ogg, .{});
         defer proven.headers.deinit();
+        defer testing.allocator.free(proven.index);
         try testing.expectEqual(@as(u64, expected.frameCount()), proven.headers.frames);
         // A repaged stream's audio packets over 255 bytes span pages, so its reserve is real.
         if (spanning and proven.spanning > 255) spanned += 1;
@@ -2450,4 +2576,130 @@ test "a proven stream rewinds to the same frames, and after its reserve never al
     // `mono44_q10` and `coupled` have audio packets over 255 bytes; the others' all fit one
     // segment, so these two are where the reserve is what keeps a decode from allocating.
     try testing.expectEqual(@as(usize, 2), spanned);
+}
+
+test "a seek to any frame gives the whole decode's samples, bit for bit" {
+    // `mixing.md` §6.1 and §14: every fixture, as encoded and repaged so its long packets span
+    // pages; the first and last frames, both sides of every checkpoint, and 64 seeded frames.
+    var rng = core.rng.Pcg32.init(0x5345_454b, 0);
+    for (ogg.fixtures) |fixture| for ([_]bool{ false, true }) |spanning| {
+        const bytes = if (spanning) try repage(testing.allocator, fixture.ogg) else fixture.ogg;
+        defer if (spanning) testing.allocator.free(bytes);
+        var whole = try decode(testing.allocator, fixture.ogg, .{});
+        defer whole.deinit(testing.allocator);
+        var proven = try prove(testing.allocator, bytes, .{});
+        defer proven.headers.deinit();
+        defer testing.allocator.free(proven.index);
+        const ch = whole.channels;
+        const frames: u64 = whole.frameCount();
+
+        // Every allocation a seek or a read will ever make, made here; then none is allowed.
+        var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+        var decoder = try Decoder.init(failing.allocator(), bytes, &proven.headers);
+        defer decoder.deinit();
+        try decoder.reserve(proven.spanning);
+        failing.fail_index = failing.alloc_index;
+
+        var targets: std.ArrayList(u64) = .empty;
+        defer targets.deinit(testing.allocator);
+        try targets.appendSlice(testing.allocator, &.{ 0, 1, frames -| 1, frames });
+        for (proven.index) |at| for ([_]u64{ at.emitted -| 1, at.emitted, @min(at.emitted + 1, frames) }) |t| {
+            try targets.append(testing.allocator, t);
+        };
+        for (0..64) |_| try targets.append(testing.allocator, rng.below(@intCast(frames + 1)));
+
+        var out: [1500 * max_channels]f32 = undefined;
+        for (targets.items) |frame| {
+            try decoder.seek(proven.index, frame);
+            const want: usize = @intCast(@min(frames - frame, out.len / ch));
+            var got: usize = 0;
+            while (got < want) {
+                const n = try decoder.read(out[got * ch .. want * ch]);
+                try testing.expect(n > 0);
+                got += n;
+            }
+            try testing.expectEqualSlices(f32, whole.samples[@intCast(frame * ch)..][0 .. want * ch], out[0 .. want * ch]);
+            if (frame == frames) try testing.expectEqual(@as(usize, 0), try decoder.read(out[0..ch]));
+        }
+
+        // A seek past the end is refused, and one near the end still reads out exactly.
+        try testing.expectError(error.InvalidSound, decoder.seek(proven.index, frames + 1));
+        try decoder.seek(proven.index, frames -| 1000);
+        var rest: u64 = 0;
+        while (true) {
+            const n = try decoder.read(&out);
+            if (n == 0) break;
+            rest += n;
+        }
+        try testing.expectEqual(@min(frames, 1000), rest);
+    };
+}
+
+test "the seek index has a checkpoint per page, in order, and costs little" {
+    for (ogg.fixtures) |fixture| {
+        var proven = try prove(testing.allocator, fixture.ogg, .{});
+        defer proven.headers.deinit();
+        defer testing.allocator.free(proven.index);
+        var pages: usize = 0;
+        var pos: usize = 0;
+        while (pos < fixture.ogg.len) : (pages += 1) pos += (try ogg.parsePage(fixture.ogg[pos..])).size;
+        // At most one per page, past the three header pages' worth.
+        try testing.expect(proven.index.len <= pages);
+        for (proven.index, 0..) |at, i| {
+            try testing.expect(at.offset < fixture.ogg.len);
+            try testing.expect(at.emitted <= proven.headers.frames);
+            if (i > 0) {
+                try testing.expect(at.offset > proven.index[i - 1].offset);
+                try testing.expect(at.emitted >= proven.index[i - 1].emitted);
+            }
+        }
+    }
+    // The three-second fixture spans many pages, so its index has many entries.
+    var long = try prove(testing.allocator, ogg.fixtures[5].ogg, .{});
+    defer long.headers.deinit();
+    defer testing.allocator.free(long.index);
+    try testing.expect(long.index.len >= 4);
+}
+
+test "a damaged checkpoint is refused, never trusted into a panic" {
+    const gpa = testing.allocator;
+    const f = ogg.fixtures[5].ogg;
+    var proven = try prove(gpa, f, .{});
+    defer proven.headers.deinit();
+    defer gpa.free(proven.index);
+    var decoder = try Decoder.init(gpa, f, &proven.headers);
+    defer decoder.deinit();
+    const good = proven.index[proven.index.len / 2];
+    const frame = good.emitted + 10;
+
+    const damaged = [_]Checkpoint{
+        // Past the end of the bytes.
+        .{ .offset = f.len, .sequence = good.sequence, .emitted = good.emitted, .made = good.made, .position = good.position },
+        .{ .offset = std.math.maxInt(u64), .sequence = good.sequence, .emitted = good.emitted, .made = good.made, .position = good.position },
+        // Inside a page rather than at its start.
+        .{ .offset = good.offset + 1, .sequence = good.sequence, .emitted = good.emitted, .made = good.made, .position = good.position },
+        // The wrong page number.
+        .{ .offset = good.offset, .sequence = good.sequence + 1, .emitted = good.emitted, .made = good.made, .position = good.position },
+    };
+    for (damaged) |at| try testing.expectError(error.InvalidSound, decoder.seek(&.{at}, frame));
+
+    // Counts that lie but stay in range: the decode goes wrong, and says so or ends, but never
+    // panics. Then a good index seeks exactly again.
+    const lies = [_]Checkpoint{
+        .{ .offset = good.offset, .sequence = good.sequence, .emitted = good.emitted, .made = std.math.maxInt(u64), .position = std.math.maxInt(u64) },
+        .{ .offset = good.offset, .sequence = good.sequence, .emitted = 0, .made = 0, .position = 0 },
+    };
+    var out: [4096]f32 = undefined;
+    for (lies) |at| {
+        decoder.seek(&.{at}, at.emitted) catch continue;
+        while (true) {
+            const n = decoder.read(&out) catch break;
+            if (n == 0) break;
+        }
+    }
+    var whole = try decode(gpa, f, .{});
+    defer whole.deinit(gpa);
+    try decoder.seek(proven.index, frame);
+    const n = try decoder.read(out[0..64]);
+    try testing.expectEqualSlices(f32, whole.samples[@intCast(frame)..][0..n], out[0..n]);
 }

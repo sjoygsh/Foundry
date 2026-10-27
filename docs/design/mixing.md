@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Step 1 is done; its Resolution follows §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–2 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -990,3 +990,77 @@ before): 124/124 steps, ten more tests than M30's close.
 
 Next is Step 2: seeking by granule in `asset`. No mixer behaviour has changed yet. Buses,
 spatial voices, stealing and loop regions in voices do not exist; only their records do.
+
+## Resolution — Step 2: seeking by granule (2026-10-27)
+
+`vorbis.Decoder.seek(index, frame)` positions the decoder so the next `read` gives frame
+`frame` onward. The samples are bit for bit those a whole decode has there. §6.1's argument
+held: a packet depends only on its own bits and the second half of the packet before it.
+
+**What a checkpoint is.** The design sketched the index as each page's offset, granule and a
+flag, then "back up one packet". The built form is simpler to keep exact:
+- `vorbis.Checkpoint` is a page that begins with a fresh packet, plus what the decoder had
+  counted once that packet was decoded:
+  - the page's byte `offset` and `sequence`;
+  - `emitted`, the frames emitted;
+  - `made` and `position`, libvorbis's granule bookkeeping.
+
+  That is 40 bytes a page. On the court's own tracks it comes to 3.4–6.3 KB per minute, the
+  design's order of magnitude.
+- **A seek** chooses the last checkpoint with `emitted ≤ frame` by binary search.
+  1. It resumes the Ogg reader at that page (`ogg.Packets.resumeAt`, a new call).
+  2. It decodes that page's first packet with its output thrown away, which leaves exactly
+     the overlap the next packet needs.
+  3. It restores the three counters.
+  4. It reads and drops frames up to `frame`.
+
+  The work is one packet plus at most a page of frames. Before the first checkpoint, the seek
+  decodes from the start.
+- **No "backing up" is needed.** The checkpoint's own packet is the one decoded and thrown
+  away, so the index never has to describe a packet that starts on an earlier page.
+  `ogg.Packets.atPageStart` says when the next packet begins a page.
+- **Only `prove` makes checkpoints.** It records one while decoding whole, once the granule
+  bookkeeping has a position, and never for an empty packet, since an empty packet leaves no
+  overlap to rebuild. `Proven` gains `index`.
+  - The mixer's `Compressed` keeps it with the bytes and frees it in `destroy`. Step 3 is the
+    first to seek a stream.
+  - A resident sound needs no index.
+- **`rewind` is unchanged.** It is what `seek(index, 0)` does first, and a seek to 0 is
+  exactly it.
+- `seek` allocates nothing once `reserve` has been called. The exactness test runs on a
+  failing allocator to prove it.
+
+**Refusals, and one fix the refusals found:**
+- **Refused as `InvalidSound`:** a frame past the length, and a checkpoint past the bytes. A
+  checkpoint inside a page, or with the wrong page number, is refused by the Ogg walk as any
+  damaged page is.
+- **A checkpoint whose counts lie but stay in range** makes a decode that goes wrong. It
+  reports that or ends, but never panics. Writing that test found a real overflow:
+  - `trim`'s `made + step` was unchecked, and a `made` near the top of `u64` trapped.
+  - It now saturates, as `position` beside it already did.
+  - A whole decode never comes near the limit, so no output changes.
+- **A checkpoint whose `emitted` is past the length** can never be chosen, because no frame a
+  seek accepts reaches it. The check written for it was unreachable and was removed.
+
+**Tests:**
+- every fixture, as encoded and repaged so its long packets span pages;
+- frames 0, 1, the last and the end, both sides of every checkpoint, and 64 seeded frames,
+  each compared bit for bit over up to 1,500 frames;
+- the index's order and size;
+- damaged and lying checkpoints;
+- the mutation sweep extended: every mutated file that decodes is proved, then sought into
+  with its own index and with the original's, which is stale. In ReleaseSafe that runs over
+  all 2,000 flips.
+
+**Guards verified by breaking them:**
+- skipping the throwaway packet failed the exactness and damage tests;
+- treating every packet as a page start failed the exactness, index and damage tests;
+- the unsaturated `made` panicked the lying-checkpoint test, which is how it was found.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,389/2,392** (three skips).
+`zig build asset-test -Doptimize=ReleaseSafe`, the full 2,000-flip sweep with seeks, is
+215/215. Decoder speed is unchanged at 961× real time on the M5. The index is built only
+in `prove`, so a whole decode pays nothing for it.
+
+Next is Step 3: start offsets and loop regions in voices, which is the first step to seek a
+stream.

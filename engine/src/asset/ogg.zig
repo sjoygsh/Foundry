@@ -331,6 +331,28 @@ pub const Packets = struct {
         self.* = undefined;
     }
 
+    /// Starts reading again at the page beginning at byte `offset`, which must be page number
+    /// `sequence` of stream `serial` and must not continue a packet: a seek's checkpoint
+    /// (`mixing.md` §6.1). Keeps the spanning buffer's capacity, so a reserved reader still
+    /// never allocates. A wrong offset or number is refused by the walk, as any damaged page is.
+    pub fn resumeAt(self: *Packets, offset: usize, serial: u32, sequence: u32) void {
+        var spanning = self.spanning;
+        spanning.clearRetainingCapacity();
+        self.* = .init(self.bytes);
+        self.spanning = spanning;
+        self.pos = @min(offset, self.bytes.len);
+        self.walk.serial = serial;
+        self.walk.pages = sequence;
+    }
+
+    /// Whether the next packet begins a page: none is open, and the page read last is used
+    /// up. A seek can start only there.
+    pub fn atPageStart(self: *const Packets) bool {
+        if (self.span_open) return false;
+        const page = self.page orelse return true;
+        return self.segment == page.lacing.len;
+    }
+
     /// The next packet, or null after the last. Allocates only for a packet that spans pages,
     /// and then never more than the file's own size.
     pub fn next(self: *Packets, gpa: Allocator) (Error || Allocator.Error)!?Packet {

@@ -176,8 +176,11 @@ const Compressed = struct {
     headers: vorbis.Headers,
     /// What `vorbis.Decoder.reserve` needs so a decode task never allocates.
     spanning: usize,
+    /// Where a seek may begin, built by the proving pass (`mixing.md` §6.1).
+    index: []vorbis.Checkpoint,
 
     fn destroy(self: *Compressed, gpa: Allocator) void {
+        gpa.free(self.index);
         self.headers.deinit();
         gpa.free(self.bytes);
         gpa.destroy(self);
@@ -536,9 +539,10 @@ pub fn MixerOf(comptime P: type) type {
             const proven = try vorbis.prove(gpa, bytes, .{});
             var headers = proven.headers;
             errdefer headers.deinit();
+            errdefer gpa.free(proven.index);
             const compressed = try gpa.create(Compressed);
             errdefer gpa.destroy(compressed);
-            compressed.* = .{ .bytes = try gpa.dupe(u8, bytes), .headers = headers, .spanning = proven.spanning };
+            compressed.* = .{ .bytes = try gpa.dupe(u8, bytes), .headers = headers, .spanning = proven.spanning, .index = proven.index };
             return compressed;
         }
 
