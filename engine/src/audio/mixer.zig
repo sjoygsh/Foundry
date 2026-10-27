@@ -12,6 +12,7 @@ const platform = @import("platform");
 const asset = @import("asset");
 
 const ring = @import("ring.zig");
+const spatial = @import("spatial.zig");
 const streaming = @import("stream.zig");
 const voice = @import("voice.zig");
 
@@ -70,7 +71,14 @@ pub const PlayParams = struct {
     /// refused with `InvalidStart`. A looping voice started past its loop's end begins where
     /// that frame falls within the region.
     start_frame: u64 = 0,
+    /// Makes the voice spatial (`mixing.md` §5): it is placed from here against the listener
+    /// each `update`, and `pan` is ignored. In ADR-0048's metres.
+    position: ?core.math.Vec3 = null,
+    /// The `foundry:audio_attenuation` a spatial voice uses, in place of its sound record's.
+    attenuation: ?core.ContentId = null,
 };
+
+pub const Listener = spatial.Listener;
 
 pub const Curve = voice.Curve;
 
@@ -109,6 +117,11 @@ pub const VoiceError = error{
     OutOfMemory,
     /// `start_frame` is at or past the sound's end: caller arithmetic, refused by name.
     InvalidStart,
+    /// A spatial play's position is not finite.
+    InvalidPosition,
+    /// A spatial play's attenuation names no `foundry:audio_attenuation`, or one that does not
+    /// decode.
+    UnknownAttenuation,
 };
 
 /// What `play` can fail with: everything about a voice, plus everything about resolving a
@@ -128,6 +141,8 @@ const Command = union(enum) {
     set_master_gain: struct { gain: f32 },
     fade: struct { voice: VoiceHandle, fade: Fade },
     fade_gain: struct { voice: VoiceHandle, at: ?u64, gain: f32, frames: u32 },
+    /// A spatial voice's new placement, glided to across the next buffer.
+    spatial: struct { voice: VoiceHandle, placed: spatial.Placed },
 };
 
 const Play = struct {
@@ -149,6 +164,8 @@ const Play = struct {
     start: usize,
     /// A streamed voice's frames, in place of `samples`.
     feed: ?*Feed,
+    /// A spatial voice's first placement, which it starts at rather than glides to.
+    placed: ?spatial.Placed,
 };
 
 /// Callback thread to game thread: a voice's first sample landed on `frame`, or the voice
@@ -176,6 +193,16 @@ const Slot = struct {
     started_at: ?u64 = null,
     /// The stream a streamed voice reads, told when the voice retires.
     stream: ?u32 = null,
+    /// A spatial voice's place, recomputed each `update` (`mixing.md` §5.5).
+    space: ?Space = null,
+};
+
+/// Where a spatial voice is, as the game last said, and what was last sent for it.
+const Space = struct {
+    position: core.math.Vec3,
+    occlusion: f32 = 0,
+    attenuation: asset.mix.Attenuation,
+    sent: spatial.Placed,
 };
 
 /// A streamed sound: its compressed bytes, kept, and the headers every stream of it shares
@@ -352,6 +379,8 @@ pub fn MixerOf(comptime P: type) type {
         /// Every stream's ring, one allocation.
         stream_storage: []f32,
         tasks: core.Tasks,
+        /// Who hears the spatial voices: the last listener `setListener` accepted.
+        listener: spatial.Basis = .{},
 
         // -- owned by the callback thread -----------------------------------------
         voices: []Voice,
@@ -802,6 +831,19 @@ pub fn MixerOf(comptime P: type) type {
             var start = params.start_frame;
             if (params.looping and start >= loop_end) start = loop_start + (start - loop_start) % (loop_end - loop_start);
 
+            // A spatial voice's attenuation, resolved once, and its first placement, so its
+            // first buffer is already where it is rather than gliding there (`mixing.md` §5).
+            var space: ?Space = null;
+            if (params.position) |position| {
+                if (!position.isFinite()) return error.InvalidPosition;
+                const attenuation = try self.resolveAttenuation(params.attenuation orelse stored.settings.attenuation);
+                space = .{
+                    .position = position,
+                    .attenuation = attenuation,
+                    .sent = spatial.place(self.listener, position, attenuation, 0, self.info.sample_rate),
+                };
+            }
+
             // A streamed sound needs a stream as well as a voice, and its decoder state, which
             // is the one thing `play` allocates (`music.md` §6.1).
             var stream_index: ?u32 = null;
@@ -845,6 +887,7 @@ pub fn MixerOf(comptime P: type) type {
             slot.sound = sound;
             slot.started_at = null;
             slot.stream = stream_index;
+            slot.space = space;
             stored.refs += 1;
 
             const handle: VoiceHandle = .{ .index = index, .generation = slot.generation };
@@ -865,6 +908,7 @@ pub fn MixerOf(comptime P: type) type {
                 .loop_end = @intCast(loop_end),
                 .start = @intCast(start),
                 .feed = if (stream_index) |n| &self.streams[n].feed else null,
+                .placed = if (space) |s| s.sent else null,
             } });
 
             if (!started) {
@@ -874,6 +918,7 @@ pub fn MixerOf(comptime P: type) type {
                 slot.playing = false;
                 slot.sound = .none;
                 slot.stream = null;
+                slot.space = null;
                 self.free_list.appendAssumeCapacity(index);
                 if (stream_index) |n| self.freeStream(n);
                 return error.CommandQueueFull;
@@ -882,6 +927,74 @@ pub fn MixerOf(comptime P: type) type {
             // (§8.4's lookahead is a second).
             if (stream_index) |n| self.refill(&self.streams[n]);
             return handle;
+        }
+
+        /// The attenuation a spatial voice uses: the named record's, or the defaults when none
+        /// is named. Its schema is checked here, where the ID resolves (Step 1's Resolution).
+        fn resolveAttenuation(self: *Self, id: ?core.ContentId) VoiceError!asset.mix.Attenuation {
+            const which = id orelse return .{};
+            const record = self.assets.store.lookup(which) orelse return error.UnknownAttenuation;
+            if (!record.schema_id.eql(asset.mix.attenuation.id)) return error.UnknownAttenuation;
+            return asset.mix.decodeAttenuation(record.fields) catch |err| {
+                log.warn("{f}: audio attenuation {s}", .{ which, asset.mix.describe(err) });
+                return error.UnknownAttenuation;
+            };
+        }
+
+        // -- spatial voices (`mixing.md` §5, ADR-0068) ------------------------------
+
+        /// Sets who hears the spatial voices, from the next `update`. A listener with a
+        /// non-finite vector, or a `forward` parallel to `up`, is refused and the previous one
+        /// kept.
+        pub fn setListener(self: *Self, listener: Listener) void {
+            _ = self.setListenerChecked(listener);
+        }
+
+        pub fn setListenerChecked(self: *Self, listener: Listener) bool {
+            self.listener = spatial.basis(listener) orelse return false;
+            return true;
+        }
+
+        /// Moves a spatial voice, from the next `update`. Refused for a voice that is not
+        /// playing or not spatial, and for a position that is not finite.
+        pub fn setPosition(self: *Self, handle: VoiceHandle, position: core.math.Vec3) void {
+            _ = self.setPositionChecked(handle, position);
+        }
+
+        pub fn setPositionChecked(self: *Self, handle: VoiceHandle, position: core.math.Vec3) bool {
+            if (!position.isFinite()) return false;
+            const slot = self.liveSlot(handle) orelse return false;
+            const space = &(slot.space orelse return false);
+            space.position = position;
+            return true;
+        }
+
+        /// How occluded a spatial voice is, 0 (open) to 1 (fully), from the next `update`. The
+        /// game decides what is in the way (§5.4); out of range is clamped, not finite refused.
+        pub fn setOcclusion(self: *Self, handle: VoiceHandle, amount: f32) void {
+            _ = self.setOcclusionChecked(handle, amount);
+        }
+
+        pub fn setOcclusionChecked(self: *Self, handle: VoiceHandle, amount: f32) bool {
+            if (!std.math.isFinite(amount)) return false;
+            const slot = self.liveSlot(handle) orelse return false;
+            const space = &(slot.space orelse return false);
+            space.occlusion = std.math.clamp(amount, 0, 1);
+            return true;
+        }
+
+        /// Places every spatial voice against the listener and sends each one that moved
+        /// (§5.5). A placement the ring refuses is sent again next frame, since `sent` is
+        /// what the voice actually has.
+        fn placeSpatial(self: *Self) void {
+            for (self.slots, 0..) |*slot, index| {
+                if (!slot.playing) continue;
+                const space = &(slot.space orelse continue);
+                const placed = spatial.place(self.listener, space.position, space.attenuation, space.occlusion, self.info.sample_rate);
+                if (placed.eql(space.sent)) continue;
+                const handle: VoiceHandle = .{ .index = @intCast(index), .generation = slot.generation };
+                if (self.to_audio.push(.{ .spatial = .{ .voice = handle, .placed = placed } })) space.sent = placed;
+            }
         }
 
         fn streamError(err: vorbis.DecodeError) VoiceError {
@@ -994,6 +1107,8 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn setPanChecked(self: *Self, handle: VoiceHandle, pan: f32) bool {
+            // A spatial voice's position decides its pan (`mixing.md` §5.1).
+            if (self.liveSlot(handle)) |slot| if (slot.space != null) return false;
             const gains = voice.panGains(pan);
             return self.to_audio.push(.{
                 .set_pan = .{ .voice = handle, .left = gains.left, .right = gains.right },
@@ -1129,6 +1244,7 @@ pub fn MixerOf(comptime P: type) type {
                 slot.sound = .none;
                 slot.held = .none;
                 slot.started_at = null;
+                slot.space = null;
                 // Its stream is freed once its decode task, if one is in flight, is done too.
                 if (slot.stream) |n| self.streams[n].retired = true;
                 slot.stream = null;
@@ -1144,6 +1260,7 @@ pub fn MixerOf(comptime P: type) type {
                 // hazard one: `play` acquired it and this is the other end of that.
                 if (!held.isNone()) self.assets.release(held);
             }
+            self.placeSpatial();
             self.pumpStreams();
         }
 
@@ -1294,6 +1411,14 @@ pub fn MixerOf(comptime P: type) type {
                         .feed = p.feed,
                         .wait_for_feed = p.feed != null and p.start_at == null,
                     };
+                    if (p.placed) |placed| {
+                        const v = &self.voices[p.voice.index];
+                        v.spatial = true;
+                        v.left = placed.left;
+                        v.right = placed.right;
+                        v.space = placed.space;
+                        v.lowpass = placed.lowpass;
+                    }
                 },
                 .stop => |s| {
                     const v = self.liveVoice(s.voice) orelse return;
@@ -1338,6 +1463,10 @@ pub fn MixerOf(comptime P: type) type {
                     v.step = s.step;
                 },
                 .set_master_gain => |s| self.master_gain = s.gain,
+                .spatial => |s| {
+                    const v = self.liveVoice(s.voice) orelse return;
+                    v.glide = .{ .left = s.placed.left, .right = s.placed.right, .space = s.placed.space, .lowpass = s.placed.lowpass };
+                },
             }
         }
 
@@ -2283,4 +2412,153 @@ test "a streamed voice with a loop region or a start equals its resident decode,
         try testing.expectEqual(pair.resident.mixer.activeVoices(), pair.streamed.mixer.activeVoices());
         try testing.expectEqual(@as(u32, if (case.params.looping) 1 else 0), pair.streamed.mixer.activeVoices());
     }
+}
+
+// -- M31 Step 4: spatial voices (`mixing.md` §5) ------------------------------------------
+
+fn dcSound(f: *Fixture, frames: usize, channels: u8, values: []const f32) !SoundHandle {
+    const sound = try asset.Sound.alloc(testing.allocator, frames, channels, 48_000);
+    for (0..frames) |i| for (0..channels) |c| {
+        sound.samples[i * channels + c] = values[c];
+    };
+    return f.mixer.insertSound(sound);
+}
+
+test "a spatial voice is placed against the listener from its first buffer" {
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 64 });
+    defer f.deinit();
+    const sound = try dcSound(f, 4096, 1, &.{0.5});
+    const at: core.math.Vec3 = .init(3, 0, -4);
+    _ = try f.mixer.playSound(sound, .{ .looping = true, .position = at, .pan = -1 });
+    const expected = spatial.place(.{}, at, .{}, 0, 48_000);
+    f.mixer.update();
+    const out = try f.step(64);
+    // No glide into the first buffer: every frame is already where the source is, and the
+    // `pan` it was played with is ignored.
+    for (0..64) |i| {
+        try testing.expectEqual(0.5 * expected.left * expected.space, out[i * 2]);
+        try testing.expectEqual(0.5 * expected.right * expected.space, out[i * 2 + 1]);
+    }
+    try testing.expect(expected.right > expected.left);
+}
+
+test "a moving source glides across each buffer, with no step at a buffer's edge" {
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 128 });
+    defer f.deinit();
+    const sound = try dcSound(f, 48_000, 1, &.{1.0});
+    var x: f32 = -6;
+    const v = try f.mixer.playSound(sound, .{ .looping = true, .position = .init(x, 0, -1) });
+    var previous: [2]f32 = undefined;
+    var first = true;
+    for (0..60) |_| {
+        const before = spatial.place(f.mixer.listener, .init(x, 0, -1), .{}, 0, 48_000);
+        x += 0.2;
+        try testing.expect(f.mixer.setPositionChecked(v, .init(x, 0, -1)));
+        f.mixer.update();
+        const after = spatial.place(f.mixer.listener, .init(x, 0, -1), .{}, 0, 48_000);
+        const out = try f.step(128);
+        // The buffer ends exactly on the new placement.
+        try testing.expectApproxEqAbs(after.left * after.space, out[127 * 2], 1e-6);
+        try testing.expectApproxEqAbs(after.right * after.space, out[127 * 2 + 1], 1e-6);
+        // No frame moves further than an even share of the change, at the edge or inside. Each
+        // output is a pan gain times the space gain, each gliding linearly, so a frame's step is
+        // bounded by the two changes' shares together (every gain is at most 1).
+        const step_l = (@abs(after.left - before.left) + @abs(after.space - before.space)) / 128 + 1e-6;
+        const step_r = (@abs(after.right - before.right) + @abs(after.space - before.space)) / 128 + 1e-6;
+        for (0..128) |i| {
+            const l = out[i * 2];
+            const r = out[i * 2 + 1];
+            if (!first) {
+                try testing.expect(@abs(l - previous[0]) <= step_l);
+                try testing.expect(@abs(r - previous[1]) <= step_r);
+            }
+            first = false;
+            previous = .{ l, r };
+        }
+    }
+}
+
+test "a stereo source is summed to mono, and a mono device hears only the space gain" {
+    const f = try Fixture.init(testing.allocator, .{ .buffer_frames = 16 });
+    defer f.deinit();
+    const sound = try dcSound(f, 1000, 2, &.{ 0.8, 0.2 });
+    _ = try f.mixer.playSound(sound, .{ .position = .init(0, 0, -0.5) });
+    f.mixer.update();
+    const out = try f.step(16);
+    const p = spatial.place(.{}, .init(0, 0, -0.5), .{}, 0, 48_000);
+    try testing.expectApproxEqAbs(0.5 * p.left, out[0], 1e-7);
+    try testing.expectApproxEqAbs(0.5 * p.right, out[1], 1e-7);
+    try testing.expectEqual(out[0], out[1]);
+
+    const g = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 16 });
+    defer g.deinit();
+    const mono = try dcSound(g, 1000, 1, &.{0.5});
+    _ = try g.mixer.playSound(mono, .{ .position = .init(6, 0, 0) });
+    g.mixer.update();
+    const heard = try g.step(16);
+    try testing.expectEqual(0.5 * spatial.distanceGain(.{}, 6), heard[0]);
+}
+
+test "occlusion muffles: the low-pass passes a steady level and stops the highest frequency" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 256 });
+    defer f.deinit();
+    // The device's Nyquist frequency: +0.5, −0.5, ...
+    const sound = try asset.Sound.alloc(testing.allocator, 4096, 1, 48_000);
+    for (sound.samples, 0..) |*s, i| s.* = if (i % 2 == 0) 0.5 else -0.5;
+    const nyquist = try f.mixer.insertSound(sound);
+    const v = try f.mixer.playSound(nyquist, .{ .looping = true, .position = .init(0, 0, -0.5) });
+    f.mixer.update();
+    // Open: no filter at all, the samples exactly.
+    const open = try f.step(256);
+    for (open, 0..) |s, i| try testing.expectEqual(@as(f32, if (i % 2 == 0) 0.5 else -0.5), s);
+    try testing.expect(f.mixer.setOcclusionChecked(v, 1));
+    f.mixer.update();
+    _ = try f.step(256);
+    f.mixer.update();
+    const shut = try f.step(256);
+    var peak: f32 = 0;
+    for (shut) |s| peak = @max(peak, @abs(s));
+    // A 1,200 Hz one-pole holds the Nyquist frequency to a few percent, under half the gain.
+    try testing.expect(peak < 0.5 * 0.5 * 0.1);
+
+    // A steady level passes the filter, at the occluded gain.
+    const g = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 256 });
+    defer g.deinit();
+    const dc = try dcSound(g, 48_000, 1, &.{0.5});
+    const w = try g.mixer.playSound(dc, .{ .looping = true, .position = .init(0, 0, -0.5) });
+    try testing.expect(g.mixer.setOcclusionChecked(w, 1));
+    for (0..8) |_| {
+        g.mixer.update();
+        _ = try g.step(256);
+    }
+    g.mixer.update();
+    const settled = try g.step(256);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), settled[255], 1e-4);
+}
+
+test "spatial refusals: not finite, not spatial, not playing, no such attenuation, and pan" {
+    const f = try Fixture.init(testing.allocator, .{});
+    defer f.deinit();
+    const sound = try dcSound(f, 1000, 1, &.{0.5});
+    const nan = std.math.nan(f32);
+    try testing.expectError(error.InvalidPosition, f.mixer.playSound(sound, .{ .position = .init(nan, 0, 0) }));
+    try testing.expectError(error.UnknownAttenuation, f.mixer.playSound(sound, .{ .position = .zero, .attenuation = core.ContentId.fromString("t:nowhere") }));
+    try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
+
+    const placed = try f.mixer.playSound(sound, .{ .looping = true, .position = .zero });
+    const plain = try f.mixer.playSound(sound, .{ .looping = true });
+    try testing.expect(!f.mixer.setPositionChecked(placed, .init(0, nan, 0)));
+    try testing.expect(!f.mixer.setOcclusionChecked(placed, std.math.inf(f32)));
+    try testing.expect(!f.mixer.setPositionChecked(plain, .zero));
+    try testing.expect(!f.mixer.setOcclusionChecked(plain, 0.5));
+    try testing.expect(!f.mixer.setPositionChecked(.none, .zero));
+    // A spatial voice's position decides its pan; a plain voice's pan still applies.
+    try testing.expect(!f.mixer.setPanChecked(placed, 1));
+    try testing.expect(f.mixer.setPanChecked(plain, 1));
+
+    // A listener that cannot be heard from is refused, and the previous one kept.
+    try testing.expect(f.mixer.setListenerChecked(.{ .position = .init(1, 2, 3) }));
+    try testing.expect(!f.mixer.setListenerChecked(.{ .forward = .up }));
+    try testing.expect(!f.mixer.setListenerChecked(.{ .position = .init(nan, 0, 0) }));
+    try testing.expectEqual(@as(f32, 2), f.mixer.listener.position.y);
 }

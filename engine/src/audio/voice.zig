@@ -195,6 +195,22 @@ pub const Voice = struct {
     /// for it instead (§6.3). The mixer counts it and clears it.
     underran: bool = false,
 
+    /// A spatial voice (`mixing.md` §5): its source is summed to mono, filtered by a one-pole
+    /// low-pass, and placed by `left`, `right` and `space`, which the game thread recomputes
+    /// each frame. `left` and `right` are the pan's gains here, as they are for any voice.
+    spatial: bool = false,
+    /// Distance gain times occlusion's gain.
+    space: f32 = 1,
+    /// The one-pole's coefficient; exactly 1 passes the sample through untouched.
+    lowpass: f32 = 1,
+    /// The one-pole's memory.
+    filtered: f32 = 0,
+    /// New placement, reached by the end of the next buffer: each value moves linearly across
+    /// it, so a moving source has no step at a buffer's edge (§5.5).
+    glide: ?Glide = null,
+
+    pub const Glide = struct { left: f32, right: f32, space: f32, lowpass: f32 };
+
     /// Adds this voice's contribution to `out`, which is already zeroed. `frame` is the
     /// mixer frame of `out`'s first frame, which is what the ramps are timed against.
     ///
@@ -211,6 +227,16 @@ pub const Voice = struct {
         const available: u64 = if (self.feed) |feed| feed.written.load(.acquire) else 0;
         // However the buffer ends, the stream learns how far this voice has got.
         defer if (self.feed) |feed| feed.release(self.streamFrame(self.pass, @intFromFloat(self.cursor)));
+
+        // A glide's start, held for the buffer; the voice holds its end once the buffer is done.
+        const from: Glide = .{ .left = self.left, .right = self.right, .space = self.space, .lowpass = self.lowpass };
+        defer if (self.glide) |to| {
+            self.left = to.left;
+            self.right = to.right;
+            self.space = to.space;
+            self.lowpass = to.lowpass;
+            self.glide = null;
+        };
 
         var f: usize = 0;
         while (f < frames_out) : (f += 1) {
@@ -238,6 +264,30 @@ pub const Voice = struct {
                 // **An underrun keeps the timeline** (`music.md` §6.3): silence, and the
                 // cursor moves on as if the frame had been there.
                 self.underran = true;
+            } else if (self.spatial) {
+                // A point has one position, so a stereo source is summed to mono (§5.6).
+                const l = self.lerp(a, b, 0, frac);
+                var m = if (self.channels == 1) l else 0.5 * (l + self.lerp(a, b, 1, frac));
+                var p = from;
+                if (self.glide) |to| {
+                    // Reaching `to` exactly on the buffer's last frame.
+                    const t: f32 = @as(f32, @floatFromInt(f + 1)) / @as(f32, @floatFromInt(frames_out));
+                    p = .{
+                        .left = from.left + (to.left - from.left) * t,
+                        .right = from.right + (to.right - from.right) * t,
+                        .space = from.space + (to.space - from.space) * t,
+                        .lowpass = from.lowpass + (to.lowpass - from.lowpass) * t,
+                    };
+                }
+                // A one-pole stays stable under any coefficient in (0, 1], however it is swept.
+                if (p.lowpass == 1) self.filtered = m else self.filtered += p.lowpass * (m - self.filtered);
+                m = self.filtered;
+                if (device_channels == 1) {
+                    out[f] += m * p.space * gain;
+                } else {
+                    out[f * 2] += m * p.left * p.space * gain;
+                    out[f * 2 + 1] += m * p.right * p.space * gain;
+                }
             } else {
                 var left = self.lerp(a, b, 0, frac);
                 var right = if (self.channels == 1) left else self.lerp(a, b, 1, frac);

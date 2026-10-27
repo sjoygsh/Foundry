@@ -120,6 +120,7 @@ const Stack = struct {
         // all, and both are calls a mod could make (I6): the record type, then the
         // loader that consumes it.
         try asset.schemas.registerAll(gpa, &self.schemas);
+        try asset.mix.registerAll(gpa, &self.schemas);
         try self.assets.registerLoader(gpa, self.mixer.soundLoader());
         return self;
     }
@@ -416,6 +417,39 @@ test "a loop region is checked against the decoded length at load, resident or s
     try testing.expectError(error.InvalidAsset, s.mixer.play(id("foundry:sounds.after"), .{}));
     _ = try s.mixer.play(id("foundry:sounds.theme_fits"), .{});
     try testing.expectError(error.InvalidAsset, s.mixer.play(id("foundry:sounds.theme_after"), .{}));
+}
+
+test "a spatial play uses its sound's attenuation record, and a play may name another" {
+    // M31 Step 4 (`mixing.md` §5): the attenuation resolves where the ID does, at play, and a
+    // record of the wrong schema is refused by name.
+    const s = try Stack.init(.{ .buffer_frames = 4 });
+    defer s.deinit();
+    var frames: [4000]i16 = undefined;
+    @memset(&frames, 16384);
+    try s.writeWav("sounds/chirp.wav", &frames);
+    try s.loadPackage("foundry:core",
+        \\foundry:audio_attenuation foundry:att.near { model "linear" max_distance 4 }
+        \\foundry:audio_attenuation foundry:att.far { model "linear" max_distance 40 }
+        \\foundry:sound foundry:sounds.chirp { source "sounds/chirp.wav" attenuation foundry:att.near }
+    );
+    const id = core.ContentId.fromString;
+    // Two metres to the right: hard right, and a third of the way from 1 m to 4 m.
+    _ = try s.mixer.play(chirp_id, .{ .position = .init(2, 0, 0) });
+    s.mixer.update();
+    var out = try s.step(4);
+    try testing.expectApproxEqAbs(@as(f32, 0), out[0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5 * 2.0 / 3.0), out[1], 1e-6);
+    s.mixer.stopAll();
+    s.mixer.update();
+    _ = try s.step(4);
+    s.mixer.update();
+    // Named on the play instead: 1 − (2 − 1)/(40 − 1).
+    _ = try s.mixer.play(chirp_id, .{ .position = .init(2, 0, 0), .attenuation = id("foundry:att.far") });
+    s.mixer.update();
+    out = try s.step(4);
+    try testing.expectApproxEqAbs(@as(f32, 0.5 * (1.0 - 1.0 / 39.0)), out[1], 1e-6);
+    // A sound is not an attenuation.
+    try testing.expectError(error.UnknownAttenuation, s.mixer.play(chirp_id, .{ .position = .zero, .attenuation = chirp_id }));
 }
 
 test "an Opus file is refused as the valid file it is, and a broken Ogg as broken" {

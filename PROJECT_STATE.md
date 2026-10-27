@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 3 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 4** (`audio`: spatial voices, meaning the listener, positions, attenuation, pan, occlusion and per-buffer interpolation). Buses, stealing and effects do not exist yet. Nothing of M31 is pushed.
+**Current handoff: M31 Step 4 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 5** (`audio`: voice stealing by priority, with fade slots). Buses and effects do not exist yet. Nothing of M31 is pushed.
+
+**M31 Step 4 is done (2026-10-27): spatial voices.**
+- `audio/spatial.zig` holds the pure placement: both distance models, a constant-power pan with near-field narrowing through `core.math.trig`, and occlusion as gain plus a one-pole low-pass through `core.math.exp`.
+- `PlayParams.position` and `attenuation`. The attenuation resolves at play (`UnknownAttenuation`), and a non-finite position is `InvalidPosition`.
+- `setListener`, `setPosition` and `setOcclusion` act on the game thread. `update` sends changed placements.
+- The callback glides the four values across the next buffer. A stereo source is summed to mono, and an unoccluded voice is unfiltered, bit for bit.
+- `setPan` is refused on a spatial voice.
+- Correction: the inverse curve's bound against 1/d is absolute, `near/(far − near)` (3.4% by default), not "3% over the first third".
+- Three guards were verified by breaking them.
+
+Bar **2,404/2,407** (three skips), the full bar, all exit 0.
 
 **M31 Step 3 is done (2026-10-27): start offsets and loop regions.**
 - `PlayParams.start_frame` starts a voice part-way. At or past the end it is refused with `InvalidStart`. A looping start past `loop_end` folds into the region.

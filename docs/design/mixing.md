@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–3 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–4 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1134,3 +1134,85 @@ later session checks a mutation compiled before it trusts the silence.
 M30's sequenced-mix pin and the court's tests are unchanged.
 
 Next is Step 4: spatial voices.
+
+## Resolution — Step 4: spatial voices (2026-10-27)
+
+A voice played with a `position` is now heard where it is, against one listener. Distance,
+pan and occlusion are computed on the game thread once per `update`, and the callback glides
+to them across its next buffer.
+
+**Where the pieces are:**
+- **`audio/spatial.zig` is new, and pure:**
+  - `Listener` and its `Basis` (position and unit right);
+  - `distanceGain` for both models;
+  - `cutoffFor`, logarithmic, and `onePole`, the coefficient `1 − e^(−2π·fc/fs)` through
+    `core.math.exp`;
+  - `place`, which returns a `Placed` of four values: the pan's two gains, `space`
+    (distance gain times occlusion's gain), and the low-pass coefficient.
+
+  The pan law is `panGains`'s, computed with `core.math.trig`. `panGains` itself is
+  untouched, so every existing pin holds.
+- **The mixer:**
+  - `PlayParams` gains `position` and `attenuation`.
+  - `play` resolves the attenuation where the ID resolves, from the store, refusing a missing
+    or wrong-schema record as `UnknownAttenuation`. Its default is `Attenuation{}`. This is
+    where Step 1's reference check first runs for sounds.
+  - A non-finite position is `InvalidPosition`. Both are checked before anything is claimed.
+  - `play` places the voice once, so its first buffer is already where the source is, with no
+    glide in from unity.
+  - `setListener`, `setPosition` and `setOcclusion`, each with a checked form, store state on
+    the game thread.
+  - `update` calls `placeSpatial`, which sends one `spatial` command per voice whose placement
+    changed. If the ring refuses one, `sent` is not updated, so it goes again next frame.
+- **`setPan` on a spatial voice is refused** (the checked form returns false). The position
+  decides the pan.
+
+**The callback** (`voice.zig`):
+- A spatial voice sums a stereo source to mono, runs the one-pole, and multiplies by `left`,
+  `right` and `space`. A mono device hears `space` alone.
+- A `spatial` command arms a `Glide`. Each of the four values moves linearly from where it is
+  to its target and lands exactly on the buffer's last frame, then holds.
+- A coefficient of exactly 1 passes the sample through untouched, so an unoccluded spatial
+  voice is not filtered at all, bit for bit.
+- Non-spatial voices take the code path they always did.
+
+**Two corrections to §5:**
+- **§5.2's "within 3% of 1/d over the first third" was wrong.** The adjusted inverse curve
+  differs from 1/d by `(d − near)·near/((far − near)·d)`, which never exceeds
+  `near/(far − near)` of full scale: 3.4% at the default 1 m and 30 m. It is an absolute
+  bound at every distance, not a relative one over a third of the range. The test holds it
+  at every quarter metre.
+- **§5.5's "no step at a buffer edge" bounds each glided value.** An output is a pan gain
+  times `space`, so its per-frame change is bounded by both changes' shares together. The
+  moving-source test checks that bound at every frame across 60 buffers, edges included, and
+  that each buffer ends exactly on its target.
+
+**Tests:**
+- `spatial.zig`:
+  - both distance models at the near distance, a third, half and the far distance;
+  - the inverse bound and its monotonic fall;
+  - pan at the four compass points, behind and overhead, and for a turned listener;
+  - constant power across a full circle;
+  - the near-field narrowing;
+  - occlusion's gain, the one-pole's coefficient and the geometric-mean cutoff at half, with
+    out-of-range amounts clamped;
+  - listeners that cannot be heard from.
+- The mixer:
+  - a placed voice from its first buffer, its `pan` ignored;
+  - the moving source;
+  - stereo summed to mono, and a mono device;
+  - occlusion: open is exact, fully occluded holds the device's Nyquist frequency under a
+    tenth, and a steady level settles to the occluded gain;
+  - every refusal.
+- `sound_pipeline`: a spatial play uses its sound's attenuation record, a play may name
+  another, and a sound named as an attenuation is refused. Its stack now registers
+  `asset.mix`.
+
+**Guards verified by breaking them**, each in its own run and each compiling:
+- applying a placement at once instead of gliding failed the moving-source test;
+- never closing the low-pass failed both occlusion tests;
+- dropping the near-field narrowing failed the sweep test.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,404/2,407** (three skips).
+
+Next is Step 5: voice stealing by priority.

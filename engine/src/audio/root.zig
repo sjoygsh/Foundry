@@ -64,6 +64,10 @@ pub const Mixer = mixer.Mixer;
 pub const MixerOf = mixer.MixerOf;
 pub const Options = mixer.Options;
 pub const PlayParams = mixer.PlayParams;
+/// Who hears the spatial voices (`mixing.md` §5, ADR-0068).
+pub const Listener = mixer.Listener;
+/// The placement arithmetic, pure and testable without a device.
+pub const spatial = @import("spatial.zig");
 pub const Fade = mixer.Fade;
 pub const Curve = mixer.Curve;
 
@@ -102,6 +106,7 @@ test {
     _ = ring;
     _ = stream;
     _ = music;
+    _ = spatial;
     _ = voice;
 }
 
