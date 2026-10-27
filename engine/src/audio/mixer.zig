@@ -66,6 +66,10 @@ pub const PlayParams = struct {
     start_at: ?u64 = null,
     /// The envelope's value when the voice starts: 0 for a voice that will fade in.
     envelope: f32 = 1.0,
+    /// The source frame the voice begins on (`mixing.md` §6.2). At or past the sound's end is
+    /// refused with `InvalidStart`. A looping voice started past its loop's end begins where
+    /// that frame falls within the region.
+    start_frame: u64 = 0,
 };
 
 pub const Curve = voice.Curve;
@@ -103,6 +107,8 @@ pub const VoiceError = error{
     NoFreeStream,
     /// A streamed voice's decoder state could not be allocated.
     OutOfMemory,
+    /// `start_frame` is at or past the sound's end: caller arithmetic, refused by name.
+    InvalidStart,
 };
 
 /// What `play` can fail with: everything about a voice, plus everything about resolving a
@@ -137,6 +143,10 @@ const Play = struct {
     looping: bool,
     start_at: ?u64,
     envelope: f32,
+    /// The loop region and the first source frame, already folded (`mixing.md` §6.3).
+    loop_start: usize,
+    loop_end: usize,
+    start: usize,
     /// A streamed voice's frames, in place of `samples`.
     feed: ?*Feed,
 };
@@ -187,13 +197,17 @@ const Compressed = struct {
     }
 };
 
-/// What the sound loader's decode hands its finish.
-const Loaded = union(enum) {
-    resident: asset.Sound,
-    streamed: *Compressed,
+/// What the sound loader's decode hands its finish: the samples or the compressed bytes, and
+/// how the record says to mix them (`mixing.md` §4.1).
+const Loaded = struct {
+    data: union(enum) {
+        resident: asset.Sound,
+        streamed: *Compressed,
+    },
+    settings: asset.mix.SoundSettings,
 
     fn deinit(self: *Loaded, gpa: Allocator) void {
-        switch (self.*) {
+        switch (self.data) {
             .resident => |*sound| sound.deinit(gpa),
             .streamed => |compressed| compressed.destroy(gpa),
         }
@@ -217,6 +231,14 @@ const Stream = struct {
     // -- the producer's: the task in flight, or the game thread when none is ---------
     decoder: vorbis.Decoder = undefined,
     looping: bool = false,
+    /// The sound's seek index, borrowed from its `Compressed`, which the stream keeps alive.
+    index: []const vorbis.Checkpoint = &.{},
+    /// The loop region in source frames: a looping stream decodes to `loop_end` and seeks
+    /// back to `loop_start` (`mixing.md` §6.3).
+    loop_start: u64 = 0,
+    loop_end: u64 = 0,
+    /// The source frame the decoder gives next.
+    source: u64 = 0,
     /// Absolute frames decoded so far, across every pass.
     produced: u64 = 0,
     /// A one-shot has decoded its last frame, or the decoder failed.
@@ -230,9 +252,24 @@ const Stream = struct {
     fn fill(erased: *anyopaque) void {
         const self: *Stream = @ptrCast(@alignCast(erased));
         var empty_passes: u8 = 0;
+        const ch = self.feed.channels;
         while (!self.ended) {
-            const room = self.feed.room(self.produced);
+            var room = self.feed.room(self.produced);
             if (room.len == 0) break;
+            if (self.looping) {
+                // At the region's end, back to its start: the seek is exact, so the seam is
+                // the region's length and nothing else (`mixing.md` §6.3).
+                if (self.source >= self.loop_end) {
+                    self.decoder.seek(self.index, self.loop_start) catch |err| {
+                        log.err("a streamed loop failed to restart ({t}); it goes silent", .{err});
+                        self.ended = true;
+                        break;
+                    };
+                    self.source = self.loop_start;
+                }
+                const left: usize = @intCast(@min(self.loop_end - self.source, room.len / ch));
+                room = room[0 .. left * ch];
+            }
             const got = self.decoder.read(room) catch |err| {
                 log.err("a streamed sound failed to decode while playing ({t}); it goes silent", .{err});
                 self.ended = true;
@@ -245,14 +282,11 @@ const Stream = struct {
                     self.ended = true;
                     break;
                 }
-                self.decoder.rewind() catch |err| {
-                    log.err("a streamed loop failed to restart ({t}); it goes silent", .{err});
-                    self.ended = true;
-                    break;
-                };
+                self.source = self.loop_end;
                 continue;
             }
             empty_passes = 0;
+            self.source += got;
             self.produced += got;
             self.feed.publish(self.produced);
         }
@@ -264,6 +298,9 @@ const Stored = struct {
     /// Empty for a streamed sound, whose frames are decoded as it plays.
     sound: asset.Sound,
     compressed: ?*Compressed = null,
+    /// How its record says to mix it (`mixing.md` §4.1); the defaults for a sound inserted
+    /// directly.
+    settings: asset.mix.SoundSettings = .{},
     /// Voices currently playing it. The samples cannot be freed above zero.
     refs: u32 = 0,
     /// Set when the owner has released it — a hot reload, or an explicit release — while
@@ -526,13 +563,32 @@ pub fn MixerOf(comptime P: type) type {
             return self.sounds.add(self.gpa, .{ .sound = sound });
         }
 
+        /// `insertSound` with mixing settings, as a `foundry:sound` record would give them.
+        /// A loop region that does not fit the sound is refused, and the sound is not taken.
+        pub fn insertSoundWith(self: *Self, sound: asset.Sound, settings: asset.mix.SoundSettings) (asset.mix.Refusal || Allocator.Error)!SoundHandle {
+            try settings.validate();
+            try settings.checkLoop(sound.frameCount());
+            return self.sounds.add(self.gpa, .{ .sound = sound, .settings = settings });
+        }
+
         /// Takes an Ogg Vorbis file as a streamed sound: proved by decoding it whole once,
         /// then kept compressed and decoded as each voice of it plays (`music.md` §4, §6).
         /// The bytes are copied.
         pub fn insertStreamed(self: *Self, bytes: []const u8) (vorbis.DecodeError || Allocator.Error)!SoundHandle {
+            return self.insertStreamedWith(bytes, .{}) catch |err| switch (err) {
+                error.OutOfMemory, error.InvalidSound, error.UnsupportedSound, error.SoundTooLarge => |e| e,
+                // The defaults have the whole file as their region, which always fits.
+                else => unreachable,
+            };
+        }
+
+        /// `insertStreamed` with mixing settings. A loop region that does not fit is refused.
+        pub fn insertStreamedWith(self: *Self, bytes: []const u8, settings: asset.mix.SoundSettings) (vorbis.DecodeError || asset.mix.Refusal || Allocator.Error)!SoundHandle {
+            try settings.validate();
             const compressed = try prepareStreamed(self.gpa, bytes);
             errdefer compressed.destroy(self.gpa);
-            return self.adoptStreamed(compressed);
+            if (settings.loop_start != 0 or settings.loop_end != 0) try settings.checkLoop(compressed.headers.frames);
+            return self.adoptStreamed(compressed, settings);
         }
 
         fn prepareStreamed(gpa: Allocator, bytes: []const u8) vorbis.DecodeError!*Compressed {
@@ -546,11 +602,12 @@ pub fn MixerOf(comptime P: type) type {
             return compressed;
         }
 
-        fn adoptStreamed(self: *Self, compressed: *Compressed) Allocator.Error!SoundHandle {
+        fn adoptStreamed(self: *Self, compressed: *Compressed, settings: asset.mix.SoundSettings) Allocator.Error!SoundHandle {
             const info = compressed.headers.info;
             return self.sounds.add(self.gpa, .{
                 .sound = .{ .samples = @constCast(@as([]const f32, &.{})), .channels = info.channels, .sample_rate = info.sample_rate },
                 .compressed = compressed,
+                .settings = settings,
             });
         }
 
@@ -640,16 +697,16 @@ pub fn MixerOf(comptime P: type) type {
             errdefer gpa.destroy(boxed);
             // A streamed sound is decoded whole too, and its samples thrown away: the proving
             // pass that lets a stream's decode treat failure as impossible (`music.md` §4).
-            boxed.* = loaded: {
+            boxed.* = .{ .settings = settings, .data = loaded: {
                 if (stream) break :loaded .{ .streamed = prepareStreamed(gpa, bytes) catch |err| return loadError(err) };
                 const decoded = if (ogg) vorbis.decode(gpa, bytes, .{}) else asset.wav.decode(gpa, bytes, .{});
                 break :loaded .{ .resident = decoded catch |err| return loadError(err) };
-            };
+            } };
             errdefer boxed.deinit(gpa);
             // The loop region against the length, which only now is known (`mixing.md` §4.1).
             // A sound with no loop points has nothing to check: its region is the whole file.
             if (settings.loop_start != 0 or settings.loop_end != 0) {
-                const frames: u64 = switch (boxed.*) {
+                const frames: u64 = switch (boxed.data) {
                     .resident => |sound| sound.frameCount(),
                     .streamed => |compressed| compressed.headers.frames,
                 };
@@ -683,9 +740,9 @@ pub fn MixerOf(comptime P: type) type {
         ) asset.LoadError!asset.Payload {
             const self: *Self = @ptrCast(@alignCast(ctx.?));
             const boxed: *Loaded = @ptrCast(@alignCast(decoded.pointer().?));
-            const handle = switch (boxed.*) {
-                .resident => |sound| try self.insertSound(sound),
-                .streamed => |compressed| try self.adoptStreamed(compressed),
+            const handle = switch (boxed.data) {
+                .resident => |sound| try self.sounds.add(self.gpa, .{ .sound = sound, .settings = boxed.settings }),
+                .streamed => |compressed| try self.adoptStreamed(compressed, boxed.settings),
             };
             gpa.destroy(boxed);
             return .fromHandle(handle);
@@ -735,6 +792,16 @@ pub fn MixerOf(comptime P: type) type {
             if (stored.retired) return error.UnknownSound;
             if (stored.frameCount() == 0) return error.UnknownSound;
 
+            // The region and the first frame, folded so the voice and its stream need not ask
+            // (`mixing.md` §6.2, §6.3). A one-shot's region is the whole file, which it uses
+            // only to know where it ends.
+            const frames: u64 = stored.frameCount();
+            if (params.start_frame >= frames) return error.InvalidStart;
+            const loop_start: u64 = if (params.looping) stored.settings.loop_start else 0;
+            const loop_end: u64 = if (params.looping) stored.settings.loopEnd(frames) else frames;
+            var start = params.start_frame;
+            if (params.looping and start >= loop_end) start = loop_start + (start - loop_start) % (loop_end - loop_start);
+
             // A streamed sound needs a stream as well as a voice, and its decoder state, which
             // is the one thing `play` allocates (`music.md` §6.1).
             var stream_index: ?u32 = null;
@@ -747,12 +814,22 @@ pub fn MixerOf(comptime P: type) type {
                     st.decoder.deinit();
                     return error.OutOfMemory;
                 };
+                // Begun part-way: one packet decoded for its overlap and at most a page of frames
+                // dropped, on the game thread where `play` may cost (`mixing.md` §6.1).
+                if (start != 0) st.decoder.seek(compressed.index, start) catch |err| {
+                    st.decoder.deinit();
+                    return streamError(err);
+                };
                 st.feed.reset(compressed.headers.info.sample_rate, compressed.headers.info.channels);
                 st.in_use = true;
                 st.sound = sound;
                 st.retired = false;
                 st.in_flight = false;
                 st.looping = params.looping;
+                st.index = compressed.index;
+                st.loop_start = loop_start;
+                st.loop_end = loop_end;
+                st.source = start;
                 st.produced = 0;
                 st.ended = false;
                 // The stream holds the compressed bytes alive for its decode task, which may
@@ -784,6 +861,9 @@ pub fn MixerOf(comptime P: type) type {
                 .looping = params.looping,
                 .start_at = params.start_at,
                 .envelope = params.envelope,
+                .loop_start = @intCast(loop_start),
+                .loop_end = @intCast(loop_end),
+                .start = @intCast(start),
                 .feed = if (stream_index) |n| &self.streams[n].feed else null,
             } });
 
@@ -1199,7 +1279,10 @@ pub fn MixerOf(comptime P: type) type {
                         .samples = p.samples,
                         .channels = p.channels,
                         .frames = p.frames,
-                        .cursor = 0,
+                        .loop_start = p.loop_start,
+                        .loop_end = p.loop_end,
+                        .start = p.start,
+                        .cursor = @floatFromInt(p.start),
                         .step = p.step,
                         .level = .hold(p.gain),
                         .envelope = .hold(p.envelope),
@@ -1860,6 +1943,11 @@ const Pair = struct {
     streamed_sound: SoundHandle,
 
     fn init(bytes: []const u8, options: Options) !Pair {
+        return initWith(bytes, options, .{});
+    }
+
+    /// Both sides given the same mixing settings, as one `foundry:sound` record would.
+    fn initWith(bytes: []const u8, options: Options, settings: asset.mix.SoundSettings) !Pair {
         const resident = try Fixture.init(testing.allocator, options);
         errdefer resident.deinit();
         const streamed = try Fixture.init(testing.allocator, options);
@@ -1868,8 +1956,8 @@ const Pair = struct {
         return .{
             .resident = resident,
             .streamed = streamed,
-            .resident_sound = try resident.mixer.insertSound(decoded),
-            .streamed_sound = try streamed.mixer.insertStreamed(bytes),
+            .resident_sound = try resident.mixer.insertSoundWith(decoded, settings),
+            .streamed_sound = try streamed.mixer.insertStreamedWith(bytes, settings),
         };
     }
 
@@ -2088,4 +2176,111 @@ test "fadeGainAt begins the level's ramp on its frame, and a frame already past 
     // Frame 2 has gone: the ramp back up begins at the next callback, frame 12.
     f.mixer.fadeGainAt(v, 2, 1, 4);
     try testing.expectEqualSlices(f32, &[_]f32{ 0, 0.25, 0.5, 0.75 }, try f.step(4));
+}
+
+// -- M31 Step 3: start offsets and loop regions (`mixing.md` §6.2, §6.3) -------------------
+
+/// A mono ramp whose sample `i` is `i`, so a voice's output names the frames it read.
+fn rampSound(gpa: Allocator, frames: usize) !asset.Sound {
+    const sound = try asset.Sound.alloc(gpa, frames, 1, 48_000);
+    for (sound.samples, 0..) |*s, i| s.* = @floatFromInt(i);
+    return sound;
+}
+
+fn expectFrames(f: *Fixture, expected: []const f32) !void {
+    f.mixer.update();
+    const out = try f.step(@intCast(expected.len));
+    for (expected, out) |e, o| try testing.expectEqual(e / 256, o);
+}
+
+test "a loop region plays its intro once and then its region, and a one-shot ignores it" {
+    // Gain 1/256 keeps the ramp's values inside the clamp, and exact in f32.
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 64 });
+    defer f.deinit();
+    const sound = try f.mixer.insertSoundWith(try rampSound(testing.allocator, 200), .{ .loop_start = 100, .loop_end = 164 });
+    _ = try f.mixer.playSound(sound, .{ .looping = true, .gain = 1.0 / 256.0 });
+    var expected: [64]f32 = undefined;
+    // The intro: 0 to 163, across three buffers, then the region again and again.
+    var frame: u64 = 0;
+    for (0..8) |_| {
+        for (&expected) |*e| {
+            const source = if (frame < 164) frame else 100 + (frame - 164) % 64;
+            e.* = @floatFromInt(source);
+            frame += 1;
+        }
+        try expectFrames(f, &expected);
+    }
+    // Played once, the same sound runs to its own end and stops.
+    const g = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 200 });
+    defer g.deinit();
+    const once = try g.mixer.insertSoundWith(try rampSound(testing.allocator, 200), .{ .loop_start = 100, .loop_end = 164 });
+    _ = try g.mixer.playSound(once, .{ .gain = 1.0 / 256.0 });
+    var whole: [200]f32 = undefined;
+    for (&whole, 0..) |*e, i| e.* = @floatFromInt(i);
+    try expectFrames(g, &whole);
+    g.mixer.update();
+    try testing.expectEqual(@as(u32, 0), g.mixer.activeVoices());
+}
+
+test "a start offset begins part-way, and a loop started past its region's end folds into it" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+    const sound = try f.mixer.insertSoundWith(try rampSound(testing.allocator, 200), .{ .loop_start = 100, .loop_end = 164 });
+    const v = try f.mixer.playSound(sound, .{ .gain = 1.0 / 256.0, .start_frame = 30 });
+    try expectFrames(f, &.{ 30, 31, 32, 33 });
+    f.mixer.stop(v);
+    // 190 is past 164: (190 − 100) mod 64 = 26 frames into the region.
+    _ = try f.mixer.playSound(sound, .{ .looping = true, .gain = 1.0 / 256.0, .start_frame = 190 });
+    try expectFrames(f, &.{ 126, 127, 128, 129 });
+
+    // At or past the end is the caller's arithmetic, refused by name, and nothing is claimed.
+    try testing.expectError(error.InvalidStart, f.mixer.playSound(sound, .{ .start_frame = 200 }));
+    try testing.expectError(error.InvalidStart, f.mixer.playSound(sound, .{ .start_frame = std.math.maxInt(u64) }));
+    f.mixer.stopAll();
+    f.mixer.update();
+    _ = try f.step(4);
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
+}
+
+test "a loop region that does not fit is refused, and the defaults are the whole file" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1 });
+    defer f.deinit();
+    var sound = try rampSound(testing.allocator, 200);
+    defer sound.deinit(testing.allocator);
+    try testing.expectError(error.LoopPastEnd, f.mixer.insertSoundWith(sound, .{ .loop_start = 0, .loop_end = 201 }));
+    try testing.expectError(error.InvalidLoop, f.mixer.insertSoundWith(sound, .{ .loop_start = 200 }));
+    try testing.expectError(error.LoopTooShort, f.mixer.insertSoundWith(sound, .{ .loop_start = 150, .loop_end = 180 }));
+    try testing.expectError(error.LoopPastEnd, f.mixer.insertStreamedWith(comptime oggFixture("short"), .{ .loop_end = 1_000_000 }));
+}
+
+test "a streamed voice with a loop region or a start equals its resident decode, across three seams" {
+    // Each case played on a resident and a streamed copy; every buffer must be identical.
+    // Rates the voice copies and rates it resamples, so seams are read by interpolation too.
+    const Case = struct { bytes: []const u8, settings: asset.mix.SoundSettings, params: PlayParams, frames: u64 };
+    const cases = [_]Case{
+        // A region inside a short file, from the start.
+        .{ .bytes = comptime oggFixture("short"), .settings = .{ .loop_start = 64, .loop_end = 250 }, .params = .{ .looping = true }, .frames = 64 + 186 * 4 },
+        // An intro, then a region ending at the file's end, begun part-way through the intro.
+        .{ .bytes = comptime oggFixture("mono44_q0"), .settings = .{ .loop_start = 20_000 }, .params = .{ .looping = true, .pan = -0.4, .start_frame = 9_000 }, .frames = 66_150 * 4 * 48_000 / 44_100 },
+        // A region in the middle, begun inside it.
+        .{ .bytes = comptime oggFixture("stereo48_q4"), .settings = .{ .loop_start = 30_000, .loop_end = 50_000 }, .params = .{ .looping = true, .start_frame = 41_000 }, .frames = 20_000 * 4 },
+        // A start past the region's end, folded into it.
+        .{ .bytes = comptime oggFixture("stereo48_q4"), .settings = .{ .loop_start = 30_000, .loop_end = 50_000 }, .params = .{ .looping = true, .start_frame = 70_000 }, .frames = 20_000 * 4 },
+        // A one-shot begun part-way, to its end.
+        .{ .bytes = comptime oggFixture("stereo22_qm1"), .settings = .{}, .params = .{ .start_frame = 5_000 }, .frames = 0 },
+    };
+    for (cases) |case| {
+        const pair = try Pair.initWith(case.bytes, .{ .buffer_frames = 512 }, case.settings);
+        defer pair.deinit();
+        _ = try pair.play(case.params);
+        var mixed: u64 = 0;
+        const until = if (case.frames == 0) 200_000 else case.frames;
+        while (mixed < until) : (mixed += 512) try pair.stepBoth(512);
+        try testing.expectEqual(@as(u32, 0), pair.streamed.mixer.underruns());
+        pair.streamed.mixer.update();
+        pair.resident.mixer.update();
+        try testing.expectEqual(pair.resident.mixer.activeVoices(), pair.streamed.mixer.activeVoices());
+        try testing.expectEqual(@as(u32, if (case.params.looping) 1 else 0), pair.streamed.mixer.activeVoices());
+    }
 }

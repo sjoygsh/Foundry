@@ -151,6 +151,14 @@ pub const Voice = struct {
     samples: []const f32 = &.{},
     channels: u8 = 1,
     frames: usize = 0,
+    /// The loop region, in source frames (`mixing.md` §6.3): a looping voice plays to
+    /// `loop_end` and wraps to `loop_start`. A one-shot plays to `frames` and ignores it. A
+    /// sound with no loop points has the whole file, `0` to `frames`.
+    loop_start: usize = 0,
+    loop_end: usize = 0,
+    /// The source frame the voice began on (`PlayParams.start_frame`), which a streamed
+    /// voice's ring counts from.
+    start: usize = 0,
 
     /// Position in *source frames*. `f64` because a three-minute sound is 8.6 million
     /// frames — far inside the exact-integer range, with ample fractional precision left.
@@ -181,7 +189,7 @@ pub const Voice = struct {
     /// A streamed voice whose start was not scheduled waits for its first frames, since there
     /// is no timeline to keep yet. A scheduled one keeps its frame and underruns instead.
     wait_for_feed: bool = false,
-    /// Completed passes of a loop: the stream's absolute frame is `pass * frames + cursor`.
+    /// Completed passes of a loop, for a streamed voice's absolute frame (`streamFrame`).
     pass: u64 = 0,
     /// Set by `mix` when a streamed voice found a frame it needed missing, and wrote silence
     /// for it instead (§6.3). The mixer counts it and clears it.
@@ -195,12 +203,14 @@ pub const Voice = struct {
     pub fn mix(self: *Voice, out: []f32, device_channels: u8, frame: u64) bool {
         if (!self.active or self.frames == 0) return false;
 
-        const total: f64 = @floatFromInt(self.frames);
+        // A loop wraps at its region's end; a one-shot ends at the file's.
+        const end: f64 = @floatFromInt(if (self.looping) self.loop_end else self.frames);
+        const region: f64 = @floatFromInt(self.loop_end - self.loop_start);
         const frames_out = out.len / device_channels;
         // Read once per buffer: frames the producer adds meanwhile wait for the next one.
         const available: u64 = if (self.feed) |feed| feed.written.load(.acquire) else 0;
         // However the buffer ends, the stream learns how far this voice has got.
-        defer if (self.feed) |feed| feed.release(self.pass * self.frames + @as(u64, @intFromFloat(self.cursor)));
+        defer if (self.feed) |feed| feed.release(self.streamFrame(self.pass, @intFromFloat(self.cursor)));
 
         var f: usize = 0;
         while (f < frames_out) : (f += 1) {
@@ -220,9 +230,8 @@ pub const Voice = struct {
             var a: u64 = index;
             var b: u64 = next;
             if (self.feed != null) {
-                const base = self.pass * self.frames;
-                a = base + index;
-                b = if (self.looping and index + 1 >= self.frames) base + self.frames + next else base + next;
+                a = self.streamFrame(self.pass, index);
+                b = if (self.looping and index + 1 >= self.loop_end) self.streamFrame(self.pass + 1, next) else self.streamFrame(self.pass, next);
             }
 
             if (self.feed != null and b >= available) {
@@ -248,7 +257,7 @@ pub const Voice = struct {
             }
 
             self.cursor += self.step;
-            if (self.cursor >= total) {
+            if (self.cursor >= end) {
                 if (!self.looping) {
                     // **The voice ends in the buffer it runs out in**, not the one after.
                     // Checking before writing instead would hold a finished slot for one
@@ -257,12 +266,12 @@ pub const Voice = struct {
                     self.active = false;
                     return false;
                 }
-                // **Wrapped, not reset to zero**, so a loop does not accumulate a
-                // fractional-frame error on every pass. A `while` rather than an `if`
-                // because a high pitch can carry the cursor past the end more than once
-                // on a very short sound.
-                while (self.cursor >= total) {
-                    self.cursor -= total;
+                // **Wrapped by the region's length, not reset to its start**, so a loop does
+                // not accumulate a fractional-frame error on every pass. A `while` rather
+                // than an `if` because a high pitch can carry the cursor past the end more
+                // than once on a very short region.
+                while (self.cursor >= end) {
+                    self.cursor -= region;
                     self.pass += 1;
                 }
             }
@@ -274,8 +283,18 @@ pub const Voice = struct {
     /// one-shot holds its last frame rather than interpolating towards silence, which
     /// would put a click at the end of every sound that does not fade out itself.
     fn neighbour(self: *const Voice, index: usize) usize {
-        if (index + 1 < self.frames) return index + 1;
-        return if (self.looping) 0 else index;
+        if (index + 1 < (if (self.looping) self.loop_end else self.frames)) return index + 1;
+        return if (self.looping) self.loop_start else index;
+    }
+
+    /// The streamed ring's frame for source frame `index` on pass `pass`. The ring counts from
+    /// `start`: the first pass runs from there to `loop_end`, and each later one is the region
+    /// again (`mixing.md` §6.3). With the whole file and no start offset it is
+    /// `pass * frames + index`, M30's count.
+    fn streamFrame(self: *const Voice, pass: u64, index: usize) u64 {
+        if (pass == 0) return index - self.start;
+        const region: u64 = self.loop_end - self.loop_start;
+        return (self.loop_end - self.start) + (pass - 1) * region + (index - self.loop_start);
     }
 
     fn lerp(self: *const Voice, a: u64, b: u64, channel: u8, frac: f32) f32 {
@@ -340,6 +359,8 @@ fn monoVoice(samples: []const f32, looping: bool) Voice {
         .samples = samples,
         .channels = 1,
         .frames = samples.len,
+        // The whole file as the region, as the mixer gives a sound with no loop points.
+        .loop_end = samples.len,
         .looping = looping,
         .left = 1,
         .right = 1,

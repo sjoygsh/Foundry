@@ -1,7 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 2 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 3** (`audio`: `start_frame` and loop regions on resident and streamed voices). No mixer behaviour has changed yet. Nothing of M31 is pushed.
+**Current handoff: M31 Step 3 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 4** (`audio`: spatial voices, meaning the listener, positions, attenuation, pan, occlusion and per-buffer interpolation). Buses, stealing and effects do not exist yet. Nothing of M31 is pushed.
+
+**M31 Step 3 is done (2026-10-27): start offsets and loop regions.**
+- `PlayParams.start_frame` starts a voice part-way. At or past the end it is refused with `InvalidStart`. A looping start past `loop_end` folds into the region.
+- A looping voice plays its intro once, then `[loop_start, loop_end)`, resident or streamed:
+  - the voice wraps by the region's length;
+  - the stream reads to `loop_end` and seeks back with Step 2's `seek`;
+  - a stream begun part-way seeks before its first fill.
+- The sound's `SoundSettings` travel from the loader into `Stored`. `insertSoundWith` and `insertStreamedWith` take them directly.
+- A whole-file loop gives M30's frames, so every pin is unchanged.
+- Streamed output equals resident across three seams in five cases.
+- Three guards were verified by breaking them.
+
+Bar **2,393/2,396** (three skips), the full bar, all exit 0.
 
 **M31 Step 2 is done (2026-10-27): seeking by granule.**
 - `vorbis.Decoder.seek(index, frame)` gives exactly a whole decode's samples from any frame.

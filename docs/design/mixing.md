@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–2 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–3 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1064,3 +1064,73 @@ in `prove`, so a whole decode pays nothing for it.
 
 Next is Step 3: start offsets and loop regions in voices, which is the first step to seek a
 stream.
+
+## Resolution — Step 3: start offsets and loop regions (2026-10-27)
+
+A voice can now begin part-way through a sound, and a looping voice plays its intro once and
+then its region. Resident and streamed voices give identical samples, buffer for buffer.
+
+**The settings travel with the sound.**
+- The loader's `Loaded` box now carries the record's `asset.mix.SoundSettings` beside the
+  samples or the compressed bytes. `Stored` keeps them, so later steps' bus, priority and
+  attenuation are already where `play` can read them.
+- `insertSoundWith` and `insertStreamedWith` take settings directly, as a record would give
+  them, and refuse a region that does not fit, by Step 1's names. `insertSound` and
+  `insertStreamed` are those with the defaults.
+
+**`play` folds everything once**, so neither the callback nor the decode task asks again:
+- `start_frame` at or past the end is refused, `error.InvalidStart`, before anything is
+  claimed. The public table always starts at 0, so the new error cannot reach it.
+- A one-shot's region is the whole file, which it uses only to know where it ends. Loop
+  points apply only to a looping voice.
+- **A looping voice started past its region's end folds into the region**:
+  `loop_start + (start − loop_start) mod length`. The design said only "past the end is
+  refused". This is the answer for a looping start between `loop_end` and the file's end,
+  and it is what Step 9's resume needs.
+- The play command carries `loop_start`, `loop_end` and `start`, and the voice's cursor
+  begins at `start`.
+
+**The voice** (`voice.zig`):
+- It wraps at `loop_end` by subtracting the region's length, never by resetting, so no
+  fractional error builds up.
+- It interpolates across the seam from `loop_end − 1` to `loop_start`.
+- A streamed voice's ring frame is `Voice.streamFrame(pass, index)`. The first pass runs
+  from `start` to `loop_end`, and each later pass is the region again. With the whole file
+  and no start it reduces to M30's `pass × frames + index`, so every M30 pin is unchanged.
+
+**The stream** (`mixer.zig`'s `Stream.fill`):
+- A looping stream reads only up to `loop_end`, then seeks to `loop_start` with Step 2's
+  `seek` on the sound's index.
+- A whole-file loop therefore seeks to 0 at exactly the file's length, where M30 read to the
+  end and rewound. The result is the same samples: the three-seam test is unchanged.
+- A stream begun part-way seeks before its first fill, on the game thread in `play`.
+
+**One trap found on the way.** A `Voice` built by hand with no `loop_end` has a region of
+zero, and its wrap would never end. Only the voice unit tests' `monoVoice` built one, and it
+hung the suite. It now sets the whole file, as the mixer always does.
+
+**Tests:**
+- exact frames from a ramp: the intro, then the region, over eight buffers; a one-shot of
+  the same sound playing to its own end; a start part-way; a start folded into the region;
+  `InvalidStart` claiming nothing;
+- regions that do not fit, refused resident and streamed;
+- **streamed equal to resident**, buffer for buffer, over at least three seams:
+  - a region inside the short file;
+  - an intro begun part-way with a region to the end, resampled and panned;
+  - a mid-file region begun inside it;
+  - a start folded into the region;
+  - a one-shot begun part-way, to its retirement.
+
+**Guards verified by breaking them**, each in its own run:
+- seeking a loop to 0 rather than `loop_start` failed the streamed equality;
+- wrapping by the end rather than the region's length failed the resident region and the
+  streamed equality;
+- dropping the fold failed the fold test and the streamed equality.
+
+The first attempts at the second and third mutations did not compile. That is noted so a
+later session checks a mutation compiled before it trusts the silence.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,393/2,396** (three skips).
+M30's sequenced-mix pin and the court's tests are unchanged.
+
+Next is Step 4: spatial voices.
