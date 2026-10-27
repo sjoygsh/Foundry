@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31's design is proposed** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); awaiting the owner's acceptance of §16. **Stop before Step 1.** M30 is complete and pushed (tag `m30`, `d8d6e42`).
+**Current handoff: M31 Step 1 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068, accepted 2026-10-27). **Stop before Step 2** (`asset`: seeking by granule, with a page index built in the proving pass). No mixer behaviour has changed yet: buses, spatial voices, stealing and loop regions in voices do not exist, only their records. Nothing of M31 is pushed.
+
+**M31 Step 1 is done (2026-10-27): arithmetic, and the records.**
+- The owner's "Begin" accepted the design. Acceptance is recorded in the design, ADR-0067, ADR-0068 and `CLAUDE.md` §4.1.
+- `core.math.exp` (`core/exp.zig`): `exp2`, `log2`, `dbToGain` and `gainToDb`, as `f64` series in arithmetic alone. They are within 2e-7 and exact at every power of two, in Debug, ReleaseSafe and x86_64.
+- `asset.mix` (`asset/mix.zig`):
+  - `foundry:audio_bus`, `foundry:audio_attenuation` and the five effect records, with their values, decoders, named refusals, and load-time reference checks.
+  - `foundry:sound` is version 3 (`bus`, `priority`, `attenuation`, `loop_start`, `loop_end`), and `foundry:music_playlist` is version 2 (`resume`; the Zig field is `resumes`, because `resume` is a keyword).
+- The compiler refuses bad mixing records and sounds at their line. The mixer refuses a loop region that does not fit the decoded length (`InvalidAsset`).
+- There are 29 engine schema spellings.
+- Three guards were verified by breaking them.
+
+Bar **2,386/2,389** (three skips), the full bar, all exit 0.
 
 **M31's design (2026-10-27): Audio III, spatialisation, buses and effects.**
 - ADR-0067: the mix is a tree of `foundry:audio_bus` records linked child to parent, each with up to eight engine effects described by their own records (filter, delay, FDN reverb, compressor, lookahead limiter). It runs in the callback over buffers allocated when the tree is built, and a changed tree is swapped by one command. Mods configure effects and never supply DSP. `core.math.exp` gives arithmetic `exp2`/`log2`.

@@ -36,6 +36,7 @@ test {
     _ = log;
     _ = math;
     _ = math.trig;
+    _ = math.exp;
     _ = mem;
     _ = profile;
     _ = rng;

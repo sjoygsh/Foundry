@@ -627,6 +627,11 @@ pub fn MixerOf(comptime P: type) type {
                 log.warn("{f}: stream is for compressed sounds, and this is not one", .{record.id});
                 return error.UnsupportedVersion;
             }
+            // How it is mixed, which `fpack` already checked as far as the record alone can.
+            const settings = asset.mix.decodeSound(record.fields) catch |err| {
+                log.warn("{f}: sound {s}", .{ record.id, asset.mix.describe(err) });
+                return error.InvalidAsset;
+            };
             const boxed = try gpa.create(Loaded);
             errdefer gpa.destroy(boxed);
             // A streamed sound is decoded whole too, and its samples thrown away: the proving
@@ -636,6 +641,19 @@ pub fn MixerOf(comptime P: type) type {
                 const decoded = if (ogg) vorbis.decode(gpa, bytes, .{}) else asset.wav.decode(gpa, bytes, .{});
                 break :loaded .{ .resident = decoded catch |err| return loadError(err) };
             };
+            errdefer boxed.deinit(gpa);
+            // The loop region against the length, which only now is known (`mixing.md` §4.1).
+            // A sound with no loop points has nothing to check: its region is the whole file.
+            if (settings.loop_start != 0 or settings.loop_end != 0) {
+                const frames: u64 = switch (boxed.*) {
+                    .resident => |sound| sound.frameCount(),
+                    .streamed => |compressed| compressed.headers.frames,
+                };
+                settings.checkLoop(frames) catch |err| {
+                    log.warn("{f}: sound {s}", .{ record.id, asset.mix.describe(err) });
+                    return error.InvalidAsset;
+                };
+            }
             return .fromPointer(boxed);
         }
 

@@ -296,10 +296,12 @@ pub fn compile(
     return identity;
 }
 
-/// Whether every `foundry:particle_emitter`, `foundry:music_playlist` and `foundry:music_stinger`
-/// in a written package decodes (ADR-0064, ADR-0066). A refusal names the record and its field,
-/// at the line that declared it when one did. A playlist's tracks resolve across packages, so
-/// whether each is a sound is checked where they resolve, at load.
+/// Whether every `foundry:particle_emitter`, `foundry:music_playlist`, `foundry:music_stinger`,
+/// mixing record and `foundry:sound` in a written package decodes (ADR-0064, ADR-0066, ADR-0067,
+/// ADR-0068). A refusal names the record and its field, at the line that declared it when one
+/// did. IDs resolve across packages, so whether a playlist's tracks are sounds, or a bus's
+/// effects are effects, is checked where they resolve, at load; and a sound's loop region needs
+/// its decoded length, so it is checked against that where the sound is decoded.
 fn checkMeanings(
     gpa: Allocator,
     bytes: []const u8,
@@ -327,6 +329,12 @@ fn checkMeanings(
             continue;
         } else if (view.schema_id.eql(asset.music.stinger.id)) blk: {
             _ = asset.music.decodeStinger(fields) catch |err| break :blk .{ "music stinger", asset.music.describe(err) };
+            continue;
+        } else if (view.schema_id.eql(asset.schemas.sound.id)) blk: {
+            _ = asset.mix.decodeSound(fields) catch |err| break :blk .{ "sound", asset.mix.describe(err) };
+            continue;
+        } else if (asset.mix.check(view.schema_id, fields)) |result| blk: {
+            result catch |err| break :blk .{ asset.mix.noun(view.schema_id).?, asset.mix.describe(err) };
             continue;
         } else continue;
         ok = false;
@@ -419,6 +427,14 @@ pub fn registerAvailableSchemas(
         },
     };
 
+    asset.mix.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's mixing schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -456,6 +472,13 @@ pub const engine_schema_names = [_][]const u8{
     asset.particle_emitter.name,
     asset.music.playlist_name,
     asset.music.stinger_name,
+    asset.mix.bus_name,
+    asset.mix.attenuation_name,
+    asset.mix.filter_name,
+    asset.mix.delay_name,
+    asset.mix.reverb_name,
+    asset.mix.compressor_name,
+    asset.mix.limiter_name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
@@ -2600,6 +2623,46 @@ test "fpack imports an explicit glTF model end to end and deterministically" {
     const rendered = try f.rendered(&diagnostic);
     try testing.expect(std.mem.indexOf(u8, rendered, "dropped 1 degenerate") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "empty collision mesh") != null);
+}
+
+test "mixing records and version 3 sounds compile, and one out of range is refused at its line" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("mix.fdt",
+        \\foundry:audio_bus demo:root { effects [ demo:limit ] }
+        \\foundry:audio_limiter demo:limit { }
+        \\foundry:audio_attenuation demo:near { max_distance 12 }
+        \\foundry:sound demo:step { source "step.wav" bus demo:root priority 32 attenuation demo:near }
+    );
+    try f.write("step.wav", "RIFF");
+    try f.compileIt("demo:content");
+    var reader = try f.open();
+    defer reader.deinit();
+    const view = recordNamed(&reader, "demo:step").?;
+    const settings = try asset.mix.decodeSound(reader.fieldsOf(view, reader.schemaFor(view.schema_id).?.*));
+    try testing.expectEqual(@as(u8, 32), settings.priority);
+
+    const cases = [_]struct { source: []const u8, says: []const u8 }{
+        .{ .source = "\nfoundry:audio_bus demo:b { gain 9 }", .says = "audio bus 'demo:b' has a gain" },
+        .{ .source = "\nfoundry:audio_reverb demo:r { decay 30 }", .says = "audio reverb 'demo:r' has a decay" },
+        .{ .source = "\nfoundry:audio_filter demo:f { shape \"notch\" frequency 900 }", .says = "audio filter 'demo:f' has a shape" },
+        .{ .source = "\nfoundry:audio_attenuation demo:a { min_distance 4 max_distance 2 }", .says = "audio attenuation 'demo:a' has a max_distance" },
+        .{ .source = "\nfoundry:audio_limiter demo:l { ceiling_db 3 }", .says = "audio limiter 'demo:l' has a ceiling_db" },
+        .{ .source = "\nfoundry:sound demo:s { source \"s.wav\" priority 300 }", .says = "sound 'demo:s' has a priority" },
+        .{ .source = "\nfoundry:sound demo:s { source \"s.wav\" loop_start 90 loop_end 10 }", .says = "sound 'demo:s' has a loop_start" },
+    };
+    for (cases) |case| {
+        var g = try Fixture.init();
+        defer g.deinit();
+        try g.write("s.wav", "RIFF");
+        try g.write("mix.fdt", case.source);
+        try testing.expectError(error.ContentInvalid, g.compileIt("demo:content"));
+        try testing.expectEqual(@as(usize, 0), g.bytes.items.len);
+        var buf: [2048]u8 = undefined;
+        const text = try g.rendered(&buf);
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, "mix.fdt:2:"));
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, case.says));
+    }
 }
 
 test "music records compile, and a playlist or stinger out of range is refused at its line" {

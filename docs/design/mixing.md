@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Proposed 2026-10-27; awaiting the owner's acceptance of §16. No step has begun.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Step 1 is done; its Resolution follows §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -917,3 +917,76 @@ Then:
 - pack up the PC by exact path.
 
 Tag `m31`, push when asked, and stop before M32's design.
+
+## Resolution — Step 1: arithmetic, and the records (2026-10-27)
+
+The owner's "Begin" accepted the design with §16 as written. The design's status line,
+ADR-0067, ADR-0068 and `CLAUDE.md` §4.1 record it.
+
+**`core.math.exp`** (`engine/src/core/exp.zig`) gives `exp2`, `log2`, `dbToGain` and
+`gainToDb`. Two points sharpen §3:
+- **Series, not minimax polynomials.** Each function works in `f64`, using only `+`, `−`,
+  `×`, `/`, `floor` and the bits of the number, and returns `f32`:
+  - `exp2` splits `x` into `n + f` with |f| ≤ ½, then takes e^(f·ln 2) as a twelve-term
+    Taylor series. It builds 2ⁿ from its bits.
+  - `log2` takes the mantissa into [√½, √2), then 2·atanh(s) as an eight-term odd series.
+
+  A series' error is its first omitted term (below 2 × 10⁻¹⁶ for both), which is easier to
+  argue than fitted coefficients. Both meet the 2 × 10⁻⁷ bound with room to spare.
+- **Every power of two is exact**, bit for bit, in both directions, from 2⁻¹⁴⁹ to 2¹²⁷.
+  - The same three tests pass in Debug, ReleaseSafe and as x86_64 under Rosetta.
+  - "Exact round trip at the records' defaults" was too strong for `f32`. The test holds
+    `gainToDb(dbToGain(x))` within 10⁻⁵ dB of `x` at each default and limit.
+  - Silence, a negative gain and NaN all read as −180 dB.
+
+**The records:**
+- **`asset/mix.zig` is new**, as `asset.mix`. It holds:
+  - the seven schemas (bus, attenuation, and the five effects), each version 1;
+  - the values: `SoundSettings`, `Attenuation`, `Bus`, `Effect` as a union of the five
+    effect parameter sets, and each value's `validate`;
+  - the decoders;
+  - `describe` and `noun` for diagnostics;
+  - `checkSoundReferences` and `checkBusReferences`, for the IDs that resolve across
+    packages.
+
+  `Effect` is the form Steps 6–8 build a tree from.
+- **`foundry:sound` is version 3**, with §4.1's five fields, each `since = 3` with a default
+  or optional. `schemas.zig`'s tests already require that of every field after version 1.
+  Version 1 and 2 packages decode as defaults, so every existing sound and pin is unchanged.
+- **`foundry:music_playlist` is version 2**, with `resume`.
+  - `resume` is a Zig keyword, so `Playlist`'s field is `resumes`. The record's field, which
+    is on authors' disks, stays `resume`.
+- **The loop region is checked in two places**, by what each can know:
+  - **The record alone:** with a `loop_end`, `loop_start` must be before it (`InvalidLoop`)
+    and the region at least 64 frames (`LoopTooShort`). `fpack` and the editor check this.
+  - **The decoded length:** `SoundSettings.checkLoop` refuses `LoopPastEnd`, a start at or
+    after the end, and a region under 64 frames. The mixer's `soundDecode` runs it once the
+    resident samples or the proving pass know the length, whether resident or streamed. A
+    refusal is `InvalidAsset` with the sentence logged, the outcome a broken file has.
+  - A sound with no loop points is not checked. Its region is the whole file, so a
+    20-frame click may still loop whole, as in M30.
+- **Where they are checked:**
+  - `author/compiler.zig`'s `checkMeanings` decodes every `foundry:sound` and every mixing
+    record in a written package. A refusal names the record and its field, at its line:
+    "audio reverb 'demo:r' has a decay that is not between 0.1 and 20 seconds".
+  - IDs resolve across packages, so whether a bus is a bus, an attenuation is an attenuation
+    or an effect is an effect is checked at load. The checks are written and tested here.
+    Steps 4 and 6, which first resolve those IDs, call them.
+- **Registration:** `asset.mix.registerAll` joins the compiler's `registerAvailableSchemas`
+  and `app`'s engine registration. `engine_schema_names` gains the seven spellings, 29 in
+  all, so the editor's New Record form offers them. The court's and `music_sequencing`'s test
+  stacks register no mixing schemas yet, because no content of theirs uses one until
+  Step 10.
+
+**Guards verified by breaking them**, all at once, each failing its own test before
+restoring:
+- dropping the priority bound failed the refusal table and the compiler's line test (a `u8`
+  cast trap, which still fails the test);
+- skipping the load-time loop check failed `sound_pipeline`'s new resident-and-streamed test;
+- dropping one term of `log2`'s series failed the bound and the decibel tests.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,386/2,389** (three skips, as
+before): 124/124 steps, ten more tests than M30's close.
+
+Next is Step 2: seeking by granule in `asset`. No mixer behaviour has changed yet. Buses,
+spatial voices, stealing and loop regions in voices do not exist; only their records do.

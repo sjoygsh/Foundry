@@ -260,22 +260,30 @@ pub const stream_field = "stream";
 
 /// A decoded sound, loaded into the mixer's pool.
 ///
-/// **Version 2, and version 1 content still loads** (I8). Version 1 was `source` alone, the
+/// **Version 3, and version 1 and 2 content still loads** (I8). Version 1 was `source` alone, the
 /// shape `foundry:texture` started with. M30 appended `stream` with a default when compressed
 /// sounds arrived (`music.md` §4): whether a sound stays compressed and is decoded as it
 /// plays is a choice of memory against latency, and the author is the one who knows which a
 /// sound needs. A `.wav` or an `.ogg` derives this record; the loader picks the decoder by
-/// the file's first bytes, never by its extension (ADR-0021). Loop points are M31's.
+/// the file's first bytes, never by its extension (ADR-0021). M31 appended how a sound is
+/// mixed (`mixing.md` §4.1): the bus it plays on, its priority when voices run out, the
+/// attenuation a spatial play uses, and a loop region in source frames. `mix.zig` decodes
+/// and validates them.
 ///
 /// The schema is here and the loader is in `audio`, by the split this file's header states:
 /// `fpack` must know the record type without linking a mixer, and what a sound *is* to the
 /// mixer is not a content concept.
 pub const sound: Schema = .{
     .id = SchemaId.fromStringUnchecked(sound_name),
-    .version = 2,
+    .version = 3,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = stream_field, .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
+        .{ .name = "bus", .type = .id, .since = 3, .presence = .optional },
+        .{ .name = "priority", .type = .u32, .since = 3, .presence = .{ .default = .{ .int = 128 } } },
+        .{ .name = "attenuation", .type = .id, .since = 3, .presence = .optional },
+        .{ .name = "loop_start", .type = .u64, .since = 3, .presence = .{ .default = .{ .int = 0 } } },
+        .{ .name = "loop_end", .type = .u64, .since = 3, .presence = .{ .default = .{ .int = 0 } } },
     },
 };
 

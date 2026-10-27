@@ -24,6 +24,8 @@ const std = @import("std");
 
 /// Sine and cosine in arithmetic alone, for results pinned by hash (`trig.zig`).
 pub const trig = @import("trig.zig");
+/// `exp2`, `log2` and decibels in arithmetic alone, for the same reason (`exp.zig`).
+pub const exp = @import("exp.zig");
 
 pub const Vec2 = extern struct {
     x: f32 = 0,

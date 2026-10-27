@@ -1,6 +1,6 @@
 # ADR-0067: Buses and effects are content, mixed by engine-implemented nodes
 
-**Status:** Proposed 2026-10-27 (`docs/design/mixing.md`)
+**Status:** Accepted 2026-10-27 (the owner asked for M31 Step 1; `docs/design/mixing.md`)
 **Date:** 2026-10-27
 
 ## Context

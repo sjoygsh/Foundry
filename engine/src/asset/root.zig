@@ -59,6 +59,9 @@ pub const vorbis = @import("vorbis.zig");
 /// `foundry:music_playlist` and `foundry:music_stinger`, a soundtrack as content (ADR-0066).
 /// Here for `particle_emitter`'s reason: `fpack` checks them with no mixer.
 pub const music = @import("music.zig");
+/// `foundry:audio_bus`, the effect records, `foundry:audio_attenuation` and how a sound is
+/// mixed (ADR-0067, ADR-0068). Here for the same reason.
+pub const mix = @import("mix.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -159,5 +162,6 @@ test {
     _ = ogg;
     _ = vorbis;
     _ = music;
+    _ = mix;
     _ = wav;
 }

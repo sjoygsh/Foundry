@@ -701,6 +701,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+            // `foundry:audio_bus`, the effects and `foundry:audio_attenuation` (ADR-0067,
+            // ADR-0068): a game's mix is content, so its record types are the engine's.
+            asset.mix.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own mixing schemas were refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
 
             var diags: data.Diagnostics = .init(gpa, .default);
             defer diags.deinit(gpa);

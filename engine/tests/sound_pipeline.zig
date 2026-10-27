@@ -394,6 +394,30 @@ test "stream is for compressed sounds: a streamed .wav is refused, a streamed .o
     _ = try s.mixer.play(core.ContentId.fromString("foundry:sounds.theme"), .{});
 }
 
+test "a loop region is checked against the decoded length at load, resident or streamed" {
+    // M31 Step 1 (`mixing.md` §4.1): the record alone cannot know a sound's length, so a
+    // region past the end, or one starting at or after it, is refused where the sound decodes.
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 2 });
+    defer s.deinit();
+    var frames: [200]i16 = undefined;
+    for (&frames, 0..) |*f, i| f.* = @intCast(i * 100);
+    try s.writeWav("sounds/chirp.wav", &frames);
+    try s.writeFile("music/theme.ogg", asset.ogg.fixtures[0].ogg);
+    try s.loadPackage("foundry:core",
+        \\foundry:sound foundry:sounds.fits { source "sounds/chirp.wav" loop_start 50 loop_end 200 }
+        \\foundry:sound foundry:sounds.past { source "sounds/chirp.wav" loop_start 50 loop_end 201 }
+        \\foundry:sound foundry:sounds.after { source "sounds/chirp.wav" loop_start 200 }
+        \\foundry:sound foundry:sounds.theme_fits { source "music/theme.ogg" stream true loop_start 64 }
+        \\foundry:sound foundry:sounds.theme_after { source "music/theme.ogg" stream true loop_start 100000000 }
+    );
+    const id = core.ContentId.fromString;
+    _ = try s.mixer.play(id("foundry:sounds.fits"), .{});
+    try testing.expectError(error.InvalidAsset, s.mixer.play(id("foundry:sounds.past"), .{}));
+    try testing.expectError(error.InvalidAsset, s.mixer.play(id("foundry:sounds.after"), .{}));
+    _ = try s.mixer.play(id("foundry:sounds.theme_fits"), .{});
+    try testing.expectError(error.InvalidAsset, s.mixer.play(id("foundry:sounds.theme_after"), .{}));
+}
+
 test "an Opus file is refused as the valid file it is, and a broken Ogg as broken" {
     const s = try Stack.init(.{ .channels = 1, .buffer_frames = 2 });
     defer s.deinit();

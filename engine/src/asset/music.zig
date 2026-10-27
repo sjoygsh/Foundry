@@ -46,10 +46,11 @@ pub const max_beats_per_bar: u32 = 32;
 /// A beat offset or a duck's fade longer than this is a typo, not music.
 pub const max_seconds: f32 = 600;
 
-/// Version 1.
+/// Version 2: M31 appended `resume` with a default (`mixing.md` §4.5), so version 1 content
+/// still decodes (I8).
 pub const playlist: Schema = .{
     .id = SchemaId.fromStringUnchecked(playlist_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = "tracks", .type = .{ .list = &.id } },
         .{ .name = "order", .type = .string, .presence = .{ .default = .{ .string = "sequential" } } },
@@ -59,6 +60,7 @@ pub const playlist: Schema = .{
         .{ .name = "tempo", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
         .{ .name = "beats_per_bar", .type = .u32, .presence = .{ .default = .{ .int = 4 } } },
         .{ .name = "first_beat", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
+        .{ .name = "resume", .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
     },
 };
 
@@ -98,6 +100,9 @@ pub const Playlist = struct {
     beats_per_bar: u32 = 4,
     /// Seconds into each track where beat one falls.
     first_beat: f32 = 0,
+    /// Played again after being left, it resumes the track it was playing where it was left
+    /// (`mixing.md` §10.2).
+    resumes: bool = false,
 
     pub fn tracks(self: *const Playlist) []const ContentId {
         return self.track_buffer[0..self.track_count];
@@ -187,6 +192,7 @@ pub fn decodePlaylist(fields: Fields) DecodeError!Playlist {
     if (try floatOf(fields, "tempo")) |v| out.tempo = v;
     if (try intOf(fields, "beats_per_bar")) |v| out.beats_per_bar = std.math.cast(u32, v) orelse return error.InvalidBeatsPerBar;
     if (try floatOf(fields, "first_beat")) |v| out.first_beat = v;
+    if (try boolOf(fields, "resume")) |v| out.resumes = v;
     try out.validate();
     return out;
 }
@@ -301,6 +307,8 @@ test "an absent field is its default, and the design's example decodes as it say
     try testing.expectEqual(@as(f32, 0), minimal.tempo);
     try testing.expectEqual(@as(u32, 4), minimal.beats_per_bar);
     try testing.expectEqual(@as(f32, 0), minimal.first_beat);
+    try testing.expect(!minimal.resumes);
+    try testing.expect((try (try playlistOf("foundry:music_playlist t:p { tracks [ t:a ] resume true }"))).resumes);
 
     const calm = try (try playlistOf(
         \\foundry:music_playlist t:calm {
