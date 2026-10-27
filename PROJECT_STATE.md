@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 4 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 5** (`audio`: voice stealing by priority, with fade slots). Buses and effects do not exist yet. Nothing of M31 is pushed.
+**Current handoff: M31 Step 5 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 6** (`audio`: the bus tree from records, routing, order, gain ramps and swaps; effects bypassed). Buses and effects do not exist yet. Nothing of M31 is pushed.
+
+**M31 Step 5 is done (2026-10-27): voice stealing.**
+- With no free voice, `play` takes the lowest priority, then the quietest by the game thread's estimate, then the oldest. It never takes a higher priority; equal priority may be taken.
+- The victim fades over `steal_fade_frames` (256) in one of `fade_slots` (4) extra voices, or is cut when they are all busy.
+- Its references wait as a zombie on its slot until the callback reports it has stopped reading.
+- `stolen()` and `cutSteals()` count them. `PlayParams.priority` overrides the record.
+- The events ring is now 4 per slot.
+- Through the public table, a full mixer now steals for `audio_play` rather than answering `limit`, unless every voice outranks the sound.
+- The mutation run found a redundant release report, which was removed.
+- Three guards were verified by breaking them.
+
+Bar **2,408/2,411** (three skips), the full bar, all exit 0.
 
 **M31 Step 4 is done (2026-10-27): spatial voices.**
 - `audio/spatial.zig` holds the pure placement: both distance models, a constant-power pan with near-field narrowing through `core.math.trig`, and occlusion as gain plus a one-pole low-pass through `core.math.exp`.

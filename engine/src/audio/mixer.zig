@@ -35,9 +35,14 @@ pub const Sounds = opaque {};
 pub const SoundHandle = core.Handle(Sounds);
 
 pub const Options = struct {
-    /// Voices that can play at once. `play` returns `error.NoFreeVoice` past this; there
-    /// is no voice stealing in M5, deliberately (`audio.md` §11).
+    /// Voices that can play at once. Past this, `play` steals the lowest-priority, quietest,
+    /// oldest voice whose priority is at most the new one's, or returns `error.NoFreeVoice`
+    /// when every voice outranks it (`mixing.md` §7).
     voices: u32 = 32,
+    /// Extra voices `play` never claims, where a stolen voice fades out (§7).
+    fade_slots: u32 = 4,
+    /// How long a stolen voice fades: 256 frames is 5.3 ms at 48 kHz.
+    steal_fade_frames: u32 = 256,
     /// Commands the game may issue between two device callbacks. Past this a command is
     /// dropped and counted — see `commandsDropped`.
     command_capacity: u32 = 256,
@@ -76,6 +81,8 @@ pub const PlayParams = struct {
     position: ?core.math.Vec3 = null,
     /// The `foundry:audio_attenuation` a spatial voice uses, in place of its sound record's.
     attenuation: ?core.ContentId = null,
+    /// Overrides the sound record's `priority` (0–255; higher is kept when voices run out).
+    priority: ?u8 = null,
 };
 
 pub const Listener = spatial.Listener;
@@ -103,7 +110,7 @@ pub const InitError = platform.AudioError || error{
 };
 
 pub const VoiceError = error{
-    /// Every voice is in use. The game decides what to do; the mixer does not steal one.
+    /// Every voice is in use by one of higher priority, so none could be stolen (§7).
     NoFreeVoice,
     /// No such sound, or one a hot reload has retired.
     UnknownSound,
@@ -143,6 +150,9 @@ const Command = union(enum) {
     fade_gain: struct { voice: VoiceHandle, at: ?u64, gain: f32, frames: u32 },
     /// A spatial voice's new placement, glided to across the next buffer.
     spatial: struct { voice: VoiceHandle, placed: spatial.Placed },
+    /// Takes a voice from its slot before a `play` claims the slot (§7): into fade voice
+    /// `into` to fade over `frames`, or cut at once when `into` is null.
+    steal: struct { victim: VoiceHandle, into: ?u32, frames: u32 },
 };
 
 const Play = struct {
@@ -195,6 +205,25 @@ const Slot = struct {
     stream: ?u32 = null,
     /// A spatial voice's place, recomputed each `update` (`mixing.md` §5.5).
     space: ?Space = null,
+    /// What stealing weighs (§7): the priority, the gains the game last set, and the order
+    /// voices were started in.
+    priority: u8 = 128,
+    level: f32 = 1,
+    envelope: f32 = 1,
+    sequence: u64 = 0,
+    /// A stolen voice still fading or not yet cut, whose references wait for the callback's
+    /// word that it has stopped reading. The slot itself already plays its new voice.
+    zombie: ?Zombie = null,
+};
+
+/// A stolen voice's references, released when its retirement arrives (§7's lifetime).
+const Zombie = struct {
+    generation: u32,
+    sound: SoundHandle,
+    held: asset.AssetHandle,
+    stream: ?u32,
+    /// The fade voice it took, freed with it.
+    fade: ?u32,
 };
 
 /// Where a spatial voice is, as the game last said, and what was last sent for it.
@@ -381,6 +410,13 @@ pub fn MixerOf(comptime P: type) type {
         tasks: core.Tasks,
         /// Who hears the spatial voices: the last listener `setListener` accepted.
         listener: spatial.Basis = .{},
+        /// Fade voices in use, by index past the slots (§7).
+        fade_busy: []bool,
+        steal_fade_frames: u32,
+        /// Plays started, for stealing's age order.
+        sequence: u64 = 0,
+        stolen_count: u32 = 0,
+        cut_count: u32 = 0,
 
         // -- owned by the callback thread -----------------------------------------
         voices: []Voice,
@@ -417,9 +453,13 @@ pub fn MixerOf(comptime P: type) type {
             errdefer gpa.free(slots);
             @memset(slots, .{});
 
-            const voices = try gpa.alloc(Voice, voice_count);
+            // The fade voices sit past the slots' voices; nothing but a steal reaches them.
+            const voices = try gpa.alloc(Voice, voice_count + options.fade_slots);
             errdefer gpa.free(voices);
             @memset(voices, .{});
+            const fade_busy = try gpa.alloc(bool, options.fade_slots);
+            errdefer gpa.free(fade_busy);
+            @memset(fade_busy, false);
 
             var free_list: std.ArrayList(u32) = .empty;
             errdefer free_list.deinit(gpa);
@@ -437,11 +477,13 @@ pub fn MixerOf(comptime P: type) type {
 
             // **Sized so an event can never be dropped.** A voice starts at most once and
             // retires at most once, and its slot cannot play again until `update` drains
-            // the retirement — and with it, the ring being FIFO, the start before it. So
-            // at most two events per voice are ever outstanding. A dropped retirement
-            // would strand a slot forever, which is the one loss this design cannot
-            // absorb — so it is made structurally impossible rather than counted.
-            var from_audio: ring.Ring(Event) = try .init(gpa, 2 * voice_count);
+            // the retirement — and with it, the ring being FIFO, the start before it. A
+            // steal is the one way a slot plays again first (§7), and a slot with a stolen
+            // voice outstanding cannot be stolen from again, so it adds at most one more per
+            // slot, the stolen voice's retirement; four per slot leaves room to spare. A
+            // dropped retirement would strand a slot forever, which is the one loss this
+            // design cannot absorb, so it is made structurally impossible rather than counted.
+            var from_audio: ring.Ring(Event) = try .init(gpa, 4 * voice_count);
             errdefer from_audio.deinit(gpa);
 
             // One second at the highest rate a sound may have, for each stream: the most any
@@ -465,6 +507,8 @@ pub fn MixerOf(comptime P: type) type {
                 .slots = slots,
                 .free_list = free_list,
                 .voices = voices,
+                .fade_busy = fade_busy,
+                .steal_fade_frames = options.steal_fade_frames,
                 .master_gain = options.master_gain,
                 .to_audio = to_audio,
                 .from_audio = from_audio,
@@ -537,6 +581,11 @@ pub fn MixerOf(comptime P: type) type {
                 slot.sound = .none;
                 if (!held.isNone()) self.assets.release(held);
             }
+            // And every stolen voice still fading, or cut and not yet reported.
+            for (self.slots) |*slot| if (slot.zombie) |z| {
+                slot.zombie = null;
+                if (!z.held.isNone()) self.assets.release(z.held);
+            };
         }
 
         /// Waits for every decode task in flight. **Only when one is**: an executor whose
@@ -582,6 +631,7 @@ pub fn MixerOf(comptime P: type) type {
             self.free_list.deinit(gpa);
             gpa.free(self.slots);
             gpa.free(self.voices);
+            gpa.free(self.fade_busy);
             gpa.destroy(self);
         }
 
@@ -844,11 +894,17 @@ pub fn MixerOf(comptime P: type) type {
                 };
             }
 
+            // A free slot, or one to steal (`mixing.md` §7). Chosen before anything is claimed,
+            // so a refusal below leaves every voice as it was.
+            const priority = params.priority orelse stored.settings.priority;
+            const victim: ?u32 = if (self.free_list.items.len > 0) null else self.chooseVictim(priority) orelse return error.NoFreeVoice;
+            // A steal and the play after it go together or not at all.
+            if (victim != null and self.to_audio.capacity() - self.to_audio.len() < 2) return error.CommandQueueFull;
+
             // A streamed sound needs a stream as well as a voice, and its decoder state, which
             // is the one thing `play` allocates (`music.md` §6.1).
             var stream_index: ?u32 = null;
             if (stored.compressed) |compressed| {
-                if (self.free_list.items.len == 0) return error.NoFreeVoice;
                 const n = self.freeStreamIndex() orelse return error.NoFreeStream;
                 const st = &self.streams[n];
                 st.decoder = vorbis.Decoder.init(self.gpa, compressed.bytes, &compressed.headers) catch |err| return streamError(err);
@@ -880,9 +936,14 @@ pub fn MixerOf(comptime P: type) type {
                 stream_index = n;
             }
 
-            const index = self.free_list.pop() orelse return error.NoFreeVoice;
+            const index = if (victim) |v| self.steal(v) else self.free_list.pop().?;
             const slot = &self.slots[index];
             slot.generation = nextGeneration(slot.generation);
+            slot.priority = priority;
+            slot.level = params.gain;
+            slot.envelope = params.envelope;
+            self.sequence += 1;
+            slot.sequence = self.sequence;
             slot.playing = true;
             slot.sound = sound;
             slot.started_at = null;
@@ -927,6 +988,73 @@ pub fn MixerOf(comptime P: type) type {
             // (§8.4's lookahead is a second).
             if (stream_index) |n| self.refill(&self.streams[n]);
             return handle;
+        }
+
+        // -- voice stealing (`mixing.md` §7) -----------------------------------------
+
+        /// The slot to take for a voice of `priority`, or null when every playing voice
+        /// outranks it. Lowest priority first, then the quietest by what the game last set,
+        /// then the oldest: every input is game-thread state, so the choice is deterministic.
+        /// A slot whose last stolen voice is still outstanding is not taken again.
+        fn chooseVictim(self: *const Self, priority: u8) ?u32 {
+            var best: ?u32 = null;
+            for (self.slots, 0..) |*slot, index| {
+                if (!slot.playing or slot.zombie != null or slot.priority > priority) continue;
+                if (best) |b| if (!self.quieter(slot, &self.slots[b])) continue;
+                best = @intCast(index);
+            }
+            return best;
+        }
+
+        /// Whether `a` should be stolen before `b`.
+        fn quieter(self: *const Self, a: *const Slot, b: *const Slot) bool {
+            _ = self;
+            if (a.priority != b.priority) return a.priority < b.priority;
+            const la = loudness(a);
+            const lb = loudness(b);
+            if (la != lb) return la < lb;
+            return a.sequence < b.sequence;
+        }
+
+        /// The game thread's estimate of how loud a voice is: its level, its envelope's target,
+        /// and a spatial voice's distance and occlusion. One placed past its far distance is 0.
+        fn loudness(slot: *const Slot) f32 {
+            const space: f32 = if (slot.space) |s| s.sent.space else 1;
+            return slot.level * slot.envelope * space;
+        }
+
+        /// Takes slot `index` from its voice and returns it free: the voice moves to a fade
+        /// voice to fade out, or is cut when none is free. Its references wait as a zombie for
+        /// the retirement the callback reports once it has stopped reading (§7's lifetime).
+        fn steal(self: *Self, index: u32) u32 {
+            const slot = &self.slots[index];
+            const spare: ?u32 = for (self.fade_busy, 0..) |busy, n| {
+                if (!busy) break @intCast(n);
+            } else null;
+            if (spare) |n| self.fade_busy[n] = true else self.cut_count += 1;
+            self.stolen_count += 1;
+            const victim: VoiceHandle = .{ .index = index, .generation = slot.generation };
+            // Room for this and the play after it was checked before anything was claimed.
+            const pushed = self.to_audio.push(.{ .steal = .{ .victim = victim, .into = spare, .frames = self.steal_fade_frames } });
+            std.debug.assert(pushed);
+            slot.zombie = .{ .generation = slot.generation, .sound = slot.sound, .held = slot.held, .stream = slot.stream, .fade = spare };
+            slot.playing = false;
+            slot.sound = .none;
+            slot.held = .none;
+            slot.stream = null;
+            slot.space = null;
+            slot.started_at = null;
+            return index;
+        }
+
+        /// Voices taken from their slots for a new one, faded or cut.
+        pub fn stolen(self: *const Self) u32 {
+            return self.stolen_count;
+        }
+
+        /// Steals that found every fade voice busy, and cut their victim at once.
+        pub fn cutSteals(self: *const Self) u32 {
+            return self.cut_count;
         }
 
         /// The attenuation a spatial voice uses: the named record's, or the defaults when none
@@ -1098,7 +1226,9 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn setGainChecked(self: *Self, handle: VoiceHandle, gain: f32) bool {
-            return self.to_audio.push(.{ .set_gain = .{ .voice = handle, .gain = gain } });
+            if (!self.to_audio.push(.{ .set_gain = .{ .voice = handle, .gain = gain } })) return false;
+            if (self.liveSlot(handle)) |slot| slot.level = gain;
+            return true;
         }
 
         /// The trigonometry runs here, once, rather than per sample in the callback.
@@ -1136,7 +1266,9 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn fadeChecked(self: *Self, handle: VoiceHandle, params: Fade) bool {
-            return self.to_audio.push(.{ .fade = .{ .voice = handle, .fade = params } });
+            if (!self.to_audio.push(.{ .fade = .{ .voice = handle, .fade = params } })) return false;
+            if (self.liveSlot(handle)) |slot| slot.envelope = params.to;
+            return true;
         }
 
         /// Ramps the voice's level, the gain `setGain` sets at once, linearly over `frames`
@@ -1157,7 +1289,9 @@ pub fn MixerOf(comptime P: type) type {
         }
 
         pub fn fadeGainAtChecked(self: *Self, handle: VoiceHandle, at: ?u64, gain: f32, frames: u32) bool {
-            return self.to_audio.push(.{ .fade_gain = .{ .voice = handle, .at = at, .gain = gain, .frames = frames } });
+            if (!self.to_audio.push(.{ .fade_gain = .{ .voice = handle, .at = at, .gain = gain, .frames = frames } })) return false;
+            if (self.liveSlot(handle)) |slot| slot.level = gain;
+            return true;
         }
 
         pub const SoundInfo = struct {
@@ -1234,6 +1368,20 @@ pub fn MixerOf(comptime P: type) type {
                     continue;
                 }
                 const retired = event;
+                // A stolen voice's retirement: the callback has stopped reading it, so its
+                // references go now (§7). Exactly once: a voice that ended by itself before its
+                // steal arrived reports twice, and the second finds no zombie.
+                if (slot.zombie) |z| if (z.generation == retired.generation) {
+                    slot.zombie = null;
+                    if (z.stream) |n| self.streams[n].retired = true;
+                    if (z.fade) |n| self.fade_busy[n] = false;
+                    if (self.sounds.get(z.sound)) |stored| {
+                        stored.refs -= 1;
+                        self.collect(z.sound, stored);
+                    }
+                    if (!z.held.isNone()) self.assets.release(z.held);
+                    continue;
+                };
                 // A generation that has moved on means this slot was already reclaimed;
                 // the retirement is for a voice two lives ago and is simply old news.
                 if (!slot.playing or slot.generation != retired.generation) continue;
@@ -1344,7 +1492,7 @@ pub fn MixerOf(comptime P: type) type {
                     v.underran = false;
                     _ = self.underrun_count.fetchAdd(1, .monotonic);
                 }
-                if (!playing) self.retire(@intCast(index), generation);
+                if (!playing) self.retire(v.owner orelse @as(u32, @intCast(index)), generation);
             }
 
             // 4. Master gain, then clamp. **The clamp is not a limiter and does not
@@ -1429,8 +1577,22 @@ pub fn MixerOf(comptime P: type) type {
                     for (self.voices, 0..) |*v, index| {
                         if (!v.active) continue;
                         v.active = false;
-                        self.retire(@intCast(index), v.generation);
+                        self.retire(v.owner orelse @as(u32, @intCast(index)), v.generation);
                     }
+                },
+                .steal => |s| {
+                    // A victim that already ended reported its own retirement when it did, and
+                    // that releases the zombie: every voice that stops here reports, so a second
+                    // report would only be ignored. One stopped below has not, so it does.
+                    const v = self.liveVoice(s.victim) orelse return;
+                    v.active = false;
+                    const into = s.into orelse return self.retire(s.victim.index, s.victim.generation);
+                    if (v.pending) return self.retire(s.victim.index, s.victim.generation);
+                    const out = &self.voices[self.slots.len + into];
+                    out.* = v.*;
+                    out.active = true;
+                    out.owner = s.victim.index;
+                    out.envelope.start(.{ .begin = self.mixed, .frames = s.frames, .to = 0, .curve = .linear, .stop = true });
                 },
                 .set_gain => |s| {
                     // At once, and cancelling any `fade_gain` under way: its meaning
@@ -1665,7 +1827,9 @@ test "a one-shot retires, and update is what gives its slot back" {
     // The voice ended on the device thread, but the game thread has not heard yet —
     // which is exactly why `isPlaying` is documented as presentation-only.
     try testing.expect(f.mixer.isPlaying(v));
-    try testing.expectError(error.NoFreeVoice, f.mixer.playSound(sound, .{}));
+    // Nothing of its priority or lower to take: since M31 an equal priority may be stolen
+    // (`mixing.md` §7), so the refusal is shown one below it.
+    try testing.expectError(error.NoFreeVoice, f.mixer.playSound(sound, .{ .priority = 127 }));
 
     f.mixer.update();
     try testing.expect(!f.mixer.isPlaying(v));
@@ -2561,4 +2725,136 @@ test "spatial refusals: not finite, not spatial, not playing, no such attenuatio
     try testing.expect(!f.mixer.setListenerChecked(.{ .forward = .up }));
     try testing.expect(!f.mixer.setListenerChecked(.{ .position = .init(nan, 0, 0) }));
     try testing.expectEqual(@as(f32, 2), f.mixer.listener.position.y);
+}
+
+// -- M31 Step 5: voice stealing (`mixing.md` §7) ------------------------------------------
+
+test "stealing takes the lowest priority, then the quietest, then the oldest, and never a higher one" {
+    const Case = struct {
+        /// Each playing voice's priority, gain and whether it is placed past its far distance.
+        voices: []const struct { priority: u8, gain: f32 = 1, far: bool = false },
+        new: u8,
+        /// The voice expected to go, or null for `NoFreeVoice`.
+        victim: ?usize,
+    };
+    const cases = [_]Case{
+        .{ .voices = &.{ .{ .priority = 50 }, .{ .priority = 10, .gain = 1 }, .{ .priority = 50, .gain = 0.01 } }, .new = 100, .victim = 1 },
+        .{ .voices = &.{ .{ .priority = 50, .gain = 0.5 }, .{ .priority = 50, .gain = 0.2 }, .{ .priority = 50, .gain = 0.9 } }, .new = 50, .victim = 1 },
+        .{ .voices = &.{ .{ .priority = 50 }, .{ .priority = 50 }, .{ .priority = 50 } }, .new = 60, .victim = 0 },
+        .{ .voices = &.{ .{ .priority = 50, .gain = 0.1 }, .{ .priority = 50, .far = true }, .{ .priority = 50 } }, .new = 50, .victim = 1 },
+        .{ .voices = &.{ .{ .priority = 200 }, .{ .priority = 201 }, .{ .priority = 255 } }, .new = 199, .victim = null },
+    };
+    for (cases) |case| {
+        const f = try Fixture.init(testing.allocator, .{ .voices = @intCast(case.voices.len) });
+        defer f.deinit();
+        const sound = try dcSound(f, 4096, 1, &.{0.1});
+        var handles: [3]VoiceHandle = undefined;
+        for (case.voices, 0..) |v, i| {
+            handles[i] = try f.mixer.playSound(sound, .{
+                .looping = true,
+                .gain = v.gain,
+                .priority = v.priority,
+                .position = if (v.far) core.math.Vec3.init(100, 0, 0) else null,
+            });
+        }
+        const result = f.mixer.playSound(sound, .{ .priority = case.new });
+        if (case.victim) |want| {
+            _ = try result;
+            for (handles[0..case.voices.len], 0..) |h, i| try testing.expectEqual(i != want, f.mixer.isPlaying(h));
+            try testing.expectEqual(@as(u32, 1), f.mixer.stolen());
+        } else {
+            try testing.expectError(error.NoFreeVoice, result);
+            for (handles[0..case.voices.len]) |h| try testing.expect(f.mixer.isPlaying(h));
+            try testing.expectEqual(@as(u32, 0), f.mixer.stolen());
+        }
+    }
+}
+
+test "a stolen voice fades to silence over exactly its fade, and its references go after it" {
+    const f = try Fixture.init(testing.allocator, .{ .voices = 1, .channels = 1, .buffer_frames = 512, .steal_fade_frames = 256 });
+    defer f.deinit();
+    const loud = try dcSound(f, 48_000, 1, &.{0.5});
+    const quiet = try dcSound(f, 48_000, 1, &.{0.0});
+    _ = try f.mixer.playSound(loud, .{ .looping = true });
+    f.mixer.update();
+    _ = try f.step(512);
+    _ = try f.mixer.playSound(quiet, .{ .looping = true });
+    try testing.expectEqual(@as(u32, 1), f.mixer.stolen());
+    try testing.expectEqual(@as(u32, 0), f.mixer.cutSteals());
+    f.mixer.update();
+    const out = try f.step(512);
+    for (0..256) |i| try testing.expectEqual(0.5 * (1 - @as(f32, @floatFromInt(i)) / 256), out[i]);
+    for (out[256..]) |s| try testing.expectEqual(@as(f32, 0), s);
+    // The fade retired on its last frame; its sound is held until `update` hears it.
+    try testing.expect(f.mixer.fade_busy[0]);
+    f.mixer.releaseSound(loud);
+    try testing.expectEqual(@as(u32, 2), f.mixer.soundCount());
+    f.mixer.update();
+    try testing.expect(!f.mixer.fade_busy[0]);
+    try testing.expectEqual(@as(u32, 1), f.mixer.soundCount());
+}
+
+test "with every fade voice busy a steal cuts, and a victim that already ended is released once" {
+    const f = try Fixture.init(testing.allocator, .{ .voices = 1, .channels = 1, .buffer_frames = 64, .fade_slots = 0 });
+    defer f.deinit();
+    const loud = try dcSound(f, 48_000, 1, &.{0.5});
+    const quiet = try dcSound(f, 48_000, 1, &.{0.0});
+    _ = try f.mixer.playSound(loud, .{ .looping = true });
+    f.mixer.update();
+    _ = try f.step(64);
+    _ = try f.mixer.playSound(quiet, .{ .looping = true });
+    try testing.expectEqual(@as(u32, 1), f.mixer.cutSteals());
+    f.mixer.update();
+    for (try f.step(64)) |s| try testing.expectEqual(@as(f32, 0), s);
+    f.mixer.update();
+    f.mixer.stopAll();
+    f.mixer.update();
+    _ = try f.step(64);
+    f.mixer.update();
+
+    // A one-shot that ends in the callback, stolen before `update` has heard: its own
+    // retirement and the steal's both arrive, and its references are released exactly once.
+    const blip = try dcSound(f, 32, 1, &.{0.5});
+    _ = try f.mixer.playSound(blip, .{});
+    f.mixer.update();
+    _ = try f.step(64);
+    _ = try f.mixer.playSound(quiet, .{ .looping = true });
+    f.mixer.releaseSound(blip);
+    _ = try f.step(64);
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 2), f.mixer.soundCount());
+    // And one stolen while still waiting for its scheduled start never sounds at all.
+    f.mixer.stopAll();
+    f.mixer.update();
+    _ = try f.step(64);
+    f.mixer.update();
+    _ = try f.mixer.playSound(loud, .{ .start_at = f.mixer.clock() + 10_000 });
+    _ = try f.mixer.playSound(quiet, .{});
+    f.mixer.update();
+    for (try f.step(64)) |s| try testing.expectEqual(@as(f32, 0), s);
+}
+
+test "a stolen streamed voice keeps its stream through the fade, then gives it back" {
+    const f = try Fixture.init(testing.allocator, .{ .voices = 1, .buffer_frames = 256 });
+    defer f.deinit();
+    const music = try f.mixer.insertStreamed(comptime oggFixture("stereo48_q4"));
+    const quiet = try dcSound(f, 48_000, 1, &.{0.0});
+    _ = try f.mixer.playSound(music, .{ .looping = true });
+    f.mixer.update();
+    _ = try f.step(256);
+    _ = try f.mixer.playSound(quiet, .{ .looping = true });
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 1), f.mixer.streamsInUse());
+    const out = try f.step(256);
+    // The fade is the stream's frames, under a falling envelope: not silence.
+    var heard = false;
+    for (out[0..64]) |s| heard = heard or s != 0;
+    try testing.expect(heard);
+    try testing.expectEqual(@as(u32, 1), f.mixer.streamsInUse());
+    // The fade ends on frame 256, the first of the next buffer, where it retires.
+    f.mixer.update();
+    _ = try f.step(256);
+    f.mixer.update();
+    try testing.expectEqual(@as(u32, 0), f.mixer.streamsInUse());
+    try testing.expectEqual(@as(u32, 0), f.mixer.underruns());
 }

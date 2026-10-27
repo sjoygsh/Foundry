@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–4 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–5 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1216,3 +1216,70 @@ to them across its next buffer.
 **Bar:** the full bar, all exit 0. `zig build test` is **2,404/2,407** (three skips).
 
 Next is Step 5: voice stealing by priority.
+
+## Resolution — Step 5: voice stealing (2026-10-27)
+
+When every voice is busy, `play` now takes one rather than refusing. It takes the lowest
+priority first, then the quietest by the game thread's estimate, then the oldest, and never
+a voice of higher priority. The stolen voice fades out over 256 frames in a fade voice
+`play` never claims. When every fade voice is busy, it is cut and counted.
+
+**What §7 left to settle, and the answers:**
+- **Equal priority may be stolen.** "At most the new voice's" includes equal, so two
+  voices of the default 128 now replace one another rather than the second being refused.
+  - An M5 test that expected `NoFreeVoice` for an equal-priority play now plays one priority
+    lower to show the refusal.
+  - The same is true through the public table. `audio_play` at a full mixer now takes the
+    oldest of the quietest default-priority voices where it used to answer `limit`. A mod
+    asking for a sound gets one, which is §7's intent. It answers `limit` only when every
+    voice outranks the sound.
+- **The lifetime is a zombie on the victim's slot**, not a second bookkeeping table:
+  1. `play` moves the victim's sound reference, asset hold, stream and fade voice into
+     `Slot.zombie`, tagged with the victim's generation.
+  2. The slot then plays its new voice at the next generation.
+  3. The callback reports a retirement for the victim's generation once it has stopped
+     reading. The fade voice reports it through `Voice.owner`, so the event names the slot.
+  4. `update` matches the retirement to the zombie and releases everything once.
+
+  Every path reports exactly once:
+  - **A fade:** the fade voice retires on its last frame.
+  - **A cut, or a victim still waiting for a scheduled start:** there is nothing to fade, so
+    the steal deactivates the victim and reports at once.
+  - **A victim that had already ended** reported its own retirement when it ended, because
+    every voice that stops in the callback reports. The steal finds it dead and adds nothing.
+    The first draft reported it again, and the mutation run caught that: removing the
+    redundant report changed no test, because the victim's own report had always been the
+    one doing the work. The second report is gone, and with it any reliance on "the second
+    finds no zombie".
+
+  A slot whose zombie is outstanding is not stolen from again, so each slot adds at most one
+  event. The events ring goes from two per slot to four, with room to spare.
+- **A steal and its play go together.** `play` checks the command ring has room for both
+  before claiming anything. The ring's length read by the producer is an upper bound, so the
+  check is conservative.
+- **The quietness estimate** is the game thread's own record: `level` (from `play`,
+  `setGain` and `fadeGain`), the envelope's target (from `fade`), and a spatial voice's
+  `space`. A voice placed past its far distance is 0 and goes first among equals.
+- **The fade copies the voice whole**: samples or feed, cursor, ramps and placement. It
+  starts a stopping linear ramp from wherever the envelope is. A stolen stream therefore
+  keeps decoding until the fade ends, and its stream is retired with the zombie.
+
+**Tests:**
+- a policy table: lowest priority over a quieter higher one, quietest among equals, oldest
+  among identical voices, a far spatial voice first, and a higher priority never taken (with
+  nothing changed);
+- the fade, sample-exact on a steady level over 256 frames, with its sound held until
+  `update` hears the retirement;
+- a cut with no fade voices;
+- a victim that had already ended, released exactly once under `testing.allocator`;
+- a victim still waiting to start, which never sounds;
+- a stolen stream heard through its fade and given back after it, with no underrun.
+
+**Guards verified by breaking them**, each in its own run:
+- leaving the zombie's sound reference held failed the fade and the once-only tests;
+- allowing a higher priority to be stolen failed the policy table and M5's slot test;
+- halving the fade failed the sample-exact fade.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,408/2,411** (three skips).
+
+Next is Step 6: the bus tree.

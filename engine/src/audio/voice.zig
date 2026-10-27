@@ -209,6 +209,10 @@ pub const Voice = struct {
     /// it, so a moving source has no step at a buffer's edge (§5.5).
     glide: ?Glide = null,
 
+    /// A stolen voice fading in a fade voice (`mixing.md` §7): the slot whose zombie it is,
+    /// which its retirement is reported for. Null for a voice in its own slot.
+    owner: ?u32 = null,
+
     pub const Glide = struct { left: f32, right: f32, space: f32, lowpass: f32 };
 
     /// Adds this voice's contribution to `out`, which is already zeroed. `frame` is the
