@@ -148,3 +148,15 @@ Two format decisions inside the mixer:
   ADR-0003 expects a second graphics backend to.
 * **Spatial audio becomes a requirement.** Panning is in scope; a real 3D audio model is not,
   and arrives with Phase 4 if it arrives at all.
+
+> **2026-10-27, at M31's close:** the spatial trigger fired with 3D, and the line that a 3D
+> model "arrives with Phase 4 if it arrives at all" is superseded. It arrived in M31, beside
+> this decision rather than by reopening it:
+> - ADR-0068: spatial voices placed on the game thread from one listener and
+>   `foundry:audio_attenuation` records, output still stereo.
+> - ADR-0067: buses and effects as content, mixed by engine nodes, which also answers the
+>   consequence above of "no effects, no submixes".
+> - The mixer, its device and the voice model remain this ADR's. With no bus tree, the output
+>   is M30's exactly.
+>
+> The remaining triggers stand.

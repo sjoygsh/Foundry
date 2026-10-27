@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 11 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 12** (close M31: the contract discrepancies in `audio.md`, `playable3d.md`, ADR-0023, ADR-0066 and the roadmap's intent lines; ADR-0067/0068 into `CLAUDE.md` §4.1; `AGENTS.md`, the indexes and README; pack up the PC by exact path; tag `m31`). The PC holds `src\Foundry-m31`, `m31` and `state-m31.ps1` under the profile. Nothing of M31 is pushed.
+**Current handoff: M31 is complete** (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before M32's design** (Navigation I: navigation meshes built from collision geometry). The PC is packed up; its toolchains remain. Nothing since `m30` is pushed: `main` and tag `m31` await the owner's word.
+
+**M31 Step 12 is done (2026-10-27): M31 closed.**
+- The contract discrepancies are resolved where they were written: `audio.md` §5, §11 (questions 1, 2 and 5) and §12; `playable3d.md` §6.2 and §13; ADR-0023's spatial trigger; ADR-0066's music-bus revisit; the roadmap's M48, M55, M60, M110 and M144 intent lines.
+- ADR-0067 and ADR-0068 say implemented; `CLAUDE.md` §4.1, §4.3 and §9, `AGENTS.md`'s optimized-only measurements, the roadmap, the design index and `README.md` are updated.
+- The PC's M31 paths are removed by exact name.
+- Documents only: Step 10's bar (2,437/2,441, four skips) stands, and Step 11 ran the suites on the PC.
+- Open for the owner, outside M31: the Mac's ReleaseSafe-only `ui_theme` failure.
 
 **M31 Step 11 is done (2026-10-27): Windows/Vulkan on the Arc PC.**
 - Cloned at `m30`, with M31's commits from a git bundle, so the PC built `e5e4d78` exactly. Harness: `scripts/m31/windows.ps1`.

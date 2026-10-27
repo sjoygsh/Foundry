@@ -1,6 +1,6 @@
 # ADR-0068: Spatial voices are placed on the game thread, and output stays stereo
 
-**Status:** Accepted 2026-10-27 (the owner asked for M31 Step 1; `docs/design/mixing.md`)
+**Status:** Accepted 2026-10-27 (the owner asked for M31 Step 1; `docs/design/mixing.md`); implemented in M31 (2026-10-27, tag `m31`)
 **Date:** 2026-10-27
 
 ## Context

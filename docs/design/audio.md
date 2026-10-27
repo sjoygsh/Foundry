@@ -283,6 +283,11 @@ Each callback, in this order:
 4. **Apply master gain**, then **clamp to `[-1, 1]`**.
 5. **Push retirements** for voices that ended during this buffer.
 
+> **2026-10-27, at M31's close** ([`mixing.md`](mixing.md) §8–§9, ADR-0067): a real limiter
+> now exists. A bus tree may put the engine's lookahead limiter on its master, as the court
+> does at −1 dB, and it holds every sample to its ceiling. The clamp below stays, unchanged, as
+> the last line after the root's gain, and with no tree the mixer is M30's exactly.
+
 **The clamp is not a limiter and does not pretend to be.** It is there because an `f32` sample
 outside `[-1, 1]` converted to `s16` by a driver that does not clamp wraps, and wrapping is
 the single worst sound a program can make. Twenty voices at full gain will clip; a real
@@ -566,6 +571,18 @@ opportunistically.
 >
 > **2026-10-27:** M31's design, [`mixing.md`](mixing.md), proposes answers to questions 1, 2
 > and 5, and to §12's spatialisation, effects and limiter.
+>
+> **2026-10-27, at M31's close** (tag `m31`): questions 1, 2 and 5 are answered.
+> 1. **Voice stealing lives in the mixer**, by priority, then loudness, then age. A higher
+>    priority is never stolen: a play that would need one is refused with `NoFreeVoice`. The
+>    stolen voice fades over 256 frames in one of four fade slots (mixing.md §7).
+> 2. **A real bus graph, as content.** `foundry:audio_bus` records form a tree linked child to
+>    parent, each with a gain and up to eight engine effects. Children mix before parents,
+>    siblings by content ID, and the root's gain is the master (mixing.md §8, ADR-0067). The
+>    court's three sliders are its root, music and world buses.
+> 5. **`foundry:sound` version 3** adds `bus`, `priority`, `attenuation` and a loop region in
+>    source frames, all with defaults, so versions 1 and 2 load unchanged (mixing.md §4.1).
+>    Seeking is by a page index, exact to the bit (§6).
 
 1. **Voice stealing policy, and where it lives.** Oldest, quietest, or by a priority the game
    supplies — and whether the mixer owns it or hands `NoFreeVoice` back forever. Due when
@@ -596,6 +613,17 @@ opportunistically.
 >   starts, which only the mixer has. So the mechanism is `audio.Music` over the mixer's
 >   clock, ramps and scheduled starts (ADR-0066, music.md §5 and §8). The policy, meaning which
 >   playlist plays when, stays the game's, as the court's `music.zig` shows.
+
+> **2026-10-27, at M31's close:** the spatialisation, effects and limiter bullets below are
+> done (tag `m31`).
+> - **Spatialisation:** the bullet was wrong that it would arrive "with 3D if at all". It
+>   arrived after 3D, as spatial voices placed on the game thread from one listener and
+>   `foundry:audio_attenuation` records: distance gain, constant-power pan and an occlusion
+>   the game supplies as gain and a one-pole low-pass. Output stays stereo (ADR-0068,
+>   mixing.md §5). HRTF is M144's and Doppler M55's.
+> - **Effects, compressor and limiter:** a fixed engine set of five, each its own record (a
+>   biquad filter, a delay, an FDN reverb, a feed-forward compressor and a lookahead limiter),
+>   configured by content and never supplied as DSP by a mod (ADR-0067, mixing.md §9).
 
 > **2026-10-18, at M26's close (CLAUDE.md §2, rule 17):** nothing here is deferred without an
 > owner. Each item set aside below is either finished, in M26 Steps 8–11 for those that

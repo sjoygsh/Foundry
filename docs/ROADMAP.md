@@ -1233,7 +1233,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M28 | Runtime geometry | Meshes, materials and textures created at run time in `render3d`, beside compiled content. **Done 2026-10-23, tag `m28`: [`runtime-geometry.md`](design/runtime-geometry.md), ADR-0063.** `sandbox3d`'s generated corner — a walked patch, water rewritten every frame, a painted canvas, a 1M-vertex landmark built on the pool, a recoloured crate — holds its budgets on Metal and Windows/Vulkan, validation-clean; no ABI change, M48 publishes it |
 | M29 | Particles I | A CPU particle system with content-defined emitters. **Done 2026-10-24, tag `m29`: [`particles.md`](design/particles.md), ADR-0064.** `sandbox3d`'s effects corner — a flipbook torch over lit smoke, bursting sparks, a 10,400-particle sorted fountain and a world-space trail — holds 2.0 ms at about 11,000 particles with one pinned state on Metal and Windows/Vulkan, validation-clean, and the `embers` content mod changes it; no ABI change, M48 publishes it |
 | M30 | Audio II | Compressed audio and streamed music; the decoder is an ADR; also music sequencing: playlists, crossfades and stingers. **Done 2026-10-27, tag `m30`: [`music.md`](design/music.md), ADR-0065/0066.** Foundry's own Ogg Vorbis decoder, streamed voices decoded on the background pool, a sample clock with frame-exact scheduled starts and ramps, and `audio.Music` over playlist and stinger records. The court's soundtrack plays ten minutes with every start on its frame and no underrun on Metal and Windows/Vulkan, and the `nocturne` content mod changes it; no ABI change, M48 publishes it |
-| M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor, voice stealing by priority, loop points within a file, and seeking a sound by granule (a playlist resumed where it was left). **Accepted 2026-10-27: [`mixing.md`](design/mixing.md), ADR-0067/0068; in progress.** |
+| M31 | Audio III | 3D spatialisation, mixer buses and effects; also a limiter and compressor, voice stealing by priority, loop points within a file, and seeking a sound by granule (a playlist resumed where it was left). **Done 2026-10-27, tag `m31`: [`mixing.md`](design/mixing.md), ADR-0067/0068.** Spatial voices placed on the game thread from one listener with attenuation records and game-supplied occlusion; a content-described bus tree with five engine effects, the lookahead limiter among them; voice stealing by priority; seeking by granule and loop regions; a playlist resumed where it was left. The court mixes through buses with spatial, occluded sounds and three sliders, clean for ten minutes on Metal and Windows/Vulkan, and `nocturne` changes its reverb and echo; no ABI change, M48 publishes it |
 | M32 | Navigation I | Navigation meshes built from collision geometry |
 | M33 | Navigation II | Pathfinding, agents and avoidance |
 | M34 | Animation logic I | An engine animation component saved with a world, root motion and events; also an animation panel in the overlay |
@@ -1250,7 +1250,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M45 | Input | Action maps, rebinding and gamepads; also raw input and normalised mouse motion, keyboard state published to the table, and audio device change and enumeration |
 | M46 | Localization | String tables as content, plural rules and locale selection; also multi-line strings in `.fdt` |
 | M47 | Saves II | Saving component types registered by native mods; versioned migration; also script-defined components and saves, a mod's own storage, the package set and load order kept per save, settings migrations, and whether `f64` stays a field type |
-| M48 | Public API v8 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, what a mod may learn about its host, and M30's music: the mixer's clock, scheduled starts, fades and `audio.Music` |
+| M48 | Public API v8 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, what a mod may learn about its host, and M30's music: the mixer's clock, scheduled starts, fades and `audio.Music`; also M31's mix: the listener, positions and occlusion, buses and their effects, priorities and start offsets |
 | M49 | 3D in Lua | The script host's binding over v6 to v8; also several script modules with imports, and Lua bindings for input, UI, collision, audio (M30's music among it) and networking |
 | M50 | The second 3D sample | A game slice built only from the above, played by someone who did not build it; also a third-person body, a save game, the mod screen and profiles, and the sample published as a labelled pre-release |
 
@@ -1264,12 +1264,12 @@ Things that move by themselves, and worlds larger than a room. Ends in an open-w
 | M52 | Dynamics II | Stacking, sleeping and continuous collision |
 | M53 | Dynamics III | Joints and constraints |
 | M54 | Dynamics IV | Ragdolls, joining `anim` and physics |
-| M55 | Vehicles | Wheeled vehicles over the constraint solver |
+| M55 | Vehicles | Wheeled vehicles over the constraint solver; also Doppler shift from a source's velocity relative to the listener (M31) |
 | M56 | 2D dynamics | Rigid bodies for `physics2d`, which is collision only today; also rotated colliders, one-way platforms and slopes, and whether trigger enter/exit stays in `physics2d` |
 | M57 | Cloth and soft bodies | Simulated cloth and deformables |
 | M58 | Destruction | Fracture and debris |
 | M59 | Level of detail | Mesh LOD generation at import and selection at draw |
-| M60 | Streaming | Scenes and assets loaded and unloaded around a point; also merging a save into a live world, and audio streamed from disk rather than from resident compressed bytes |
+| M60 | Streaming | Scenes and assets loaded and unloaded around a point; also merging a save into a live world, and audio streamed from disk rather than from resident compressed bytes; also occlusion the engine computes from the world (portals and a ray budget) rather than the game's own ray (M31) |
 | M61 | Large worlds | World partition, and coordinates beyond single precision's metre range |
 | M62 | Terrain I | Heightfield rendering |
 | M63 | Terrain II | Heightfield collision and layered terrain materials |
@@ -1333,7 +1333,7 @@ Every tool stays a client of the public API (I4). Ends with the whole product re
 | M107 | Play in editor | A host that runs the game from the editor; also pause and single-step, a world that owns its registry, and remote editor and debug transport |
 | M108 | Schema designer | Schemas authored in the editor; also global ID rename, multi-file refactors, autosave and crash restoration, asset creation, and a person driving the editor through a whole package |
 | M109 | Material editor | Editing M72's graphs |
-| M110 | Particle editor | Editing emitters live; also a music and sound editor with preview |
+| M110 | Particle editor | Editing emitters live; also a music and sound editor with preview, and editing buses, effects and attenuation with preview (M31) |
 | M111 | Animation editor | Clip preview and state-machine editing |
 | M112 | Sequencer | Timelines and cinematics |
 | M113 | World tools | Terrain, foliage and voxel editing |
@@ -1374,7 +1374,7 @@ More players, more languages, more machines. Ends in 1.0.
 | M141 | Android IV | A sideloadable build with its assets |
 | M142 | Web I | A WebGPU backend |
 | M143 | Web II | The browser runtime: storage, audio and input |
-| M144 | VR and XR | Head-mounted displays through OpenXR |
+| M144 | VR and XR | Head-mounted displays through OpenXR; also HRTF and binaural rendering with front–back cues, for a tracked head (M31) |
 | M145 | Text II | Complex shaping, right-to-left text and input methods; also IME preedit |
 | M146 | Accessibility | Screen-reader hooks, subtitles, colour-blind modes and full remapping |
 | M147 | Services | Crash reporting, opt-in telemetry and store integration behind a host interface; also a crash dump of the log ring, and storefront signing |

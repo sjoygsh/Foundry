@@ -109,5 +109,11 @@ streaming.
   record would be the decision.
 - **M31's buses arrive.** `Music` setting `level` on each of its voices should become one music
   bus's gain.
+
+  > **2026-10-27, at M31's close** ([`mixing.md`](../design/mixing.md) §8.4): fired and
+  > answered half as written. The player's slider owns the music bus's gain, and tracks reach
+  > that bus through their sound records. `Music` keeps its own gain per voice, because the
+  > stinger duck and the pause duck are the sequencer's: if both drove the bus, a duck's
+  > release would overwrite the slider. Two owners of a gain need two gains.
 - **A game needs streams beyond resident compressed bytes**, such as hours of dialogue. That is
   M60's disk streaming.

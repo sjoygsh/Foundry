@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–11 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Complete 2026-10-27, tag `m31`: all twelve steps are done, and their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1827,3 +1827,57 @@ and documents. No Zig, content or build file changed, so the bar was not rerun.
 - Zig's cache under `%LOCALAPPDATA%\zig`
 
 Next is Step 12: close M31.
+
+## Resolution — Step 12: Close M31 (2026-10-27)
+
+M31 is complete, tagged `m31`. **The durable result is a 3D mix as content.** Sounds are placed
+from one listener, through attenuation records and an occlusion the game supplies. They mix
+through a tree of buses whose effects are a fixed engine set that content configures. Steals
+go by priority, and streamed music seeks and loops by region. All of it passes the same pins on
+the M5 and the Arc PC.
+
+**The contract discrepancies, resolved where they were written:**
+- **`audio.md`:**
+  - §11's questions 1, 2 and 5 are answered: stealing in the mixer by priority, a content
+    bus graph, and `foundry:sound` version 3;
+  - §12's spatialisation, effects and limiter bullets are done, the first corrected: it
+    arrived after 3D, not "with 3D if at all";
+  - §5's clamp keeps its place, after a limiter a tree may now carry.
+- **`playable3d.md`:** §6.2's "Position is the sample's arithmetic" is superseded by the
+  court's spatial voices, and §13's spatial row is done.
+- **ADR-0023:** the spatial trigger is answered beside the decision by ADR-0067 and
+  ADR-0068, and the mixer, device and voice model stay its own.
+- **ADR-0066:** the music-bus revisit is answered as §8.4 has it. The slider owns the bus, and
+  `Music` keeps its per-voice gain.
+- **`docs/ROADMAP.md`'s intent lines**, from §15:
+  - M48 gains M31's mix for the public table;
+  - M55 gains Doppler;
+  - M60 gains engine-computed occlusion;
+  - M110 gains editing buses, effects and attenuation;
+  - M144 gains HRTF.
+
+**Also updated:**
+- **`CLAUDE.md`:**
+  - §4.1's two rows say implemented;
+  - §4.3's `core` names its arithmetic `exp2`/`log2`, and `audio` its buses, spatial voices,
+    stealing, seeking and loop regions;
+  - §9's deferred row adds M31.
+- **ADR-0067 and ADR-0068**, which were accepted at Step 1, now say implemented.
+- **`AGENTS.md`:** the bar's commands are unchanged. The optimized-only measurements gain the
+  mixing speed, the Mac's ReleaseSafe `ui_theme` note and `scripts/m31/windows.ps1`.
+- The roadmap's M31 row, the design index, `README.md` and `PROJECT_STATE.md`.
+
+**The PC is packed up**, each removed by exact path:
+- `%USERPROFILE%\src\Foundry-m31`
+- `%USERPROFILE%\m31`
+- `%LOCALAPPDATA%\zig`
+- the two helper scripts in the profile
+
+Nothing else was touched, and the toolchains remain.
+
+**Still open, owned:** §15's table, as the roadmap now names it. Outside M31, the Mac's
+ReleaseSafe-only `ui_theme` failure stays open for the owner, as at M30's close.
+
+**Bar:** this step changed documents only. The tree's Zig, content and build files are Step
+10's, whose full bar passed at 2,437/2,441 (four skips) on the Mac, and Step 11 ran the suites
+on the PC.

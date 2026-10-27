@@ -277,6 +277,13 @@ script as the room's were:
 - a beacon lighting; the gate moving; the warden's steps;
 - one sound each for won, caught and fell; a click for menus.
 
+> **2026-10-27, at M31's close** ([`mixing.md`](mixing.md) §11, ADR-0068): position is no
+> longer the sample's arithmetic. The warden's steps, the gate and the beacons are spatial
+> voices the engine places from the walker's eye, through `court:attenuation.warden` and
+> `court:attenuation.prop`. The court's part is one occlusion ray against the level per voice,
+> eased toward its answer. `sounds.zig`'s `place` and the sound set's `hearing_distance` are
+> deleted.
+
 **Position is the sample's arithmetic.** The mixer has gain and pan and no listener (M31 adds
 spatialisation). For the warden's steps and the gate, the court computes gain from distance and
 pan from the direction relative to the yaw, once per frame, as the room pans its door. That is a
@@ -543,7 +550,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | Pointer capture through the public ABI | **M48**, Public API v8 (renumbered at M27's close, 2026-10-18), with a host grant |
 | Raw-input selection or normalised motion units in `platform` | **M45**, Input |
 | Gamepads | **M45**, Input, with its own Linux run |
-| 3D spatialised audio and a listener | **M31**; the court's distance-and-pan arithmetic is the budget it must beat. Designed in [`mixing.md`](mixing.md) (proposed 2026-10-27) |
+| 3D spatialised audio and a listener | **Done in M31** (2026-10-27, tag `m31`, [`mixing.md`](mixing.md), ADR-0068): spatial voices from one listener with attenuation records and occlusion; the court's main-thread audio, placing included, stays under its 0.10 ms p95 on the M5 and the Arc PC |
 | A warden that sees and chases | **M32–M33**, navigation; the court's fixed patrol is deliberate |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
 | A hierarchy authored in content | **M103**, Prefabs |

@@ -454,14 +454,17 @@ python3 -I scripts/m30/make_court_music.py <scratch-dir>  # rewrites the court's
 The same inputs give the same bytes, so a rerun that changes a fixture means the tool or the
 script changed.
 
-Three of M30's measurements mean something only optimized, so the Debug bar skips two and
-shrinks the third. Run them when the decoder, the mixer or the background pool changes:
+Three of M30's measurements and one of M31's mean something only optimized, so the Debug bar
+skips three and shrinks the fourth. Run them when the decoder, the mixer, its buses and
+effects, or the background pool changes:
 - `zig build asset-test -Doptimize=ReleaseSafe` prints the decoder's speed and runs all
   2,000 flips;
-- `zig build integration-test -Doptimize=ReleaseSafe` prints the stream margin and, with a
-  real audio backend, command delivery.
+- `zig build integration-test -Doptimize=ReleaseSafe` prints the stream margin, the mixing
+  speed of the court-shaped load (at least 20× real time on the Arc PC's i3; 39× there and
+  about 100× on the M5 at M31), and, with a real audio backend, command delivery. On the Mac
+  its `ui_theme` test fails in ReleaseSafe alone, as it has since M30; Windows passes it.
 
-On the Windows target, `scripts/m30/windows.ps1` runs both.
+On the Windows target, `scripts/m31/windows.ps1` runs them all, with M31's court runs.
 
 ### Staging a release
 
