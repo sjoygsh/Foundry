@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–5 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–6 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1283,3 +1283,85 @@ a voice of higher priority. The stolen voice fades out over 256 frames in a fade
 **Bar:** the full bar, all exit 0. `zig build test` is **2,408/2,411** (three skips).
 
 Next is Step 6: the bus tree.
+
+## Resolution — Step 6: the bus tree (2026-10-27)
+
+A game now mixes through buses: `Mixer.useMix(root)` builds the tree of every
+`foundry:audio_bus` whose chain of parents reaches `root`. Each voice mixes into its sound's
+bus, and each bus applies its gain and adds itself into its parent. Effect chains are
+accepted and checked, and Step 7 runs them.
+
+**Where it is:**
+- **`audio/bus.zig` is new.** `bus.build` reads the records on the game thread and allocates
+  everything the callback touches:
+  - one buffer per bus below the root, a device buffer long;
+  - each bus's gain ramp;
+  - `voice_bus`, every voice's bus in the new tree.
+
+  Indices are the root at 0, then the rest by ascending content ID. `order` is post-order,
+  children before parents, siblings by index, so the summation order never follows load
+  order.
+- **The mixer:**
+  - `useMix` and `contentChanged` build a tree and hand it over with one `swap_mix` command.
+    The callback installs it between two buffers, re-routes every voice from `voice_bus`, and
+    sends back a `tree` event.
+  - `update` frees the tree the event releases. Trees awaiting release are kept oldest first,
+    at most four (`SwapPending`), which is what the events ring's four extra entries allow.
+  - `setBusGain` ramps a bus's game gain.
+  - `misrouted()` counts plays whose sound names a bus outside the tree. They are mixed at the
+    root.
+
+**What §8 left open, and the answers:**
+- **A bus's output gain is the record's gain times the game's** (`setBusGain`), not one or
+  the other. §8.4 already gave the music bus's gain to the player's slider. A reload then
+  sets the record's factor and leaves the slider's alone, and neither overwrites the other.
+  This is §8.4's argument, applied to every bus.
+- **The master gain applies after the root's own gain.** `setMasterGain` keeps its meaning,
+  and the public table's `audio_set_master_gain` with it. §8.1's "the root's gain is the
+  master gain" becomes "the master gain multiplies the root's".
+- **A device buffer longer than the tree's block is mixed in blocks.** The tree's block is
+  the device's buffer size. A real device always hands the size it promised, but the stepped
+  null device takes any size, so the tree path loops in blocks with the clock moving per
+  block. A spatial glide then spans a block, not the whole call; on a real device the two are
+  the same.
+- **On a swap, a voice follows its sound's bus into the new tree**, computed from the game
+  thread's record of each slot and each zombie's fade voice. A voice routed to the root
+  because its bus was missing is re-routed when a reload adds that bus.
+  - Commands queued before the swap use the old indices, and those after it the new ones. The
+    ring is first in, first out, so both meet the tree they were computed against.
+- **A parameter change is a gain change.** Two trees have the same shape when their buses,
+  parents and effect lists match. Then `contentChanged` sends a `bus_base` for each changed
+  gain and the tree plays on. Effect parameters join this in Step 7.
+- **No tree is M30's mixer exactly**, by structure. The M30 path is the same code, with the
+  voice loop moved into `mixVoices` unchanged, and M30's pinned sequence passes untouched.
+  Criterion 9's half is held here.
+- **Refusals**, on the game thread, with the mix carrying on unchanged:
+  - `NotABus`: the root is not a bus, or a bus's parent is not one;
+  - `RootHasParent`;
+  - `Cycle`: a chain longer than the number of buses;
+  - `TooDeep`, past 8;
+  - `TooManyBuses`, past 32;
+  - `InvalidBus`: a record that does not decode, or an effect that is not an effect record,
+    the reference check Step 1 wrote.
+
+**Tests**, in `sound_pipeline`, with packages built into owned bytes (`addPackage`), since
+the store borrows a package's bytes:
+- the tree's members, indices and order;
+- each voice's level through its chain of gains;
+- a misrouted voice at the root, counted;
+- the master gain after the root;
+- `setBusGain`'s ramp across six blocks of a long buffer, and its refusals;
+- every refusal;
+- a gain reload keeping the tree;
+- a shape reload swapping it, re-routing a playing voice, and freeing the old tree under
+  `testing.allocator`.
+
+**Guards verified by breaking them**, each in its own run:
+- adding a parent before its children (pre-order) failed the order and gain test;
+- not counting a misroute failed it too;
+- treating every reload as a shape change failed the reload test;
+- leaving every voice at the root on a swap failed the re-routing check.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,412/2,415** (three skips).
+
+Next is Step 7: filters, the delay and the reverb.

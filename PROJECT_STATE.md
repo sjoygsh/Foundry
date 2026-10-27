@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 5 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 6** (`audio`: the bus tree from records, routing, order, gain ramps and swaps; effects bypassed). Buses and effects do not exist yet. Nothing of M31 is pushed.
+**Current handoff: M31 Step 6 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 7** (`audio`: the biquad filter's six shapes and ramps, the delay, the FDN reverb, and `setEffect`). Effect chains are accepted and checked but not yet run. Nothing of M31 is pushed.
+
+**M31 Step 6 is done (2026-10-27): the bus tree.**
+- `audio/bus.zig` builds the tree from `foundry:audio_bus` records under a root. The root is index 0, the rest go by ascending content ID, and they mix post-order.
+- Refusals: `NotABus`, `RootHasParent`, `Cycle`, `TooDeep`, `TooManyBuses` and `InvalidBus`.
+- `Mixer.useMix(root)` and `contentChanged()` hand a tree over with one `swap_mix` command that re-routes every voice. The old tree comes back as a `tree` event, with at most four pending.
+- `setBusGain` ramps the game's gain, and a bus's output is the record's gain times the game's. The master gain applies after the root.
+- `misrouted()` counts plays whose bus is outside the tree. A long stepped buffer mixes in blocks.
+- No tree gives M30's output exactly.
+- Four guards were verified by breaking them.
+
+Bar **2,412/2,415** (three skips), the full bar, all exit 0.
 
 **M31 Step 5 is done (2026-10-27): voice stealing.**
 - With no free voice, `play` takes the lowest priority, then the quietest by the game thread's estimate, then the oldest. It never takes a higher priority; equal priority may be taken.

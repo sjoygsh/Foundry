@@ -627,3 +627,190 @@ test "a stream's first decode, queued behind the whole gallery, arrives inside i
     try testing.expect(first_frames_ns.? < margin * std.time.ns_per_s / 48_000);
     try testing.expectEqual(@as(u32, 0), mixer.underruns());
 }
+
+// -- M31 Step 6: the bus tree (`mixing.md` §8) ---------------------------------------------
+
+/// Compiles `source` as package `name` into bytes of its own, kept in `keep`, which must outlive
+/// the stack: the store borrows a package's bytes, and `Stack.loadPackage` reuses one buffer.
+fn addPackage(s: *Stack, keep: *std.ArrayList([]u8), name: []const u8, source: []const u8) !void {
+    var doc = try data.parser.parse(s.gpa, "content.fdt", source, .{ .namespace = name[0..std.mem.indexOfScalar(u8, name, ':').?] }, &s.diags);
+    defer doc.deinit(s.gpa);
+    var pkg = try data.check.Package.init(s.gpa, name, 1, .default);
+    defer pkg.deinit(s.gpa);
+    try pkg.addDocument(s.gpa, &doc, &s.schemas, &s.diags);
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(s.gpa);
+    try data.fpk.write(s.gpa, &pkg, &s.schemas, &bytes);
+    const owned = try bytes.toOwnedSlice(s.gpa);
+    try keep.append(s.gpa, owned);
+    const handle = try s.store.add(s.gpa, name, owned, &s.schemas, &s.diags);
+    try s.assets.mount(s.gpa, handle, s.dir);
+}
+
+fn freeAll(list: *std.ArrayList([]u8)) void {
+    for (list.items) |b| testing.allocator.free(b);
+    list.deinit(testing.allocator);
+}
+
+const mix_source =
+    \\foundry:audio_bus t:bus.master { gain 0.5 }
+    \\foundry:audio_bus t:bus.music { parent t:bus.master gain 0.5 }
+    \\foundry:audio_bus t:bus.world { parent t:bus.master }
+    \\foundry:audio_bus t:bus.effects { parent t:bus.world gain 0.25 }
+    \\foundry:audio_bus t:bus.other_root { }
+    \\foundry:audio_bus t:bus.elsewhere { parent t:bus.other_root }
+    \\foundry:sound t:s.music { source "dc.wav" bus t:bus.music }
+    \\foundry:sound t:s.effect { source "dc.wav" bus t:bus.effects }
+    \\foundry:sound t:s.plain { source "dc.wav" }
+    \\foundry:sound t:s.lost { source "dc.wav" bus t:bus.elsewhere }
+;
+
+fn dcStack(keep: *std.ArrayList([]u8), source: []const u8) !*Stack {
+    const s = try Stack.init(.{ .channels = 1, .buffer_frames = 8 });
+    errdefer s.deinit();
+    var frames: [4000]i16 = undefined;
+    @memset(&frames, 16384);
+    try s.writeWav("dc.wav", &frames);
+    try addPackage(s, keep, "t:content", source);
+    return s;
+}
+
+test "voices mix through their buses' gains to the root, and a missing bus is the root's" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try dcStack(&keep, mix_source);
+    defer s.deinit();
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    const tree = s.mixer.mirror.?;
+    // The root, then the rest by ascending content ID; the other root's buses are not here.
+    try testing.expectEqual(@as(usize, 4), tree.count());
+    try testing.expect(tree.ids[0].eql(id("t:bus.master")));
+    try testing.expect(tree.indexOf(id("t:bus.elsewhere")) == null);
+    // Children before parents: effects before world.
+    const effects = tree.indexOf(id("t:bus.effects")).?;
+    const world = tree.indexOf(id("t:bus.world")).?;
+    try testing.expect(std.mem.indexOfScalar(u16, tree.order, effects).? < std.mem.indexOfScalar(u16, tree.order, world).?);
+    for (1..tree.order.len) |i| {
+        const a = tree.order[i - 1];
+        const b = tree.order[i];
+        // Siblings in order of index, which is ascending content ID.
+        if (tree.parents[a] == tree.parents[b]) try testing.expect(a < b);
+    }
+
+    const cases = [_]struct { sound: []const u8, gain: f32 }{
+        .{ .sound = "t:s.music", .gain = 0.5 * 0.5 },
+        .{ .sound = "t:s.effect", .gain = 0.25 * 1 * 0.5 },
+        .{ .sound = "t:s.plain", .gain = 0.5 },
+        .{ .sound = "t:s.lost", .gain = 0.5 },
+    };
+    for (cases) |case| {
+        _ = try s.mixer.play(id(case.sound), .{});
+        s.mixer.update();
+        const out = try s.step(8);
+        for (out) |sample| try testing.expectApproxEqAbs(0.5 * case.gain, sample, 1e-7);
+        s.mixer.stopAll();
+        s.mixer.update();
+        _ = try s.step(8);
+        s.mixer.update();
+    }
+    try testing.expectEqual(@as(u32, 1), s.mixer.misrouted());
+    // The master gain still applies, after the root.
+    s.mixer.setMasterGain(0.5);
+    _ = try s.mixer.play(id("t:s.plain"), .{});
+    s.mixer.update();
+    for (try s.step(8)) |sample| try testing.expectApproxEqAbs(0.5 * 0.5 * 0.5, sample, 1e-7);
+}
+
+test "setBusGain ramps a bus's own gain, times its record's, and a long buffer mixes in blocks" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try dcStack(&keep, mix_source);
+    defer s.deinit();
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    _ = try s.mixer.play(id("t:s.music"), .{ .looping = true });
+    s.mixer.update();
+    _ = try s.step(8);
+    try testing.expect(s.mixer.setBusGainChecked(id("t:bus.music"), 0, 40));
+    try testing.expect(!s.mixer.setBusGainChecked(id("t:bus.elsewhere"), 0, 40));
+    try testing.expect(!s.mixer.setBusGainChecked(id("t:bus.music"), -1, 40));
+    s.mixer.update();
+    // 48 frames on an 8-frame device's tree: six blocks, the ramp continuous across them.
+    const out = try s.step(48);
+    for (out, 0..) |sample, f| {
+        const ramp: f32 = if (f >= 40) 0 else 1 - @as(f32, @floatFromInt(f)) / 40;
+        try testing.expectApproxEqAbs(0.5 * 0.25 * ramp, sample, 1e-6);
+    }
+}
+
+test "a tree the records cannot make is refused by name, and the mix plays on" {
+    const id = core.ContentId.fromString;
+    const cases = [_]struct { source: []const u8, root: []const u8, err: anyerror }{
+        .{ .source = "foundry:audio_bus t:r { parent t:p }\nfoundry:audio_bus t:p { }", .root = "t:r", .err = error.RootHasParent },
+        .{ .source = "foundry:sound t:r { source \"dc.wav\" }", .root = "t:r", .err = error.NotABus },
+        .{ .source = "foundry:audio_bus t:r { }", .root = "t:nowhere", .err = error.NotABus },
+        .{ .source = "foundry:audio_bus t:r { }\nfoundry:audio_bus t:a { parent t:b }\nfoundry:audio_bus t:b { parent t:a }", .root = "t:r", .err = error.Cycle },
+        .{ .source = "foundry:audio_bus t:r { }\nfoundry:sound t:s { source \"dc.wav\" }\nfoundry:audio_bus t:a { parent t:s }", .root = "t:r", .err = error.NotABus },
+        .{ .source = "foundry:audio_bus t:r { effects [ t:s ] }\nfoundry:sound t:s { source \"dc.wav\" }", .root = "t:r", .err = error.InvalidBus },
+    };
+    for (cases) |case| {
+        var keep: std.ArrayList([]u8) = .empty;
+        defer freeAll(&keep);
+        const s = try dcStack(&keep, case.source);
+        defer s.deinit();
+        try testing.expectError(case.err, s.mixer.useMix(id(case.root)));
+        try testing.expect(s.mixer.mirror == null);
+    }
+
+    // Nine below the root is too deep; thirty-three in all is too many.
+    var deep: std.ArrayList(u8) = .empty;
+    defer deep.deinit(testing.allocator);
+    try deep.appendSlice(testing.allocator, "foundry:audio_bus t:b0 { }\n");
+    for (1..10) |i| try deep.print(testing.allocator, "foundry:audio_bus t:b{d} {{ parent t:b{d} }}\n", .{ i, i - 1 });
+    var wide: std.ArrayList(u8) = .empty;
+    defer wide.deinit(testing.allocator);
+    try wide.appendSlice(testing.allocator, "foundry:audio_bus t:b0 { }\n");
+    for (1..33) |i| try wide.print(testing.allocator, "foundry:audio_bus t:b{d} {{ parent t:b0 }}\n", .{i});
+    for ([_]struct { source: []const u8, err: anyerror }{ .{ .source = deep.items, .err = error.TooDeep }, .{ .source = wide.items, .err = error.TooManyBuses } }) |case| {
+        var keep: std.ArrayList([]u8) = .empty;
+        defer freeAll(&keep);
+        const s = try dcStack(&keep, case.source);
+        defer s.deinit();
+        try testing.expectError(case.err, s.mixer.useMix(id("t:b0")));
+    }
+}
+
+test "a reload that changes a gain keeps the tree, and one that changes its shape swaps it" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try dcStack(&keep, mix_source);
+    defer s.deinit();
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    s.mixer.update();
+    _ = try s.step(8);
+    s.mixer.update();
+    try testing.expectEqual(@as(usize, 0), s.mixer.retiring.items.len);
+    const first = s.mixer.mirror.?;
+    _ = try s.mixer.play(id("t:s.lost"), .{ .looping = true });
+
+    // A later package changes the music bus's gain: the same tree, a new gain.
+    try addPackage(s, &keep, "m:gain", "foundry:audio_bus t:bus.music { parent t:bus.master gain 1 }");
+    try s.mixer.contentChanged();
+    try testing.expectEqual(first, s.mixer.mirror.?);
+    try testing.expectEqual(@as(f32, 1), first.records[first.indexOf(id("t:bus.music")).?].gain);
+
+    // Another moves the lost sound's bus under this root: a new shape, swapped in, and the
+    // voice already playing follows its sound's bus into it.
+    try addPackage(s, &keep, "m:shape", "foundry:audio_bus t:bus.elsewhere { parent t:bus.master gain 0.5 }");
+    try s.mixer.contentChanged();
+    try testing.expect(first != s.mixer.mirror.?);
+    try testing.expectEqual(@as(usize, 1), s.mixer.retiring.items.len);
+    s.mixer.update();
+    const out = try s.step(8);
+    for (out) |sample| try testing.expectApproxEqAbs(0.5 * 0.5 * 0.5, sample, 1e-7);
+    // The old tree goes once the callback has let it go, and `testing.allocator` sees no leak.
+    s.mixer.update();
+    try testing.expectEqual(@as(usize, 0), s.mixer.retiring.items.len);
+}

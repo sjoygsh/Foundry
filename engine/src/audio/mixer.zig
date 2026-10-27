@@ -12,6 +12,7 @@ const platform = @import("platform");
 const asset = @import("asset");
 
 const ring = @import("ring.zig");
+const bus = @import("bus.zig");
 const spatial = @import("spatial.zig");
 const streaming = @import("stream.zig");
 const voice = @import("voice.zig");
@@ -137,6 +138,16 @@ pub const VoiceError = error{
 /// different places, and collapsing them into one `UnknownSound` would throw that away.
 pub const PlayError = VoiceError || asset.AcquireError;
 
+/// What `useMix` and `contentChanged` can be refused with: a tree the records cannot make
+/// (`bus.BuildError`), or a handoff that cannot be sent yet.
+pub const MixError = bus.BuildError || error{
+    /// The command ring was full, so the tree was not handed over; the old one plays on.
+    CommandQueueFull,
+    /// Four trees are already waiting for the callback to give them back. An `update` drains
+    /// them.
+    SwapPending,
+};
+
 /// A command, game thread to callback thread. One way, always.
 const Command = union(enum) {
     play: Play,
@@ -153,6 +164,13 @@ const Command = union(enum) {
     /// Takes a voice from its slot before a `play` claims the slot (§7): into fade voice
     /// `into` to fade over `frames`, or cut at once when `into` is null.
     steal: struct { victim: VoiceHandle, into: ?u32, frames: u32 },
+    /// Installs a bus tree between two buffers, and every voice's bus in it (§8.3). The old
+    /// tree comes back as a `tree` event.
+    swap_mix: *bus.Tree,
+    /// Ramps a bus's game gain (`setBusGain`).
+    bus_gain: struct { index: u16, gain: f32, frames: u32 },
+    /// A reload changed a bus record's gain.
+    bus_base: struct { index: u16, gain: f32 },
 };
 
 const Play = struct {
@@ -176,12 +194,15 @@ const Play = struct {
     feed: ?*Feed,
     /// A spatial voice's first placement, which it starts at rather than glides to.
     placed: ?spatial.Placed,
+    /// Its bus in the tree the callback will have when this arrives.
+    bus: u16,
 };
 
 /// Callback thread to game thread: a voice's first sample landed on `frame`, or the voice
 /// gave its slot back.
 const Event = struct {
-    kind: enum(u8) { started, retired },
+    /// `tree`: a `swap_mix` installed its tree, so the one before it may be freed.
+    kind: enum(u8) { started, retired, tree },
     slot: u32,
     generation: u32,
     frame: u64 = 0,
@@ -374,6 +395,9 @@ const Stored = struct {
     }
 };
 
+/// Trees that may be handed over and not yet given back at once (§8.3).
+const max_pending_swaps = 4;
+
 pub fn MixerOf(comptime P: type) type {
     return struct {
         const Self = @This();
@@ -417,10 +441,18 @@ pub fn MixerOf(comptime P: type) type {
         sequence: u64 = 0,
         stolen_count: u32 = 0,
         cut_count: u32 = 0,
+        /// The bus tree as the game thread last built it, which every command since refers to.
+        mirror: ?*bus.Tree = null,
+        /// Trees handed over and replaced, oldest first, each freed by the `tree` event that
+        /// says the callback has let it go (null for the first swap, which replaced none).
+        retiring: std.ArrayList(?*bus.Tree) = .empty,
+        misrouted_count: u32 = 0,
 
         // -- owned by the callback thread -----------------------------------------
         voices: []Voice,
         master_gain: f32,
+        /// The bus tree being mixed, installed by `swap_mix`; null mixes M30's way.
+        tree: ?*bus.Tree = null,
         /// Frames mixed since the mixer started: the frame number of the next buffer's
         /// first sample. Published through `clock_frames`.
         mixed: u64 = 0,
@@ -483,7 +515,8 @@ pub fn MixerOf(comptime P: type) type {
             // slot, the stolen voice's retirement; four per slot leaves room to spare. A
             // dropped retirement would strand a slot forever, which is the one loss this
             // design cannot absorb, so it is made structurally impossible rather than counted.
-            var from_audio: ring.Ring(Event) = try .init(gpa, 4 * voice_count);
+            // Plus one `tree` event for each swap that may be outstanding.
+            var from_audio: ring.Ring(Event) = try .init(gpa, 4 * voice_count + max_pending_swaps);
             errdefer from_audio.deinit(gpa);
 
             // One second at the highest rate a sound may have, for each stream: the most any
@@ -632,6 +665,10 @@ pub fn MixerOf(comptime P: type) type {
             gpa.free(self.slots);
             gpa.free(self.voices);
             gpa.free(self.fade_busy);
+            // The device is closed: every tree, current or retiring, is the game thread's again.
+            for (self.retiring.items) |old| if (old) |t| t.destroy();
+            self.retiring.deinit(gpa);
+            if (self.mirror) |t| t.destroy();
             gpa.destroy(self);
         }
 
@@ -970,6 +1007,7 @@ pub fn MixerOf(comptime P: type) type {
                 .start = @intCast(start),
                 .feed = if (stream_index) |n| &self.streams[n].feed else null,
                 .placed = if (space) |s| s.sent else null,
+                .bus = self.route(stored.settings.bus, true),
             } });
 
             if (!started) {
@@ -988,6 +1026,91 @@ pub fn MixerOf(comptime P: type) type {
             // (§8.4's lookahead is a second).
             if (stream_index) |n| self.refill(&self.streams[n]);
             return handle;
+        }
+
+        // -- buses (`mixing.md` §8, ADR-0067) -----------------------------------------
+
+        /// Mixes through the tree of buses under `root`, from the next callback: every
+        /// `foundry:audio_bus` whose chain of parents reaches it. A tree the records cannot
+        /// make is refused by name, and the mix carries on as it was.
+        pub fn useMix(self: *Self, root: core.ContentId) MixError!void {
+            if (self.retiring.items.len >= max_pending_swaps) return error.SwapPending;
+            const tree = try bus.build(self.gpa, self.assets.store, root, self.info.buffer_frames, self.info.channels, self.voices.len);
+            errdefer tree.destroy();
+            try self.handOver(tree);
+        }
+
+        /// After a reload: a changed bus gain is sent as a command and the tree plays on, while
+        /// a changed shape (a bus added or moved, a chain changed) builds a new tree and swaps
+        /// it in (§8.3). Without a tree, nothing.
+        pub fn contentChanged(self: *Self) MixError!void {
+            const current = self.mirror orelse return;
+            if (self.retiring.items.len >= max_pending_swaps) return error.SwapPending;
+            const candidate = try bus.build(self.gpa, self.assets.store, current.ids[0], self.info.buffer_frames, self.info.channels, self.voices.len);
+            if (!candidate.sameShape(current)) {
+                errdefer candidate.destroy();
+                return self.handOver(candidate);
+            }
+            defer candidate.destroy();
+            for (candidate.records, 0..) |record, k| {
+                if (record.gain == current.records[k].gain) continue;
+                if (!self.to_audio.push(.{ .bus_base = .{ .index = @intCast(k), .gain = record.gain } })) return error.CommandQueueFull;
+                current.records[k].gain = record.gain;
+            }
+        }
+
+        /// Sends `tree` to the callback with every voice's bus in it, and keeps the one it
+        /// replaces until the callback gives it back.
+        fn handOver(self: *Self, tree: *bus.Tree) MixError!void {
+            try self.retiring.ensureUnusedCapacity(self.gpa, 1);
+            for (self.slots, 0..) |*slot, i| {
+                tree.voice_bus[i] = if (slot.playing) busIn(tree, self.soundBus(slot.sound)) else 0;
+            }
+            for (self.slots) |*slot| if (slot.zombie) |z| if (z.fade) |n| {
+                tree.voice_bus[self.slots.len + n] = busIn(tree, self.soundBus(z.sound));
+            };
+            if (!self.to_audio.push(.{ .swap_mix = tree })) return error.CommandQueueFull;
+            self.retiring.appendAssumeCapacity(self.mirror);
+            self.mirror = tree;
+        }
+
+        fn soundBus(self: *Self, sound: SoundHandle) ?core.ContentId {
+            const stored = self.sounds.get(sound) orelse return null;
+            return stored.settings.bus;
+        }
+
+        fn busIn(tree: *const bus.Tree, id: ?core.ContentId) u16 {
+            return tree.indexOf(id orelse return 0) orelse 0;
+        }
+
+        /// The bus a sound routed to `id` mixes into now: 0 (the root) for none, for no tree, or
+        /// for a bus the tree does not have, which a play counts as misrouted (§8.2).
+        fn route(self: *Self, id: ?core.ContentId, count: bool) u16 {
+            const tree = self.mirror orelse return 0;
+            const which = id orelse return 0;
+            return tree.indexOf(which) orelse {
+                if (count) self.misrouted_count += 1;
+                return 0;
+            };
+        }
+
+        /// Ramps bus `id`'s game gain to `gain` over `frames`, from the next callback. The
+        /// output is the record's gain times this one, so a player's slider and a reload of
+        /// the record never overwrite each other (§8.4).
+        pub fn setBusGain(self: *Self, id: core.ContentId, gain: f32, frames: u32) void {
+            _ = self.setBusGainChecked(id, gain, frames);
+        }
+
+        pub fn setBusGainChecked(self: *Self, id: core.ContentId, gain: f32, frames: u32) bool {
+            if (!std.math.isFinite(gain) or gain < 0) return false;
+            const tree = self.mirror orelse return false;
+            const index = tree.indexOf(id) orelse return false;
+            return self.to_audio.push(.{ .bus_gain = .{ .index = index, .gain = gain, .frames = frames } });
+        }
+
+        /// Plays whose sound names a bus the tree does not have, mixed into the root instead.
+        pub fn misrouted(self: *const Self) u32 {
+            return self.misrouted_count;
         }
 
         // -- voice stealing (`mixing.md` §7) -----------------------------------------
@@ -1362,6 +1485,11 @@ pub fn MixerOf(comptime P: type) type {
         /// which is the right way round.
         pub fn update(self: *Self) void {
             while (self.from_audio.pop()) |event| {
+                if (event.kind == .tree) {
+                    // The callback has let go of the tree before the one it installed.
+                    if (self.retiring.orderedRemove(0)) |old| old.destroy();
+                    continue;
+                }
                 const slot = &self.slots[event.slot];
                 if (event.kind == .started) {
                     if (slot.playing and slot.generation == event.generation) slot.started_at = event.frame;
@@ -1461,12 +1589,70 @@ pub fn MixerOf(comptime P: type) type {
             // 1. Drain the command ring. Bounded work: one pass over what is queued.
             while (self.to_audio.pop()) |command| self.apply(command);
 
+            // With a bus tree, the buffer is mixed in blocks its buses can hold (§8).
+            if (self.tree) |tree| {
+                const ch = self.info.channels;
+                var rest = out;
+                while (rest.len > 0) {
+                    const n = @min(rest.len / ch, tree.block) * ch;
+                    self.mixTree(tree, rest[0..n]);
+                    rest = rest[n..];
+                }
+                return;
+            }
+
             // 2. Silence is zeroes. The buffer arrives holding whatever the driver last
             //    put there, so this is not an optimisation to skip when nothing plays.
             @memset(out, 0);
 
             // 3. Mix in slot index order — stable, documented, and the reason two runs of
             //    the stepped device produce identical samples (I9, `audio.md` §8).
+            self.mixVoices(null, out);
+
+            // 4. Master gain, then clamp. **The clamp is not a limiter and does not
+            //    pretend to be**: it is here because an `f32` outside [-1, 1] handed to a
+            //    driver that converts to `s16` without clamping *wraps*, and wrapping is
+            //    the single worst sound a program can make. Twenty voices at full gain
+            //    will clip; M31's limiter is an effect a game puts on its root bus.
+            for (out) |*sample| {
+                sample.* = std.math.clamp(sample.* * self.master_gain, -1.0, 1.0);
+            }
+
+            // 5. The clock moves by exactly this buffer, published last so a game that
+            //    reads it sees every event this buffer pushed.
+            self.mixed += out.len / self.info.channels;
+            self.clock_frames.store(self.mixed, .release);
+        }
+
+        /// One block through the bus tree (§8.1): each voice into its bus's buffer, in slot
+        /// order; each bus below the root, children before parents, through its gain into its
+        /// parent; then the root's gain, the master gain and the clamp.
+        fn mixTree(self: *Self, tree: *bus.Tree, out: []f32) void {
+            const ch = self.info.channels;
+            const frames = out.len / ch;
+            @memset(out, 0);
+            for (1..tree.count()) |k| @memset(tree.buffer(@intCast(k), frames), 0);
+            self.mixVoices(tree, out);
+            for (tree.order) |k| {
+                const from = tree.buffer(k, frames);
+                const parent = tree.parents[k];
+                const into = if (parent == 0) out else tree.buffer(parent, frames);
+                for (0..frames) |f| {
+                    const gain = tree.base[k] * tree.level[k].at(self.mixed + f);
+                    for (0..ch) |c| into[f * ch + c] += from[f * ch + c] * gain;
+                }
+            }
+            for (0..frames) |f| {
+                const gain = tree.base[0] * tree.level[0].at(self.mixed + f) * self.master_gain;
+                for (out[f * ch ..][0..ch]) |*sample| sample.* = std.math.clamp(sample.* * gain, -1.0, 1.0);
+            }
+            self.mixed += frames;
+            self.clock_frames.store(self.mixed, .release);
+        }
+
+        /// Every active voice into `out`, or into its bus's buffer when there is a tree, in slot
+        /// index order (I9).
+        fn mixVoices(self: *Self, tree: ?*bus.Tree, out: []f32) void {
             const channels = self.info.channels;
             const frames: u64 = out.len / channels;
             for (self.voices, 0..) |*v, index| {
@@ -1487,27 +1673,14 @@ pub fn MixerOf(comptime P: type) type {
                     v.pending = false;
                     self.report(.{ .kind = .started, .slot = @intCast(index), .generation = generation, .frame = v.start_at });
                 }
-                const playing = v.mix(out[offset * channels ..], channels, self.mixed + offset);
+                const target = if (tree) |t| (if (v.bus == 0 or v.bus >= t.count()) out else t.buffer(v.bus, @intCast(frames))) else out;
+                const playing = v.mix(target[offset * channels ..], channels, self.mixed + offset);
                 if (v.underran) {
                     v.underran = false;
                     _ = self.underrun_count.fetchAdd(1, .monotonic);
                 }
                 if (!playing) self.retire(v.owner orelse @as(u32, @intCast(index)), generation);
             }
-
-            // 4. Master gain, then clamp. **The clamp is not a limiter and does not
-            //    pretend to be**: it is here because an `f32` outside [-1, 1] handed to a
-            //    driver that converts to `s16` without clamping *wraps*, and wrapping is
-            //    the single worst sound a program can make. Twenty voices at full gain
-            //    will clip; a real limiter is out of scope (`audio.md` §12).
-            for (out) |*sample| {
-                sample.* = std.math.clamp(sample.* * self.master_gain, -1.0, 1.0);
-            }
-
-            // 5. The clock moves by exactly this buffer, published last so a game that
-            //    reads it sees every event this buffer pushed.
-            self.mixed += frames;
-            self.clock_frames.store(self.mixed, .release);
         }
 
         /// A voice stops reading its samples here, and the push is what tells the game
@@ -1547,6 +1720,7 @@ pub fn MixerOf(comptime P: type) type {
                         .loop_start = p.loop_start,
                         .loop_end = p.loop_end,
                         .start = p.start,
+                        .bus = p.bus,
                         .cursor = @floatFromInt(p.start),
                         .step = p.step,
                         .level = .hold(p.gain),
@@ -1625,6 +1799,20 @@ pub fn MixerOf(comptime P: type) type {
                     v.step = s.step;
                 },
                 .set_master_gain => |s| self.master_gain = s.gain,
+                .swap_mix => |tree| {
+                    self.tree = tree;
+                    for (self.voices, tree.voice_bus) |*v, b| v.bus = b;
+                    self.report(.{ .kind = .tree, .slot = 0, .generation = 0 });
+                },
+                .bus_gain => |s| {
+                    const tree = self.tree orelse return;
+                    if (s.index >= tree.count()) return;
+                    tree.level[s.index].start(.{ .begin = self.mixed, .frames = s.frames, .to = s.gain, .curve = .linear, .stop = false });
+                },
+                .bus_base => |s| {
+                    const tree = self.tree orelse return;
+                    if (s.index < tree.count()) tree.base[s.index] = s.gain;
+                },
                 .spatial => |s| {
                     const v = self.liveVoice(s.voice) orelse return;
                     v.glide = .{ .left = s.placed.left, .right = s.placed.right, .space = s.placed.space, .lowpass = s.placed.lowpass };

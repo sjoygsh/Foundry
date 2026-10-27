@@ -64,6 +64,9 @@ pub const Mixer = mixer.Mixer;
 pub const MixerOf = mixer.MixerOf;
 pub const Options = mixer.Options;
 pub const PlayParams = mixer.PlayParams;
+pub const MixError = mixer.MixError;
+/// The bus tree, built from records (`mixing.md` §8, ADR-0067).
+pub const bus = @import("bus.zig");
 /// Who hears the spatial voices (`mixing.md` §5, ADR-0068).
 pub const Listener = mixer.Listener;
 /// The placement arithmetic, pure and testable without a device.
@@ -107,6 +110,7 @@ test {
     _ = stream;
     _ = music;
     _ = spatial;
+    _ = bus;
     _ = voice;
 }
 

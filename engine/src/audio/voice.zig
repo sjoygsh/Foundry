@@ -209,6 +209,8 @@ pub const Voice = struct {
     /// it, so a moving source has no step at a buffer's edge (§5.5).
     glide: ?Glide = null,
 
+    /// The bus it mixes into, by index in the mixer's tree (`mixing.md` §8); 0 is the root.
+    bus: u16 = 0,
     /// A stolen voice fading in a fade voice (`mixing.md` §7): the slot whose zombie it is,
     /// which its retirement is reported for. Null for a voice in its own slot.
     owner: ?u32 = null,
