@@ -1140,6 +1140,27 @@ pub fn MixerOf(comptime P: type) type {
             return self.to_audio.push(.{ .bus_gain = .{ .index = index, .gain = gain, .frames = frames } });
         }
 
+        /// Frames the mix delays the longest path from a bus to the device: the sum of the
+        /// lookaheads of the limiters on it (§9). The sample clock counts mixed frames, and a
+        /// voice scheduled to one is heard this much later. 0 without a tree.
+        pub fn mixerLatency(self: *const Self) u32 {
+            const tree = self.mirror orelse return 0;
+            var longest: usize = 0;
+            for (0..tree.count()) |start| {
+                var total: usize = 0;
+                var k: u16 = @intCast(start);
+                while (true) {
+                    // A unit's lookahead is fixed when the tree is built, so reading it here,
+                    // while the callback runs the unit, reads nothing the callback writes.
+                    for (tree.chain(k)) |*unit| total += unit.latency();
+                    if (k == 0) break;
+                    k = tree.parents[k];
+                }
+                longest = @max(longest, total);
+            }
+            return @intCast(longest);
+        }
+
         /// Plays whose sound names a bus the tree does not have, mixed into the root instead.
         pub fn misrouted(self: *const Self) u32 {
             return self.misrouted_count;

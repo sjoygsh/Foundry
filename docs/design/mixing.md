@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–7 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–8 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1433,3 +1433,86 @@ sent, on the game thread.
 **Bar:** the full bar, all exit 0. `zig build test` is **2,420/2,423** (three skips).
 
 Next is Step 8: the compressor, the limiter, `mixerLatency()` and the mixing-speed test.
+
+## Resolution — Step 8: compressor and limiter (2026-10-27)
+
+The last two effects are built. A bus may now compress, and the master may limit so that
+nothing passes its ceiling. `mixerLatency()` reports what the limiters add, and a timing test
+measures the whole court-shaped mix.
+
+**The compressor** (`effects.Compressor`) is §9's as written:
+- the channels' peak in decibels through `core.math.exp.gainToDb`;
+- the soft-knee static curve;
+- attack and release as one-pole smoothing of the reduction, with coefficient
+  `e^(−1/(t·fs))` through `exp2`;
+- makeup.
+
+It costs one `log2` and one `exp2` a frame.
+
+**The limiter** (`effects.Limiter`):
+1. It delays the signal by `lookahead`.
+2. It keeps each frame's required gain in a ring.
+3. A monotonic deque gives the sliding minimum over the window, at constant time per frame.
+4. It averages that minimum over the window. Every window that contains the frame now
+   leaving has a minimum at most that frame's requirement, so the average is too, and the
+   gain arrives as a ramp across the lookahead rather than a step.
+5. Release is a one-pole back up.
+
+Two refinements the design did not foresee:
+- **The gain is also held to the leaving frame's own requirement**, `min(gain, leaving)`.
+  The running sum behind the average is `f64`, but it is still rounded. This makes the
+  guarantee exact rather than nearly so. It never engages beyond that rounding, and the
+  attack-ramp test shows the averaging is what does the work.
+- **The product is held to ±ceiling.** A sample times `ceiling / peak` rounded one unit in
+  the last place above the ceiling on the first run (`−0.891251` against `0.89125097`). The
+  gain was right; the multiplication rounded. The hold corrects only that.
+  - So the hold cannot hide a broken gain, the limiter records `unheld`, its largest product
+    before the hold.
+  - The ceiling test requires `unheld` to be within a millionth of the ceiling, so the gain
+    alone keeps it there, up to rounding.
+
+**`mixerLatency()`** is the longest path's sum of limiter lookaheads, bus by bus up to the
+root. A unit's lookahead is fixed when the tree is built, so the game thread reads it safely.
+The sample clock still counts mixed frames, and scheduled starts are exact against it.
+
+**Measured:**
+- The compressor settles within 0.25 dB of the static curve, computed independently in `f64`,
+  at 13 levels from −60 to 0 dB on a steady level.
+- Its attack reaches 1 − 1/e of a step's reduction in 10 ms, and its release falls to 1/e in
+  150 ms, each within 10%.
+- No limited sample exceeds the ceiling, and `unheld` stays within rounding of it, over:
+  - seeded random input up to four times full scale;
+  - 32 summed full-scale sines;
+  - 200 sparse impulses of 8;
+  - square waves of ±3 at periods 2, 7, 96, 97 and 1000;
+  - steps from 0.1 to 5.
+
+  Each is processed in blocks of seeded sizes from 1 to 512 frames.
+- Quiet audio passes exactly, sample for sample, 96 frames late at the 2 ms default.
+- A jump to five times full scale is met by an even ramp over the lookahead, its steepest
+  step within one 97th of the drop, ending exactly on the requirement.
+- `mixerLatency()` sums a path: 96 on the master plus 240 on a world bus is 336.
+- **Mixing speed** (`sound_pipeline`, optimized builds only): the court-shaped load is
+  - 32 looping voices, all resampling;
+  - 16 of them spatial, half the effects occluded;
+  - six buses, with the master's limiter and the world's reverb, compressor and filter.
+
+  **98× real time on the M5 in ReleaseSafe**, single-threaded, against criterion 6's 20×,
+  which the i3 decides at Step 11. The test skips in Debug, as the stream margin does, so the
+  bar now shows four skips.
+
+The ReleaseSafe integration run's only failure is the Mac's `ui_theme` test, open for the
+owner since M30, which M31 does not touch.
+
+**Guards verified by breaking them**, each in its own run:
+- using the window minimum without its average failed the attack-ramp test, which is why
+  that test was written: the hold to the leaving frame's requirement keeps the ceiling on its
+  own, so only a test of the ramp can see the averaging;
+- swapping attack and release failed the time-constant test;
+- summing only a bus's own chain failed `mixerLatency`'s test.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,426/2,430** (four skips; the new
+one is the mixing-speed test in Debug). `zig build integration-test -Doptimize=ReleaseSafe`
+passes everything except `ui_theme`, as above.
+
+Next is Step 9: `Music` on loop regions and resume, and the M31 sequenced mix pinned.

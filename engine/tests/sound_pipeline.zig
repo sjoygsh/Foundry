@@ -893,3 +893,81 @@ test "a reload that retunes an effect keeps the tree, and one that resizes it sw
     s.mixer.update();
     try testing.expectEqual(@as(usize, 0), s.mixer.retiring.items.len);
 }
+
+// -- M31 Step 8: the limiter's latency, and the mixing speed (`mixing.md` §9, §14) -----------
+
+test "mixerLatency is the longest path's sum of limiter lookaheads" {
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try dcStack(&keep,
+        \\foundry:audio_bus t:root { effects [ t:fx.limit ] }
+        \\foundry:audio_limiter t:fx.limit { lookahead 0.002 }
+        \\foundry:audio_bus t:world { parent t:root effects [ t:fx.glue t:fx.guard ] }
+        \\foundry:audio_compressor t:fx.glue { }
+        \\foundry:audio_limiter t:fx.guard { lookahead 0.005 }
+        \\foundry:audio_bus t:ui { parent t:root }
+    );
+    defer s.deinit();
+    try testing.expectEqual(@as(u32, 0), s.mixer.mixerLatency());
+    try s.mixer.useMix(core.ContentId.fromString("t:root"));
+    try testing.expectEqual(@as(u32, 96 + 240), s.mixer.mixerLatency());
+}
+
+/// The court's mix, as §14's timing test loads it: a limiter on the master, a reverb,
+/// compressor and filter on the world, and buses for music, effects, ambience and UI.
+const court_shaped =
+    \\foundry:audio_bus t:bus.master { effects [ t:fx.limit ] }
+    \\foundry:audio_limiter t:fx.limit { }
+    \\foundry:audio_bus t:bus.music { parent t:bus.master }
+    \\foundry:audio_bus t:bus.world { parent t:bus.master effects [ t:fx.room t:fx.glue t:fx.muffle ] }
+    \\foundry:audio_reverb t:fx.room { decay 1.4 wet 0.18 }
+    \\foundry:audio_compressor t:fx.glue { threshold_db -20 ratio 2 }
+    \\foundry:audio_filter t:fx.muffle { shape "lowpass" frequency 20000 }
+    \\foundry:audio_bus t:bus.effects { parent t:bus.world }
+    \\foundry:audio_bus t:bus.ambience { parent t:bus.world }
+    \\foundry:audio_bus t:bus.ui { parent t:bus.master }
+    \\foundry:sound t:s.music { source "noise.wav" bus t:bus.music }
+    \\foundry:sound t:s.effect { source "noise.wav" bus t:bus.effects }
+    \\foundry:sound t:s.ambience { source "noise.wav" bus t:bus.ambience }
+    \\foundry:sound t:s.ui { source "noise.wav" bus t:bus.ui }
+;
+
+test "mixing speed: the court's full load, frames per second, single-threaded, printed" {
+    // §14 and criterion 6: at least 20x real time on the Arc PC's i3 in ReleaseSafe. Debug
+    // measures nothing worth reading, so it skips, as the stream margin does.
+    if (@import("builtin").mode == .Debug) return error.SkipZigTest;
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try Stack.init(.{ .channels = 2, .buffer_frames = 512 });
+    defer s.deinit();
+    var noise: [48_000]i16 = undefined;
+    var rng = core.rng.Pcg32.init(0x4e4f_4953, 0);
+    for (&noise) |*n| n.* = @intCast(@as(i32, @intCast(rng.below(16384))) - 8192);
+    try s.writeWav("noise.wav", &noise);
+    try addPackage(s, &keep, "t:content", court_shaped);
+    const id = core.ContentId.fromString;
+    try s.mixer.useMix(id("t:bus.master"));
+    // 32 voices: 8 music, 8 UI, and 16 spatial effects and ambience at seeded places, some
+    // occluded, with a pitch so every voice resamples.
+    for (0..8) |i| {
+        _ = try s.mixer.play(id("t:s.music"), .{ .looping = true, .gain = 0.2, .pitch = 1.01 });
+        _ = try s.mixer.play(id("t:s.ui"), .{ .looping = true, .gain = 0.2, .pitch = 0.99 });
+        const a = try s.mixer.play(id("t:s.effect"), .{ .looping = true, .gain = 0.2, .position = .init(@floatFromInt(i), 0, -3), .pitch = 1.02 });
+        const b = try s.mixer.play(id("t:s.ambience"), .{ .looping = true, .gain = 0.2, .position = .init(-@as(f32, @floatFromInt(i)), 1, 2) });
+        if (i % 2 == 0) s.mixer.setOcclusion(a, 0.7);
+        _ = b;
+    }
+    try testing.expectEqual(@as(u32, 32), s.mixer.activeVoices());
+    const seconds = 20;
+    const start = std.Io.Clock.awake.now(testing.io);
+    var mixed: usize = 0;
+    while (mixed < seconds * 48_000) : (mixed += 512) {
+        s.mixer.update();
+        _ = try s.step(512);
+    }
+    const ns: u64 = @intCast(std.Io.Clock.awake.now(testing.io).nanoseconds - start.nanoseconds);
+    const ratio = @as(f64, @floatFromInt(seconds)) * 1e9 / @as(f64, @floatFromInt(@max(ns, 1)));
+    std.debug.print("mixing speed ({t}): {d:.0}x real time (32 voices, 16 spatial, 6 buses, 4 effects)\n", .{ @import("builtin").mode, ratio });
+    try testing.expect(ratio >= 20);
+    try testing.expectEqual(@as(u32, 0), s.mixer.misrouted());
+}

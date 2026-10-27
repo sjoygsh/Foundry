@@ -11,7 +11,6 @@
 //! `core.math.trig` and `core.math.exp`, never a linked math library, so a mix through these
 //! hashes the same in every binary.
 //!
-//! Step 8 adds the compressor and the limiter. Until then they pass their buffer through.
 
 const std = @import("std");
 const core = @import("core");
@@ -27,18 +26,16 @@ pub const Unit = union(enum) {
     filter: Filter,
     delay: Delay,
     reverb: Reverb,
-    /// Step 8's.
-    compressor: mix.Compressor,
-    /// Step 8's.
-    limiter: mix.Limiter,
+    compressor: Compressor,
+    limiter: Limiter,
 
     pub fn init(gpa: Allocator, effect: mix.Effect, rate: u32, channels: u8) Allocator.Error!Unit {
         return switch (effect) {
             .filter => |f| .{ .filter = .init(f, rate) },
             .delay => |d| .{ .delay = try .init(gpa, d, rate, channels) },
             .reverb => |r| .{ .reverb = try .init(gpa, r, rate) },
-            .compressor => |c| .{ .compressor = c },
-            .limiter => |l| .{ .limiter = l },
+            .compressor => |c| .{ .compressor = .init(c, rate) },
+            .limiter => |l| .{ .limiter = try .init(gpa, l, rate, channels) },
         };
     }
 
@@ -46,8 +43,17 @@ pub const Unit = union(enum) {
         switch (self.*) {
             .delay => |*d| d.deinit(gpa),
             .reverb => |*r| r.deinit(gpa),
+            .limiter => |*l| l.deinit(gpa),
             else => {},
         }
+    }
+
+    /// Frames this effect delays what passes through it: a limiter's lookahead, 0 otherwise.
+    pub fn latency(self: *const Unit) usize {
+        return switch (self.*) {
+            .limiter => |*l| l.length,
+            else => 0,
+        };
     }
 
     /// `frames` frames of `channels` interleaved, in place.
@@ -56,7 +62,8 @@ pub const Unit = union(enum) {
             .filter => |*f| f.process(buffer, channels),
             .delay => |*d| d.process(buffer, channels),
             .reverb => |*r| r.process(buffer, channels),
-            .compressor, .limiter => {},
+            .compressor => |*c| c.process(buffer, channels),
+            .limiter => |*l| l.process(buffer, channels),
         }
     }
 
@@ -67,8 +74,8 @@ pub const Unit = union(enum) {
             .filter => |*f| f.retarget(effect.filter, frames),
             .delay => |*d| d.params = effect.delay,
             .reverb => |*r| r.setParams(effect.reverb),
-            .compressor => |*c| c.* = effect.compressor,
-            .limiter => |*l| l.* = effect.limiter,
+            .compressor => |*c| c.setParams(effect.compressor),
+            .limiter => |*l| l.setParams(effect.limiter),
         }
     }
 };
@@ -405,6 +412,191 @@ pub const Reverb = struct {
     }
 };
 
+// -- the compressor --------------------------------------------------------------------
+
+/// A one-pole smoothing coefficient for a time constant at `rate`: `e^(−1/(t·fs))`.
+fn smoothing(seconds: f32, rate: u32) f32 {
+    const x = 1 / (seconds * @as(f32, @floatFromInt(rate)));
+    return exp.exp2(-x * std.math.log2e);
+}
+
+/// A feed-forward compressor (§9): the peak of the channels in decibels, a soft-knee static
+/// curve, attack and release as one-pole smoothing of the gain reduction, then makeup. One
+/// `log2` and one `exp2` a frame, since the channels share one gain.
+pub const Compressor = struct {
+    params: mix.Compressor,
+    rate: u32,
+    attack: f32 = 0,
+    release: f32 = 0,
+    /// The smoothed gain reduction, in decibels, never above 0.
+    reduction: f32 = 0,
+
+    pub fn init(c: mix.Compressor, rate: u32) Compressor {
+        var self: Compressor = .{ .params = c, .rate = rate };
+        self.setParams(c);
+        return self;
+    }
+
+    pub fn setParams(self: *Compressor, c: mix.Compressor) void {
+        self.params = c;
+        self.attack = smoothing(c.attack, self.rate);
+        self.release = smoothing(c.release, self.rate);
+    }
+
+    /// The static curve's gain reduction, in decibels, for a level of `x` decibels.
+    pub fn staticReduction(c: mix.Compressor, x: f32) f32 {
+        const over = x - c.threshold_db;
+        const slope = 1 / c.ratio - 1;
+        if (2 * over < -c.knee_db) return 0;
+        if (2 * @abs(over) <= c.knee_db) {
+            const k = over + c.knee_db / 2;
+            return slope * k * k / (2 * c.knee_db);
+        }
+        return slope * over;
+    }
+
+    pub fn process(self: *Compressor, buffer: []f32, channels: u8) void {
+        const frames = buffer.len / channels;
+        const makeup = self.params.makeup_db;
+        for (0..frames) |f| {
+            var peak: f32 = 0;
+            for (buffer[f * channels ..][0..channels]) |s| peak = @max(peak, @abs(s));
+            const target = staticReduction(self.params, exp.gainToDb(peak));
+            // More reduction is the attack; less is the release.
+            const k = if (target < self.reduction) self.attack else self.release;
+            self.reduction = target + (self.reduction - target) * k;
+            const gain = exp.dbToGain(self.reduction + makeup);
+            for (buffer[f * channels ..][0..channels]) |*s| s.* *= gain;
+        }
+    }
+};
+
+// -- the limiter -----------------------------------------------------------------------
+
+/// A lookahead peak limiter (§9). The signal is delayed by `lookahead`. Each frame's
+/// required gain (the ceiling over its peak, at most 1) enters a sliding minimum over the
+/// window, kept by a monotonic deque. That minimum, averaged over the window, is the attack:
+/// it reaches each frame's requirement by the time the frame leaves the delay, so no output
+/// exceeds the ceiling. Release is a one-pole back up.
+pub const Limiter = struct {
+    params: mix.Limiter,
+    rate: u32,
+    ceiling: f32 = 1,
+    release: f32 = 0,
+    /// The lookahead in frames.
+    length: usize,
+    /// `length` frames of delay, interleaved.
+    line: []f32,
+    /// Each frame's required gain, for the window the deque spans and the one leaving.
+    required: []f32,
+    /// The monotonic deque: positions of increasing required gain, oldest first.
+    deque: []u64,
+    head: usize = 0,
+    tail: usize = 0,
+    /// The window minimum of each of the last `length + 1` frames, and their sum.
+    minima: []f32,
+    sum: f64 = 0,
+    /// Frames seen.
+    at: u64 = 0,
+    gain: f32 = 1,
+    /// The largest output magnitude before the hold to the ceiling, so a test can tell the
+    /// gain doing its work from the hold doing it (criterion 3).
+    unheld: f32 = 0,
+
+    pub fn init(gpa: Allocator, l: mix.Limiter, rate: u32, channels: u8) Allocator.Error!Limiter {
+        const length: usize = @max(1, @as(usize, @intFromFloat(@round(l.lookahead * @as(f32, @floatFromInt(rate))))));
+        const line = try gpa.alloc(f32, length * channels);
+        errdefer gpa.free(line);
+        @memset(line, 0);
+        const required = try gpa.alloc(f32, length + 1);
+        errdefer gpa.free(required);
+        @memset(required, 1);
+        const deque = try gpa.alloc(u64, length + 2);
+        errdefer gpa.free(deque);
+        const minima = try gpa.alloc(f32, length + 1);
+        @memset(minima, 1);
+        var self: Limiter = .{
+            .params = l,
+            .rate = rate,
+            .length = length,
+            .line = line,
+            .required = required,
+            .deque = deque,
+            .minima = minima,
+            .sum = @floatFromInt(length + 1),
+        };
+        self.setParams(l);
+        return self;
+    }
+
+    pub fn deinit(self: *Limiter, gpa: Allocator) void {
+        gpa.free(self.line);
+        gpa.free(self.required);
+        gpa.free(self.deque);
+        gpa.free(self.minima);
+    }
+
+    pub fn setParams(self: *Limiter, l: mix.Limiter) void {
+        self.params.ceiling_db = l.ceiling_db;
+        self.params.release = l.release;
+        self.ceiling = exp.dbToGain(l.ceiling_db);
+        self.release = smoothing(l.release, self.rate);
+    }
+
+    pub fn process(self: *Limiter, buffer: []f32, channels: u8) void {
+        const frames = buffer.len / channels;
+        const window = self.length + 1;
+        for (0..frames) |f| {
+            const frame = buffer[f * channels ..][0..channels];
+            var peak: f32 = 0;
+            for (frame) |s| peak = @max(peak, @abs(s));
+            const need: f32 = if (peak > self.ceiling) self.ceiling / peak else 1;
+            const now = self.at;
+            self.required[now % window] = need;
+
+            // The deque keeps positions whose requirement is lower than every later one's, so
+            // its front is the window's minimum.
+            while (self.tail != self.head) {
+                const last = self.deque[(self.tail + self.deque.len - 1) % self.deque.len];
+                if (self.required[last % window] < need) break;
+                self.tail = (self.tail + self.deque.len - 1) % self.deque.len;
+            }
+            self.deque[self.tail] = now;
+            self.tail = (self.tail + 1) % self.deque.len;
+            if (self.deque[self.head] + window <= now) self.head = (self.head + 1) % self.deque.len;
+            const minimum = self.required[self.deque[self.head] % window];
+
+            // The minimum, averaged over the window: a ramp down that has arrived by the time
+            // the frame it was for leaves the delay.
+            const slot = &self.minima[now % window];
+            self.sum += @as(f64, minimum) - slot.*;
+            slot.* = minimum;
+            const averaged: f32 = @floatCast(self.sum / @as(f64, @floatFromInt(window)));
+
+            // Down at once to the ramp, up by the release.
+            const target = @min(averaged, 1);
+            self.gain = if (target < self.gain) target else target + (self.gain - target) * self.release;
+            // The frame leaving now was required `length` frames ago; the average already
+            // reached it, and this holds it exactly against rounding in the running sum.
+            const leaving = self.required[(now + 1) % window];
+            const gain = @min(self.gain, leaving);
+
+            const delayed = self.line[(now % self.length) * channels ..][0..channels];
+            // A sample times `ceiling / peak` can round one unit in the last place past the
+            // ceiling; the gain is right, so holding the product to it corrects only that.
+            const ceiling = self.ceiling;
+            for (frame, delayed) |*s, *d| {
+                const x = s.*;
+                const y = d.* * gain;
+                self.unheld = @max(self.unheld, @abs(y));
+                s.* = std.math.clamp(y, -ceiling, ceiling);
+                d.* = x;
+            }
+            self.at += 1;
+        }
+    }
+};
+
 fn isPrime(n: usize) bool {
     if (n < 2) return false;
     var d: usize = 2;
@@ -620,4 +812,154 @@ test "a delay time, a reverb size or predelay, or a limiter lookahead is a chang
     try testing.expect(!fixedEql(.{ .limiter = .{} }, .{ .limiter = .{ .lookahead = 0.005 } }));
     try testing.expect(!fixedEql(.{ .limiter = .{} }, .{ .compressor = .{} }));
     try testing.expect(fixedEql(.{ .filter = .{ .shape = .lowpass, .frequency = 900 } }, .{ .filter = .{ .shape = .highpass, .frequency = 90 } }));
+}
+
+/// The static curve in `f64` with `std.math`: the reference the compressor is held to.
+fn referenceCurveDb(c: mix.Compressor, x: f64) f64 {
+    const t: f64 = c.threshold_db;
+    const w: f64 = c.knee_db;
+    const r: f64 = c.ratio;
+    const y = if (2 * (x - t) < -w) x else if (2 * @abs(x - t) <= w) x + (1 / r - 1) * (x - t + w / 2) * (x - t + w / 2) / (2 * w) else t + (x - t) / r;
+    return y + c.makeup_db;
+}
+
+test "the compressor settles on its static curve within 0.25 dB at thirteen levels" {
+    const c: mix.Compressor = .{ .threshold_db = -20, .ratio = 4, .knee_db = 6, .attack = 0.001, .release = 0.001, .makeup_db = 3 };
+    var level: f64 = -60;
+    while (level <= 0) : (level += 5) {
+        var comp = Compressor.init(c, test_rate);
+        const amplitude: f32 = @floatCast(std.math.pow(f64, 10, level / 20));
+        var buffer: [4800]f32 = undefined;
+        for (0..5) |_| {
+            @memset(&buffer, amplitude);
+            comp.process(&buffer, 1);
+        }
+        const out_db = 20 * std.math.log10(@as(f64, buffer[buffer.len - 1]));
+        try testing.expectApproxEqAbs(referenceCurveDb(c, level), out_db, 0.25);
+    }
+}
+
+test "the compressor's attack and release take their time constants, within 10%" {
+    const c: mix.Compressor = .{ .threshold_db = -30, .ratio = 10, .knee_db = 0, .attack = 0.01, .release = 0.15 };
+    var comp = Compressor.init(c, test_rate);
+    var one = [1]f32{0};
+    // From silence to full scale: the reduction reaches 1 − 1/e of its target in `attack`.
+    const target = Compressor.staticReduction(c, 0);
+    var frames: usize = 0;
+    while (comp.reduction > target * (1.0 - 1.0 / std.math.e)) : (frames += 1) {
+        one[0] = 1;
+        comp.process(&one, 1);
+    }
+    try testing.expectApproxEqRel(@as(f64, 0.01), @as(f64, @floatFromInt(frames)) / test_rate, 0.1);
+    for (0..test_rate) |_| {
+        one[0] = 1;
+        comp.process(&one, 1);
+    }
+    // Back to quiet: the reduction falls to 1/e of where it was in `release`.
+    const start = comp.reduction;
+    frames = 0;
+    while (comp.reduction < start / @as(f32, std.math.e)) : (frames += 1) {
+        one[0] = 0.001;
+        comp.process(&one, 1);
+    }
+    try testing.expectApproxEqRel(@as(f64, 0.15), @as(f64, @floatFromInt(frames)) / test_rate, 0.1);
+}
+
+/// Runs `input` (stereo) through a limiter in blocks of seeded sizes, and fails on any output
+/// sample above its ceiling.
+fn expectUnderCeiling(input: []const f32, rng: *core.rng.Pcg32) !void {
+    var unit = try Unit.init(testing.allocator, .{ .limiter = .{ .ceiling_db = -1, .release = 0.05 } }, test_rate, 2);
+    defer unit.deinit(testing.allocator);
+    const ceiling = unit.limiter.ceiling;
+    const work = try testing.allocator.dupe(f32, input);
+    defer testing.allocator.free(work);
+    var at: usize = 0;
+    while (at < work.len) {
+        const frames = @min(1 + rng.below(512), (work.len - at) / 2);
+        unit.process(work[at..][0 .. frames * 2], 2);
+        at += frames * 2;
+    }
+    for (work) |s| if (@abs(s) > ceiling) {
+        std.debug.print("{d} over a ceiling of {d}\n", .{ s, ceiling });
+        return error.TestUnexpectedResult;
+    };
+    // And the gain, not the hold, kept it there: rounding is the most the hold corrects.
+    if (unit.limiter.unheld > ceiling * (1 + 1e-6)) {
+        std.debug.print("{d} before the hold, against a ceiling of {d}\n", .{ unit.limiter.unheld, ceiling });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "no limited sample exceeds the ceiling: random, a 32-voice stress, and their mutations" {
+    var rng = core.rng.Pcg32.init(0x4c49_4d49, 0);
+    const frames = 24_000;
+    const buffer = try testing.allocator.alloc(f32, frames * 2);
+    defer testing.allocator.free(buffer);
+    // Seeded random, up to four times full scale.
+    for (buffer) |*s| s.* = (@as(f32, @floatFromInt(rng.below(1 << 20))) / (1 << 19) - 1) * 4;
+    try expectUnderCeiling(buffer, &rng);
+    // Thirty-two voices at full gain: sines at seeded frequencies, summed.
+    @memset(buffer, 0);
+    for (0..32) |_| {
+        const freq: f64 = 40 + @as(f64, @floatFromInt(rng.below(8000)));
+        for (0..frames) |f| {
+            const s: f32 = @floatCast(trig.sinCosTurns(freq * @as(f64, @floatFromInt(f)) / test_rate)[0]);
+            buffer[f * 2] += s;
+            buffer[f * 2 + 1] += s;
+        }
+    }
+    try expectUnderCeiling(buffer, &rng);
+    // Mutations: sparse impulses, square waves, and full-scale steps.
+    @memset(buffer, 0);
+    for (0..200) |_| buffer[rng.below(frames * 2)] = 8;
+    try expectUnderCeiling(buffer, &rng);
+    for ([_]usize{ 2, 7, 96, 97, 1000 }) |period| {
+        for (0..frames) |f| {
+            const v: f32 = if ((f / period) % 2 == 0) 3 else -3;
+            buffer[f * 2] = v;
+            buffer[f * 2 + 1] = -v;
+        }
+        try expectUnderCeiling(buffer, &rng);
+    }
+    for (0..frames) |f| {
+        const v: f32 = if ((f / 3000) % 2 == 1) 5 else 0.1;
+        buffer[f * 2] = v;
+        buffer[f * 2 + 1] = v;
+    }
+    try expectUnderCeiling(buffer, &rng);
+}
+
+test "a limiter passes quiet audio untouched, exactly its lookahead later" {
+    var unit = try Unit.init(testing.allocator, .{ .limiter = .{ .ceiling_db = -1, .lookahead = 0.002 } }, test_rate, 1);
+    defer unit.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 96), unit.latency());
+    var buffer: [1000]f32 = undefined;
+    for (&buffer, 0..) |*s, i| s.* = @floatCast(0.5 * trig.sinCosTurns(@as(f64, @floatFromInt(i)) / 37)[0]);
+    const dry = buffer;
+    unit.process(&buffer, 1);
+    for (0..96) |i| try testing.expectEqual(@as(f32, 0), buffer[i]);
+    for (96..1000) |i| try testing.expectEqual(dry[i - 96], buffer[i]);
+}
+
+test "the limiter's attack is a ramp across its lookahead, not a step" {
+    // A level that jumps from quiet to five times full scale. The applied gain (output over the
+    // delayed input) must fall to its requirement evenly over the lookahead before the loud
+    // frames leave, rather than all at once when they do.
+    var unit = try Unit.init(testing.allocator, .{ .limiter = .{ .ceiling_db = -1, .lookahead = 0.002, .release = 0.05 } }, test_rate, 1);
+    defer unit.deinit(testing.allocator);
+    const length = unit.latency();
+    var input: [2000]f32 = undefined;
+    for (&input, 0..) |*s, i| s.* = if (i < 1000) 0.1 else 5;
+    var output = input;
+    unit.process(&output, 1);
+    const need = unit.limiter.ceiling / 5;
+    var previous: f32 = 1;
+    var largest_drop: f32 = 0;
+    for (length..2000) |i| {
+        const applied = output[i] / input[i - length];
+        largest_drop = @max(largest_drop, previous - applied);
+        previous = applied;
+    }
+    try testing.expect(largest_drop <= (1 - need) / @as(f32, @floatFromInt(length + 1)) + 1e-5);
+    try testing.expectApproxEqAbs(need, previous, 1e-6);
 }

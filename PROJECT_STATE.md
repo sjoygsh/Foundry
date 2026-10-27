@@ -1,7 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 7 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 8** (`audio`: the compressor, the lookahead limiter, `mixerLatency()` and the mixing-speed timing test). The compressor and limiter are accepted into chains but pass audio through. Nothing of M31 is pushed.
+**Current handoff: M31 Step 8 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 9** (`audio`: `Music` playing a looping single track with a loop region as one voice, `resume` playlists, and the M31 sequenced mix pinned in Debug, ReleaseSafe and x86_64). Nothing of M31 is pushed.
+
+**M31 Step 8 is done (2026-10-27): compressor and limiter.**
+- The compressor is feed-forward: a soft-knee static curve with one-pole attack and release on the reduction, one `log2` and one `exp2` a frame.
+- The lookahead limiter takes a sliding window minimum by monotonic deque, averages it over the window into an attack ramp, and releases with a one-pole.
+  - It holds the gain to the leaving frame's requirement, and holds the product to ±ceiling, which corrects only a one-ulp rounding the test found.
+  - `unheld` proves the gain does the work.
+- `mixerLatency()` sums the limiter lookaheads along the longest path.
+- Measured:
+  - the curve within 0.25 dB at 13 levels;
+  - attack and release within 10%;
+  - no sample over the ceiling across random, 32-voice, impulse, square and step stress;
+  - quiet audio exact, 96 frames late;
+  - the attack an even ramp.
+- **Mixing speed: 98× real time on the M5 in ReleaseSafe** for the court-shaped load (32 voices, 16 spatial, 6 buses, 4 effects), against 20×. The test is skipped in Debug, so the bar now has four skips.
+- Three guards were verified by breaking them.
+
+Bar **2,426/2,430** (four skips), the full bar, all exit 0. In ReleaseSafe, `integration-test` passes except the known Mac `ui_theme` test.
 
 **M31 Step 7 is done (2026-10-27): filters, delay and reverb.**
 - `audio/effects.zig` holds:
