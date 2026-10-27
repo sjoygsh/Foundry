@@ -1476,6 +1476,12 @@ pub fn MixerOf(comptime P: type) type {
             /// differ from this by a frame; nothing scheduled depends on that frame.
             frames: u64,
             streamed: bool,
+            /// The sound's own length, in its frames.
+            source_frames: u64 = 0,
+            /// Source frames per device frame at pitch 1.
+            step: f64 = 1,
+            /// The record gives a loop region (`mixing.md` §4.1).
+            loops: bool = false,
         };
 
         /// What `play` would start, without starting it: loads the sound if need be.
@@ -1486,7 +1492,13 @@ pub fn MixerOf(comptime P: type) type {
             const stored = self.sounds.getConst(payload.asHandle(SoundHandle)) orelse return error.UnknownSound;
             const step = voice.stepFor(stored.sound.sample_rate, self.info.sample_rate, 1);
             const frames: f64 = @floatFromInt(stored.frameCount());
-            return .{ .frames = @intFromFloat(@ceil(frames / step)), .streamed = stored.compressed != null };
+            return .{
+                .frames = @intFromFloat(@ceil(frames / step)),
+                .streamed = stored.compressed != null,
+                .source_frames = stored.frameCount(),
+                .step = step,
+                .loops = stored.settings.loop_start != 0 or stored.settings.loop_end != 0,
+            };
         }
 
         /// Frames the device has mixed since the mixer started, as of the last callback:

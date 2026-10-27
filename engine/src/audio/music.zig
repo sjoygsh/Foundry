@@ -111,6 +111,9 @@ pub fn MusicOf(comptime M: type) type {
         deferred: [max_deferred]?Deferred = @splat(null),
         duck: ?Duck = null,
 
+        /// Playlists left with `resume` set, most recent first replacing the oldest.
+        resumes: [max_resumes]?Resume = @splat(null),
+
         /// The last `start_capacity` starts, oldest overwritten; `start_count` counts them all.
         start_ring: [start_capacity]Start = undefined,
         start_count: u64 = 0,
@@ -119,8 +122,24 @@ pub fn MusicOf(comptime M: type) type {
             voice: VoiceHandle,
             track: ContentId,
             start: u64,
+            /// Device frames it plays for from `start`; unbounded for a looping track.
             frames: u64,
+            /// The source frame it began on: 0, or where a resumed playlist left it.
+            start_frame: u64 = 0,
+            /// Source frames per device frame.
+            step: f64 = 1,
         };
+
+        /// Where a `resume` playlist was left (`mixing.md` §10.2).
+        const Resume = struct {
+            playlist: ContentId,
+            order: [asset.music.max_tracks]u8,
+            order_len: u8,
+            position: u8,
+            /// The source frame of `order[position]`'s track to start on.
+            frame: u64,
+        };
+        const max_resumes = 8;
 
         const MusicVoice = struct {
             handle: VoiceHandle,
@@ -177,19 +196,32 @@ pub fn MusicOf(comptime M: type) type {
             const value = try self.readPlaylist(id);
             const now = self.mixer.clock();
 
+            // Where it was left, for a `resume` playlist that was; its first track otherwise.
             var order: [asset.music.max_tracks]u8 = undefined;
-            const order_len = self.newCycle(&value, &order, null);
-            const track = value.tracks()[order[0]];
+            var order_len: u8 = undefined;
+            var position: u8 = 0;
+            var start_frame: u64 = 0;
+            if (value.resumes) if (self.takeResume(id, &value)) |saved| {
+                order = saved.order;
+                order_len = saved.order_len;
+                position = saved.position;
+                start_frame = saved.frame;
+            };
+            if (position == 0 and start_frame == 0) order_len = self.newCycle(&value, &order, null);
+            const track = value.tracks()[order[position]];
             const info = try self.mixer.soundInfo(track);
             const cf = self.seconds(value.crossfade);
 
             var at = now + self.lookahead;
             if (self.head) |head| {
                 at = @max(at, head.start);
-                if (self.gridPoint(head, self.playlist.beats_per_bar, at)) |bar| at = @min(bar, head.start + head.frames);
+                if (self.gridPoint(head, self.playlist.beats_per_bar, at)) |bar| at = @min(bar, head.start +| head.frames);
+                self.leave(head, at);
             }
-            const fade_in = cf > 0 and info.frames >= 2 * cf;
-            const handle = try self.startTrack(track, at, value.gain, fade_in);
+            const looping = loopsAsOne(&value, info);
+            const frames = remaining(info, start_frame, looping);
+            const fade_in = cf > 0 and frames >= 2 * cf;
+            const handle = try self.startTrack(track, at, value.gain, fade_in, start_frame, looping);
             if (fade_in) self.mixer.fade(handle, .{ .at = at, .frames = @intCast(cf), .to = 1, .curve = .equal_power });
             // The old head gives way on the same frame, over the new playlist's crossfade.
             if (self.head) |head| {
@@ -200,15 +232,66 @@ pub fn MusicOf(comptime M: type) type {
             self.playlist = value;
             self.order = order;
             self.order_len = order_len;
-            self.position = 0;
+            self.position = position;
             self.stale = false;
             self.ended = false;
-            self.head = .{ .voice = handle, .track = track, .start = at, .frames = info.frames };
+            self.head = .{ .voice = handle, .track = track, .start = at, .frames = frames, .start_frame = start_frame, .step = info.step };
+        }
+
+        /// A single looping track with a loop region plays as one looping voice, its intro once
+        /// and its body for as long as it lasts (§10.1).
+        fn loopsAsOne(value: *const Playlist, info: M.SoundInfo) bool {
+            return value.loop and value.track_count == 1 and info.loops;
+        }
+
+        /// Device frames a track plays for from `start_frame`: unbounded when it loops.
+        fn remaining(info: M.SoundInfo, start_frame: u64, looping: bool) u64 {
+            if (looping) return std.math.maxInt(u64);
+            if (start_frame == 0) return info.frames;
+            const left: f64 = @floatFromInt(info.source_frames -| start_frame);
+            return @intFromFloat(@ceil(left / info.step));
+        }
+
+        /// Records where the playing playlist is being left at frame `at`, if it resumes:
+        /// the head's track at the source frame it will have reached (§10.2). A track already
+        /// played out resumes at the next one.
+        fn leave(self: *Self, head: Head, at: u64) void {
+            const id = self.playlist_id orelse return;
+            if (!self.playlist.resumes or self.ended) return;
+            const elapsed: f64 = @floatFromInt(at -| head.start);
+            var frame = head.start_frame + @as(u64, @intFromFloat(elapsed * head.step));
+            var position = self.position;
+            const looping = head.frames == std.math.maxInt(u64);
+            const source_end = head.start_frame + @as(u64, @intFromFloat(@as(f64, @floatFromInt(head.frames)) * head.step));
+            if (!looping and frame >= source_end) {
+                frame = 0;
+                position = if (position + 1 >= self.order_len) 0 else position + 1;
+            }
+            const saved: Resume = .{ .playlist = id, .order = self.order, .order_len = self.order_len, .position = position, .frame = frame };
+            for (&self.resumes) |*slot| if (slot.*) |r| if (r.playlist.eql(id)) {
+                slot.* = saved;
+                return;
+            };
+            // The oldest makes room: shift everything down one, newest first.
+            var i: usize = max_resumes - 1;
+            while (i > 0) : (i -= 1) self.resumes[i] = self.resumes[i - 1];
+            self.resumes[0] = saved;
+        }
+
+        /// The saved point for `id`, removed, if it still fits the playlist as it now reads.
+        fn takeResume(self: *Self, id: ContentId, value: *const Playlist) ?Resume {
+            for (&self.resumes) |*slot| if (slot.*) |r| if (r.playlist.eql(id)) {
+                slot.* = null;
+                if (r.order_len != value.track_count or r.position >= r.order_len) return null;
+                return r;
+            };
+            return null;
         }
 
         /// Fades every music voice out over `fade_seconds` from the next callback, and forgets
         /// the playlist. Stingers already playing finish.
         pub fn stop(self: *Self, fade_seconds: f32) void {
+            if (self.head) |head| self.leave(head, self.mixer.clock());
             const frames: u32 = @intCast(self.seconds(fade_seconds));
             for (&self.voices) |*slot| if (slot.*) |v| {
                 self.mixer.fade(v.handle, .{ .frames = frames, .to = 0, .stop = true });
@@ -288,7 +371,8 @@ pub fn MusicOf(comptime M: type) type {
             const head = self.head orelse return;
             if (self.ended or self.playlist_id == null) return;
             const cf = self.seconds(self.playlist.crossfade);
-            const end = head.start + head.frames;
+            // A looping head's end is unbounded, so nothing follows it until a switch.
+            const end = head.start +| head.frames;
             const earliest = if (cf > 0 and head.frames >= 2 * cf) end - cf else end;
             if (now + self.lookahead < earliest) return;
             self.advance(head) catch |err| {
@@ -335,11 +419,16 @@ pub fn MusicOf(comptime M: type) type {
             if (p.tempo <= 0) return null;
             const rate: f64 = @floatFromInt(self.rate);
             const period = @as(f64, @floatFromInt(beats)) * 60.0 / @as(f64, p.tempo) * rate;
-            const offset = @as(f64, p.first_beat) * rate;
+            // A track resumed part-way began `start_frame / step` device frames into itself, so its
+            // beat one fell that long before `start`.
+            const into = @as(f64, @floatFromInt(head.start_frame)) / head.step;
+            const offset = @as(f64, p.first_beat) * rate - into;
             const since: f64 = if (from > head.start) @floatFromInt(from - head.start) else 0;
             var n = @max(0, @ceil((since - offset) / period));
             while (true) : (n += 1) {
-                const point = head.start + @as(u64, @intFromFloat(@round(offset + n * period)));
+                const at = offset + n * period;
+                if (at < 0) continue;
+                const point = head.start + @as(u64, @intFromFloat(@round(at)));
                 if (point >= from) return point;
             }
         }
@@ -383,22 +472,24 @@ pub fn MusicOf(comptime M: type) type {
             const crossfade = cf > 0 and head.frames >= 2 * cf and info.frames >= 2 * cf;
             const at = if (crossfade) head.start + head.frames - cf else head.start + head.frames;
 
-            const handle = try self.startTrack(track, at, self.playlist.gain, crossfade);
+            const handle = try self.startTrack(track, at, self.playlist.gain, crossfade, 0, false);
             if (crossfade) {
                 self.mixer.fade(handle, .{ .at = at, .frames = @intCast(cf), .to = 1, .curve = .equal_power });
                 self.mixer.fade(head.voice, .{ .at = at, .frames = @intCast(cf), .to = 0, .curve = .equal_power, .stop = true });
             }
             self.position = @intCast(position);
-            self.head = .{ .voice = handle, .track = track, .start = at, .frames = info.frames };
+            self.head = .{ .voice = handle, .track = track, .start = at, .frames = info.frames, .step = info.step };
         }
 
         /// Starts a track at `at`, silent if it is to fade in, at its level under any duck.
-        fn startTrack(self: *Self, track: ContentId, at: u64, base: f32, fade_in: bool) Error!VoiceHandle {
+        fn startTrack(self: *Self, track: ContentId, at: u64, base: f32, fade_in: bool, start_frame: u64, looping: bool) Error!VoiceHandle {
             const factor = self.duckAt(at);
             const handle = try self.mixer.play(track, .{
                 .start_at = at,
                 .gain = base * self.gain * factor,
                 .envelope = if (fade_in) 0 else 1,
+                .start_frame = start_frame,
+                .looping = looping,
             });
             self.record(.{ .voice = handle, .frame = at, .kind = .track, .id = track });
             for (&self.voices) |*slot| if (slot.* == null) {

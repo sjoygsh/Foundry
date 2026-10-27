@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 8 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 9** (`audio`: `Music` playing a looping single track with a loop region as one voice, `resume` playlists, and the M31 sequenced mix pinned in Debug, ReleaseSafe and x86_64). Nothing of M31 is pushed.
+**Current handoff: M31 Step 9 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 10** (`court`: buses, effects, spatial sounds with occlusion, the three sliders, the pause muffle, the title's loop region, calm's resume, `nocturne`'s reverb and echo, and the evidence log, proved from a relocated ReleaseSafe install on the Mac). The engine side of M31 is complete; the court uses none of it yet. Nothing of M31 is pushed.
+
+**M31 Step 9 is done (2026-10-27): `Music` on loop regions and resume, and the pin.**
+- A single looping track with a loop region plays as one voice, its intro once and its body forever.
+- A `resume` playlist, left by a switch or `stop`, resumes its track at the source frame it reached. The next track follows from the remaining length, and its beat grid counts from the track's real beat one.
+- `SoundInfo` gains `source_frames`, `step` and `loops`.
+- The M31 sequenced mix (six voices, the court-like tree, loop region, resume, spatial, a filter sweep, steals) is pinned at `11458463935403524307`, equal in Debug, ReleaseSafe and x86_64 under Rosetta.
+- Four guards were verified by breaking them.
+
+Bar **2,430/2,434** (four skips), the full bar, all exit 0.
 
 **M31 Step 8 is done (2026-10-27): compressor and limiter.**
 - The compressor is feed-forward: a soft-knee static curve with one-pole attack and release on the reduction, one `log2` and one `exp2` a frame.

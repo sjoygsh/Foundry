@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–8 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–9 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1516,3 +1516,71 @@ one is the mixing-speed test in Debug). `zig build integration-test -Doptimize=R
 passes everything except `ui_theme`, as above.
 
 Next is Step 9: `Music` on loop regions and resume, and the M31 sequenced mix pinned.
+
+## Resolution — Step 9: `Music` on loop regions and resume, and the M31 pin (2026-10-27)
+
+`audio.Music` now plays a title's intro once and loops its body, and resumes a playlist where
+it was left. The M31 sequenced mix is pinned.
+
+**What §10 left to settle, and the answers:**
+- **`Mixer.SoundInfo` gains three fields**: `source_frames`, `step` (source frames per device
+  frame at pitch 1) and `loops` (the record gives a loop region). `Music` still reaches the
+  mixer only through public game-thread calls.
+- **One looping voice** is a playlist with `loop`, one track, and that track's sound giving a
+  loop region. Its head lasts forever (`maxInt`), and every sum on a head's end saturates, so
+  nothing is scheduled after it until a switch. A track with no loop region, or a playlist of
+  several, behaves exactly as in M30, so M30's pin is unchanged.
+- **The beat grid of a looping track runs from the track's start**, through its intro and on.
+  A body of whole bars keeps every later bar line on the music, which is how the court's title
+  is written (Step 10).
+- **Leaving a playlist** records its order, position and source frame:
+  - The source frame is `start_frame + (at − start) × step`, at the frame `at` its replacement
+    starts, or at the clock for `stop`, which §10.2 did not mention but plainly leaves a
+    playlist too.
+  - A track already played out resumes at the next one.
+  - Up to eight playlists are remembered, the oldest dropped first.
+  - A saved point is used once, and only if the playlist still has the same number of tracks.
+- **Resuming** starts the saved track at its frame with `start_frame` (Step 3), fading in over
+  the crossfade. Its head lasts the remaining `(source_frames − frame) / step` device frames,
+  rounded up, so the next track follows on time.
+- **A resumed track keeps its own beat grid.** Its beat one fell `start_frame / step` device
+  frames before it resumed, and `gridPoint` counts from there. Without that, a switch away
+  from a resumed track would land on bars measured from the resume, which is not where the
+  music's bars are. A test pins it: a track stopped mid-bar and resumed is switched away from
+  at 33,408, its real bar line, rather than at 42,624.
+
+**The pin.** `m31Mix` runs a six-voice stereo mixer through the court's kind of tree:
+- a limiter at −3 dB on the master;
+- a delay on the music bus;
+- reverb, compressor and a filter swept from 20 kHz to 800 Hz on the world bus.
+
+Over 400 buffers it plays:
+- a title looping its region;
+- a resumed playlist through a switch to a tempo'd chase and back;
+- a moving spatial hum and an occluded one;
+- a run of low-priority ticks that steal past the six voices.
+
+Every start lands on the frame it asked for, with no late starts, dropped commands or misroutes.
+**The hash `11458463935403524307` is the same twice in a run, in Debug, in ReleaseSafe, and in
+an x86_64-macos build under Rosetta** (`zig build integration-test -Dtarget=x86_64-macos
+-Dplatform=null -Drhi=null -frosetta`, 148/151 with its usual skips). Every coefficient, pan
+and decibel in the mix is `core.math`'s arithmetic. Criterion 5 holds on the Mac; Step 11
+checks it on the PC.
+
+**Tests** (`music_sequencing`, whose stack now registers `asset.mix` and takes options):
+- a loop-region title as one start, with every sample after its fade the region's, exactly;
+- a resume, with exact start frames, the resumed samples equal to the source from frame
+  10,240, and the next track at 56,384 from the remaining length;
+- a playlist without `resume` starting from 0;
+- the grid test;
+- the pin.
+
+**Guards verified by breaking them**, each in its own run:
+- never playing as one voice failed the loop test;
+- never recording a leave failed the resume, grid and pin tests;
+- ignoring the resumed start in the grid failed the grid test, which was written for it;
+- using the whole length for a resumed head failed the resume and pin tests.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,430/2,434** (four skips).
+
+Next is Step 10: the court's mix, proved on the Mac.

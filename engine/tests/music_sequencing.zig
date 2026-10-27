@@ -76,6 +76,10 @@ const Stack = struct {
     mixer: *Mixer,
 
     fn init() !*Stack {
+        return initWith(.{ .channels = 1, .sample_rate = rate, .buffer_frames = buffer });
+    }
+
+    fn initWith(options: audio.Options) !*Stack {
         const gpa = testing.allocator;
         const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-music", .env = &.{} });
         errdefer os.deinit();
@@ -103,9 +107,10 @@ const Stack = struct {
             .mixer = undefined,
         };
         self.assets = .init(gpa, os, &self.store, .{});
-        self.mixer = try Mixer.init(gpa, plat, &self.assets, .{ .channels = 1, .sample_rate = rate, .buffer_frames = buffer });
+        self.mixer = try Mixer.init(gpa, plat, &self.assets, options);
         try asset.schemas.registerAll(gpa, &self.schemas);
         try asset.music.registerAll(gpa, &self.schemas);
+        try asset.mix.registerAll(gpa, &self.schemas);
         try self.assets.registerLoader(gpa, self.mixer.soundLoader());
         return self;
     }
@@ -639,4 +644,206 @@ test "a two-track shuffle never plays one track twice in a row, across many cycl
     const n = trackStarts(&music, &ids, &frames);
     try testing.expect(n >= 40);
     for (ids[1..n], ids[0 .. n - 1]) |next, previous| try testing.expect(!next.eql(previous));
+}
+
+// -- M31 Step 9: loop regions, resume, and the M31 pin (`mixing.md` §10) ---------------------
+
+/// Sample `i` of `wavBytes`'s sawtooth of `period`, as the decoder reads it back.
+fn saw(i: u64, period: u32) f32 {
+    const phase: i32 = @intCast(i % period);
+    const value = @divTrunc((phase * 2 - @as(i32, @intCast(period))) * 12_000, @as(i32, @intCast(period)));
+    return @as(f32, @floatFromInt(value)) / 32768.0;
+}
+
+test "a single looping track with a loop region plays as one voice: its intro once, then its body" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try s.writeWav("music/title.wav", 24_000, 97);
+    try s.loadPackage("t:content",
+        \\foundry:sound t:music.title { source "music/title.wav" loop_start 6000 loop_end 18000 }
+        \\foundry:music_playlist t:list.title { tracks [ t:music.title ] crossfade 0.05 }
+    );
+    var music = Music.init(s.gpa, s.mixer, &s.assets, .{ .lookahead_frames = 1024 });
+    defer music.deinit();
+    try music.play(id("t:list.title"));
+    var mixed: u64 = 0;
+    var checked: u64 = 0;
+    while (mixed < 24_000 * 4) : (mixed += buffer) {
+        const out = try frame(s, &music);
+        // Past the fade in, every sample is the region's: the intro to 18,000, then 6,000
+        // onward again and again.
+        for (out, 0..) |sample, i| {
+            const at = mixed + i;
+            if (at < 1_024 + 2_400) continue;
+            const t = at - 1_024;
+            const source = if (t < 18_000) t else 6_000 + (t - 18_000) % 12_000;
+            try testing.expectEqual(saw(source, 97), sample);
+        }
+        try checkStarts(s, &music, &checked);
+    }
+    // One start, ever: the track never crossfaded into itself.
+    try testing.expectEqual(@as(u64, 1), music.startCount());
+    try testing.expectEqual(@as(u32, 1), s.mixer.activeVoices());
+}
+
+test "a resume playlist resumes its track where it was left, and one without starts again" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try s.writeWav("music/c1.wav", 40_000, 61);
+    try s.writeWav("music/c2.wav", 9_000, 89);
+    try s.writeWav("music/x.wav", 30_000, 211);
+    try s.loadPackage("t:content",
+        \\foundry:sound t:music.c1 { source "music/c1.wav" }
+        \\foundry:sound t:music.c2 { source "music/c2.wav" }
+        \\foundry:sound t:music.x { source "music/x.wav" }
+        \\foundry:music_playlist t:music.calm { tracks [ t:music.c1 t:music.c2 ] crossfade 0 resume true }
+        \\foundry:music_playlist t:music.chase { tracks [ t:music.x ] crossfade 0 }
+    );
+    var music = Music.init(s.gpa, s.mixer, &s.assets, .{ .lookahead_frames = 1024 });
+    defer music.deinit();
+    try music.play(id("t:music.calm"));
+    var buffers: u32 = 0;
+    var resumed_at: ?u64 = null;
+    var chase_again: ?u64 = null;
+    while (buffers < 300) : (buffers += 1) {
+        // Clock 10,240: the chase, at 11,264, leaving calm 10,240 frames into c1.
+        if (buffers == 40) try music.play(id("t:music.chase"));
+        // Clock 25,600: calm again, at 26,624, resuming c1 at its frame 10,240.
+        if (buffers == 100) {
+            try music.play(id("t:music.calm"));
+            resumed_at = 26_624;
+        }
+        // Clock 64,000: the chase again, which does not resume: its track from the start.
+        if (buffers == 250) {
+            try music.play(id("t:music.chase"));
+            chase_again = 65_024;
+        }
+        const start = s.mixer.clock();
+        const out = try frame(s, &music);
+        for (out, 0..) |sample, i| {
+            const at = start + i;
+            if (resumed_at) |r| if (at >= r and at < r + 2_000) try testing.expectEqual(saw(10_240 + at - r, 61), sample);
+            if (chase_again) |c| if (at >= c and at < c + 2_000) try testing.expectEqual(saw(at - c, 211), sample);
+        }
+    }
+    var buf: [Music.start_capacity]audio.MusicStart = undefined;
+    const all = music.starts(&buf);
+    const expected = [_]struct { frame: u64, id: []const u8 }{
+        .{ .frame = 1_024, .id = "t:music.c1" },
+        .{ .frame = 11_264, .id = "t:music.x" },
+        .{ .frame = 26_624, .id = "t:music.c1" },
+        // c1's remaining 29,760 frames from 26,624.
+        .{ .frame = 56_384, .id = "t:music.c2" },
+        .{ .frame = 65_024, .id = "t:music.x" },
+    };
+    try testing.expectEqual(expected.len, all.len);
+    for (expected, all) |want, got| {
+        try testing.expectEqual(want.frame, got.frame);
+        try testing.expect(got.id.eql(id(want.id)));
+    }
+}
+
+const pin_source =
+    \\foundry:audio_bus t:bus.master { effects [ t:fx.limit ] }
+    \\foundry:audio_limiter t:fx.limit { ceiling_db -3 }
+    \\foundry:audio_bus t:bus.music { parent t:bus.master effects [ t:fx.echo ] }
+    \\foundry:audio_delay t:fx.echo { time 0.125 feedback 0.4 wet 0.3 }
+    \\foundry:audio_bus t:bus.world { parent t:bus.master effects [ t:fx.room t:fx.glue t:fx.muffle ] }
+    \\foundry:audio_reverb t:fx.room { decay 0.8 wet 0.3 }
+    \\foundry:audio_compressor t:fx.glue { threshold_db -24 ratio 3 }
+    \\foundry:audio_filter t:fx.muffle { shape "lowpass" frequency 20000 }
+    \\foundry:sound t:music.title { source "music/title.wav" bus t:bus.music priority 255 loop_start 6000 loop_end 18000 }
+    \\foundry:sound t:music.c1 { source "music/c1.wav" bus t:bus.music priority 255 }
+    \\foundry:sound t:music.c2 { source "music/c2.wav" bus t:bus.music priority 255 }
+    \\foundry:sound t:music.x { source "music/x.wav" bus t:bus.music priority 255 }
+    \\foundry:sound t:world.hum { source "world/hum.wav" bus t:bus.world priority 100 }
+    \\foundry:sound t:world.tick { source "world/tick.wav" bus t:bus.world priority 10 }
+    \\foundry:music_playlist t:list.title { tracks [ t:music.title ] crossfade 0.05 }
+    \\foundry:music_playlist t:music.calm { tracks [ t:music.c1 t:music.c2 ] crossfade 0.02 resume true }
+    \\foundry:music_playlist t:music.chase { tracks [ t:music.x ] crossfade 0.02 tempo 360 beats_per_bar 2 }
+;
+
+/// Criterion 5's M31 mix, on a stereo device with six voices: M30's kind of sequence through
+/// the court's whole tree, with a title looping its region, a resumed playlist, a moving and
+/// an occluded spatial voice, a filter sweep, and steals. Returns the hash of every sample.
+fn m31Mix() !u64 {
+    const s = try Stack.initWith(.{ .channels = 2, .sample_rate = rate, .buffer_frames = buffer, .voices = 6 });
+    defer s.deinit();
+    try s.writeWav("music/title.wav", 24_000, 97);
+    try s.writeWav("music/c1.wav", 40_000, 61);
+    try s.writeWav("music/c2.wav", 9_000, 89);
+    try s.writeWav("music/x.wav", 30_000, 211);
+    try s.writeWav("world/hum.wav", 48_000, 331);
+    try s.writeWav("world/tick.wav", 800, 13);
+    try s.loadPackage("t:content", pin_source);
+    try s.mixer.useMix(id("t:bus.master"));
+    var music = Music.init(s.gpa, s.mixer, &s.assets, .{ .lookahead_frames = 1024, .stinger_lookahead_frames = 512 });
+    defer music.deinit();
+
+    s.mixer.setListener(.{ .position = .zero });
+    const near = try s.mixer.play(id("t:world.hum"), .{ .looping = true, .position = .init(-4, 0, -2) });
+    const far = try s.mixer.play(id("t:world.hum"), .{ .looping = true, .position = .init(3, 0, 1), .gain = 0.7 });
+    s.mixer.setOcclusion(far, 1);
+    try music.play(id("t:list.title"));
+
+    var hash = std.hash.Wyhash.init(0);
+    var checked: u64 = 0;
+    var buffers: u32 = 0;
+    while (buffers < 400) : (buffers += 1) {
+        if (buffers == 60) try music.play(id("t:music.calm"));
+        if (buffers == 120) try music.play(id("t:music.chase"));
+        if (buffers == 200) try music.play(id("t:music.calm"));
+        if (buffers == 90) _ = s.mixer.setEffectChecked(id("t:bus.world"), 2, .{ .filter = .{ .shape = .lowpass, .frequency = 800 } }, 9_600);
+        // Ticks past the six voices: the lowest priority steals, and the music never goes.
+        if (buffers >= 150 and buffers < 160) _ = s.mixer.play(id("t:world.tick"), .{ .priority = 10 }) catch {};
+        _ = s.mixer.setPositionChecked(near, .init(-4 + @as(f32, @floatFromInt(buffers)) * 0.02, 0, -2));
+        const out = try frame(s, &music);
+        hash.update(std.mem.sliceAsBytes(out));
+        try checkStarts(s, &music, &checked);
+    }
+    try testing.expect(s.mixer.stolen() > 0);
+    try testing.expectEqual(@as(u32, 0), s.mixer.lateStarts());
+    try testing.expectEqual(@as(u32, 0), s.mixer.commandsDropped());
+    try testing.expectEqual(@as(u32, 0), s.mixer.misrouted());
+    return hash.final();
+}
+
+test "the M31 sequenced mix is the same every run, and is pinned" {
+    // Pinned in Debug, and equal in ReleaseSafe and in an x86_64 build under Rosetta (Step 9's
+    // Resolution): every coefficient, pan and decibel in it is `core.math`'s arithmetic.
+    const first = try m31Mix();
+    try testing.expectEqual(first, try m31Mix());
+    try testing.expectEqual(@as(u64, 11458463935403524307), first);
+}
+
+test "a resumed track keeps its own beat grid, so a switch away lands on its real bar line" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try s.writeWav("music/c1.wav", 90_000, 61);
+    try s.writeWav("music/x.wav", 30_000, 211);
+    try s.loadPackage("t:content",
+        \\foundry:sound t:music.c1 { source "music/c1.wav" }
+        \\foundry:sound t:music.x { source "music/x.wav" }
+        \\foundry:music_playlist t:list.calm { tracks [ t:music.c1 ] crossfade 0 resume true tempo 360 beats_per_bar 2 }
+        \\foundry:music_playlist t:list.chase { tracks [ t:music.x ] crossfade 0 }
+    );
+    var music = Music.init(s.gpa, s.mixer, &s.assets, .{ .lookahead_frames = 1024 });
+    defer music.deinit();
+    try music.play(id("t:list.calm"));
+    var buffers: u32 = 0;
+    while (buffers < 160) : (buffers += 1) {
+        // Clock 10,240: stopped, mid-bar, 9,216 frames into c1.
+        if (buffers == 40) music.stop(0);
+        // Clock 25,600: resumed at 26,624, so c1's beat one fell at 26,624 − 9,216 = 17,408.
+        if (buffers == 100) try music.play(id("t:list.calm"));
+        // Clock 30,720: the earliest is 31,744, and c1's next bar (16,000 frames) after it is
+        // 17,408 + 16,000 = 33,408, not 26,624 + 16,000 measured from where it resumed.
+        if (buffers == 120) try music.play(id("t:list.chase"));
+        _ = try frame(s, &music);
+    }
+    var buf: [Music.start_capacity]audio.MusicStart = undefined;
+    const all = music.starts(&buf);
+    try testing.expectEqual(@as(usize, 3), all.len);
+    try testing.expectEqual(@as(u64, 26_624), all[1].frame);
+    try testing.expectEqual(@as(u64, 33_408), all[2].frame);
 }
