@@ -563,6 +563,9 @@ opportunistically.
 > 4. Device change and enumeration go to **M45**, beside input's device handling.
 > 5. `foundry:sound` grew one field in M30: version 2's `stream` (music.md §4). Loop points
 >    within a file go to **M31**, with seeking.
+>
+> **2026-10-27:** M31's design, [`mixing.md`](mixing.md), proposes answers to questions 1, 2
+> and 5, and to §12's spatialisation, effects and limiter.
 
 1. **Voice stealing policy, and where it lives.** Oldest, quietest, or by a priority the game
    supplies — and whether the mixer owns it or hands `NoFreeVoice` back forever. Due when

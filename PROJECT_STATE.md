@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M30 is complete (2026-10-27, tag `m30`)** ([`docs/design/music.md`](docs/design/music.md), ADR-0065 and ADR-0066). **Stop before M31's design** (Audio III: spatialisation, buses and effects, plus voice stealing, loop points and seeking). Nothing since M29 is pushed; the tag `m30` is local.
+**Current handoff: M31's design is proposed** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); awaiting the owner's acceptance of §16. **Stop before Step 1.** M30 is complete and pushed (tag `m30`, `d8d6e42`).
+
+**M31's design (2026-10-27): Audio III, spatialisation, buses and effects.**
+- ADR-0067: the mix is a tree of `foundry:audio_bus` records linked child to parent, each with up to eight engine effects described by their own records (filter, delay, FDN reverb, compressor, lookahead limiter). It runs in the callback over buffers allocated when the tree is built, and a changed tree is swapped by one command. Mods configure effects and never supply DSP. `core.math.exp` gives arithmetic `exp2`/`log2`.
+- ADR-0068: spatial voices are placed on the game thread in `Mixer.update` from `foundry:audio_attenuation` (inverse reaching zero at `max_distance`, or linear), with constant-power pan, occlusion as a game-supplied amount (gain and a per-voice one-pole), and gains interpolated across the next buffer. Output stays stereo; HRTF goes to M144, Doppler to M55, and surround is not planned.
+- Also: `foundry:sound` v3 (`bus`, `priority`, `attenuation`, loop region), voice stealing by priority with fade slots, exact seeking by a page index, loop regions on resident and streamed voices, and playlist `resume`.
+- The runnable result is the court's mix: a spatial, occluded warden, buses with reverb, compressor, filter and limiter, three sliders, an intro-and-loop title and resumed calm music. `nocturne` adds a longer reverb and an echo.
+- Twelve steps; Step 11 is the Arc PC. No ABI change (264 calls).
 
 **M30 Step 9 is done (2026-10-27): M30 closed.**
 - Contract discrepancies resolved where they were written:

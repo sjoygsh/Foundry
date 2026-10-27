@@ -543,7 +543,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | Pointer capture through the public ABI | **M48**, Public API v8 (renumbered at M27's close, 2026-10-18), with a host grant |
 | Raw-input selection or normalised motion units in `platform` | **M45**, Input |
 | Gamepads | **M45**, Input, with its own Linux run |
-| 3D spatialised audio and a listener | **M31**; the court's distance-and-pan arithmetic is the budget it must beat |
+| 3D spatialised audio and a listener | **M31**; the court's distance-and-pan arithmetic is the budget it must beat. Designed in [`mixing.md`](mixing.md) (proposed 2026-10-27) |
 | A warden that sees and chases | **M32–M33**, navigation; the court's fixed patrol is deliberate |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
 | A hierarchy authored in content | **M103**, Prefabs |
