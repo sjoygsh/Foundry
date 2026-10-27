@@ -2,6 +2,6 @@ foundry:mod nocturne:content {
     name "Court nocturne"
     version 1
     license "Apache-2.0"
-    summary "Night music for the court: its own calm playlist and beacon stinger. Content only."
+    summary "Night music for the court: its own calm playlist and beacon stinger, a longer courtyard reverb and an echo on the music. Content only."
     requires [ { id court:content } ]
 }

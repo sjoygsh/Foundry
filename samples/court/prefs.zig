@@ -1,6 +1,6 @@
 //! The player's preferences: `settings.fset` under `foundry-court` (playable3d.md §8,
-//! ADR-0031). Window size, master volume, look sensitivity and invert, each bounded and
-//! validated on read. Content supplies the defaults; a missing, damaged or newer file
+//! ADR-0031). Window size, the master, music and effects volumes, look sensitivity and
+//! invert, each bounded and validated on read. Content supplies the defaults; a missing, damaged or newer file
 //! leaves them standing. Only what the player chose is written back.
 const std = @import("std");
 const app = @import("app");
@@ -17,21 +17,41 @@ pub const Preferences = struct {
     width: settings.Resolved(u32) = .{ .value = fallback_width, .origin = .fallback },
     height: settings.Resolved(u32) = .{ .value = fallback_height, .origin = .fallback },
     volume: settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
+    music: settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
+    effects: settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
     sensitivity: settings.Resolved(f32) = .{ .value = fallback_sensitivity, .origin = .fallback },
     invert: settings.Resolved(bool) = .{ .value = false, .origin = .fallback },
 
     /// The file's own schema. Not content: it carries no manifest and is never merged.
+    /// Version 2 (M31) adds the music and effects volumes after the first five (I8).
     pub const schema: data.Schema = .{
         .id = data.SchemaId.parse("court:preferences") catch unreachable,
-        .version = 1,
+        .version = 2,
         .fields = &.{
             .{ .name = "window_width", .type = .u32, .presence = .optional },
             .{ .name = "window_height", .type = .u32, .presence = .optional },
             .{ .name = "master_volume", .type = .f32, .presence = .optional },
             .{ .name = "look_sensitivity", .type = .f32, .presence = .optional },
             .{ .name = "invert_look", .type = .bool, .presence = .optional },
+            .{ .name = "music_volume", .type = .f32, .presence = .optional },
+            .{ .name = "effects_volume", .type = .f32, .presence = .optional },
         },
     };
+
+    /// Version 1, as M26 to M30 wrote it: the first five fields.
+    pub const schema_v1: data.Schema = .{
+        .id = schema.id,
+        .version = 1,
+        .fields = schema.fields[0..5],
+    };
+
+    /// A version 1 file keeps its five values, and the new two are the content's until
+    /// the player moves them.
+    fn fromV1(_: std.mem.Allocator, old: []const ?data.Value, new: []?data.Value) std.mem.Allocator.Error!void {
+        @memcpy(new[0..5], old[0..5]);
+    }
+
+    pub const migrations = [_]settings.Migration{.{ .from = schema_v1, .convert = fromV1 }};
 
     /// The package's defaults, in an ordinary record a mod can override.
     pub const record_id = "court:config.main";
@@ -49,7 +69,7 @@ pub const Preferences = struct {
     /// disposable root (`FOUNDRY_COURT_SAVE_DIR`).
     pub fn open(gpa: std.mem.Allocator, os: *platform.os.Os, headless: bool, budgeted: bool, dir: ?[]const u8) std.mem.Allocator.Error!Preferences {
         if (headless) return .{};
-        const override = dir orelse return .{ .file = try settings.File.open(gpa, os, schema, .{ .persist = !budgeted }) };
+        const override = dir orelse return .{ .file = try settings.File.open(gpa, os, schema, .{ .persist = !budgeted, .migrations = &migrations }) };
         return .{ .file = try openIn(gpa, os, override, !budgeted) };
     }
 
@@ -62,6 +82,7 @@ pub const Preferences = struct {
             gpa.free(owned);
             return .{};
         };
+        storage.migrations = &migrations;
         const loaded = try storage.load(gpa, schema);
         // No baseline: every chosen value is written, which is the safe answer.
         return .{ .dir = owned, .storage = storage, .loaded = loaded, .persist = persist and storage.writable };
@@ -88,6 +109,10 @@ pub const Preferences = struct {
             self.height = settings.resolveInt(u32, "window_height", fallback_height, min_size, max_size, &layers);
         if (!self.volume.isUser())
             self.volume = settings.resolveFloat(f32, "master_volume", fallback_volume, menus.Options.volume_min, menus.Options.volume_max, &layers);
+        if (!self.music.isUser())
+            self.music = settings.resolveFloat(f32, "music_volume", fallback_volume, menus.Options.volume_min, menus.Options.volume_max, &layers);
+        if (!self.effects.isUser())
+            self.effects = settings.resolveFloat(f32, "effects_volume", fallback_volume, menus.Options.volume_min, menus.Options.volume_max, &layers);
         if (!self.sensitivity.isUser())
             self.sensitivity = settings.resolveFloat(f32, "look_sensitivity", fallback_sensitivity, menus.Options.sensitivity_min, menus.Options.sensitivity_max, &layers);
         if (!self.invert.isUser()) self.invert = resolveBool("invert_look", false, &layers);
@@ -95,18 +120,21 @@ pub const Preferences = struct {
 
     /// The values the options screen edits.
     pub fn options(self: *const Preferences) menus.Options {
-        return .{ .volume = self.volume.value, .sensitivity = self.sensitivity.value, .invert = self.invert.value };
+        return .{ .volume = self.volume.value, .music = self.music.value, .effects = self.effects.value, .sensitivity = self.sensitivity.value, .invert = self.invert.value };
     }
 
     /// What the options screen changed. A value the player did not move stays the
     /// content's, so a package can still change its default later.
     pub fn noteOptions(self: *Preferences, chosen: menus.Options) void {
         var changed = false;
-        if (std.math.isFinite(chosen.volume)) {
-            const value = std.math.clamp(chosen.volume, menus.Options.volume_min, menus.Options.volume_max);
-            if (value != self.volume.value) {
-                self.volume = .{ .value = value, .origin = .user };
-                changed = true;
+        inline for (.{ "volume", "music", "effects" }) |name| {
+            const chosen_value = @field(chosen, name);
+            if (std.math.isFinite(chosen_value)) {
+                const value = std.math.clamp(chosen_value, menus.Options.volume_min, menus.Options.volume_max);
+                if (value != @field(self, name).value) {
+                    @field(self, name) = .{ .value = value, .origin = .user };
+                    changed = true;
+                }
             }
         }
         if (std.math.isFinite(chosen.sensitivity)) {
@@ -135,13 +163,15 @@ pub const Preferences = struct {
     }
 
     /// The player's own choices and nothing else.
-    pub fn values(self: *const Preferences) [5]?data.Value {
+    pub fn values(self: *const Preferences) [7]?data.Value {
         return .{
             if (self.width.isUser()) data.Value{ .int = self.width.value } else null,
             if (self.height.isUser()) data.Value{ .int = self.height.value } else null,
             if (self.volume.isUser()) data.Value{ .float = self.volume.value } else null,
             if (self.sensitivity.isUser()) data.Value{ .float = self.sensitivity.value } else null,
             if (self.invert.isUser()) data.Value{ .bool = self.invert.value } else null,
+            if (self.music.isUser()) data.Value{ .float = self.music.value } else null,
+            if (self.effects.isUser()) data.Value{ .float = self.effects.value } else null,
         };
     }
 

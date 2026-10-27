@@ -358,11 +358,14 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         _ = engine.assets.unregisterLoader(gpa, asset.schemas.sound.id);
         m.deinit();
     };
-    if (mixer) |m| {
-        try engine.assets.registerLoader(gpa, m.soundLoader());
-        m.setMasterGain(prefs.volume.value);
-    }
+    if (mixer) |m| try engine.assets.registerLoader(gpa, m.soundLoader());
     var sounds: sounds_mod.Sounds = .{ .mixer = mixer, .set = sounds_mod.SoundSet.find(&engine.store) };
+    // The court's buses and effects (mixing.md §11), and the player's three volumes on them.
+    sounds.useMix(&engine.store, sounds_mod.MixSet.find(&engine.store));
+    sounds.applyVolumes(prefs.options());
+    log.info("volumes: master {d:.2} ({t}), music {d:.2} ({t}), effects {d:.2} ({t})", .{
+        prefs.volume.value, prefs.volume.origin, prefs.music.value, prefs.music.origin, prefs.effects.value, prefs.effects.origin,
+    });
     // Torn down before the mixer, whose voices it fades.
     var soundtrack = music_mod.Soundtrack.init(gpa, mixer, &engine.assets, music_mod.MusicSet.find(&engine.store), engine.step_delta.toSecondsF32(), music_log);
     defer soundtrack.deinit();
@@ -480,7 +483,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (command == .options_changed or shown.options_changed) {
             prefs.noteOptions(chosen);
-            if (mixer) |m| m.setMasterGain(chosen.volume);
+            sounds.applyVolumes(chosen);
         }
         frame.intent.action = command.action();
         pending.feed(frame.intent);
@@ -522,13 +525,16 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         };
         skin_dropped += renderer.frameStats().skin_budget_dropped;
         {
-            // Criterion 4's measure (music.md §1): the main thread's audio work.
+            // Criterion 4's measure (music.md §1), and mixing.md's criterion 6: the main
+            // thread's audio work, now with the listener, each spatial voice's ray and its
+            // placement, which `update` does.
             const scope = engine.beginScope("audio");
             defer scope.end();
+            sounds.frame(&game);
+            sounds.setPaused(game.phase == .paused);
             if (mixer) |m| m.update();
             soundtrack.update();
         }
-        sounds.frame(&game);
         soundtrack.frame(&game);
         // Every ten seconds at the court's 60 Hz.
         if (music_log and engine.frame_index % 600 == 0) soundtrack.report("so far");

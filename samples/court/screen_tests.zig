@@ -625,7 +625,7 @@ test "court: a damaged or newer preferences file gives the content defaults and 
         defer fixture.deinit();
         var newer = Preferences.schema;
         newer.version = Preferences.schema.version + 1;
-        const values = [_]?data.Value{ .{ .int = 640 }, .{ .int = 480 }, .{ .float = 0.1 }, .{ .float = 2.5 }, .{ .bool = true } };
+        const values = [_]?data.Value{ .{ .int = 640 }, .{ .int = 480 }, .{ .float = 0.1 }, .{ .float = 2.5 }, .{ .bool = true }, .{ .float = 0.1 }, .{ .float = 0.1 } };
         var encoded: std.ArrayList(u8) = .empty;
         defer encoded.deinit(gpa);
         try app.settings.encode(gpa, newer, &values, .default, &encoded);
@@ -651,7 +651,7 @@ test "court: a damaged or newer preferences file gives the content defaults and 
     {
         var fixture = try PrefsFixture.init();
         defer fixture.deinit();
-        const values = [_]?data.Value{ .{ .int = 100 }, .{ .int = 100000 }, .{ .float = 7 }, .{ .float = -3 }, .{ .bool = true } };
+        const values = [_]?data.Value{ .{ .int = 100 }, .{ .int = 100000 }, .{ .float = 7 }, .{ .float = -3 }, .{ .bool = true }, .{ .float = 2 }, .{ .float = -1 } };
         var encoded: std.ArrayList(u8) = .empty;
         defer encoded.deinit(gpa);
         try app.settings.encode(gpa, Preferences.schema, &values, .default, &encoded);
@@ -665,6 +665,8 @@ test "court: a damaged or newer preferences file gives the content defaults and 
         try testing.expectEqual(@as(u32, 720), prefs.height.value);
         try testing.expectApproxEqAbs(@as(f32, 0.8), prefs.volume.value, 1e-6);
         try testing.expectApproxEqAbs(@as(f32, 1), prefs.sensitivity.value, 1e-6);
+        try testing.expectApproxEqAbs(@as(f32, 1), prefs.music.value, 1e-6);
+        try testing.expectApproxEqAbs(@as(f32, 1), prefs.effects.value, 1e-6);
         // The one value that was usable is used.
         try testing.expect(prefs.invert.value);
     }
@@ -685,6 +687,46 @@ test "court: a damaged or newer preferences file gives the content defaults and 
         defer headless.deinit(gpa);
         try testing.expectEqual(@as(usize, 0), headless.file.dir.len);
     }
+}
+
+test "court: an M30 preferences file loads unchanged, and the new volumes are the content's" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    var fixture = try PrefsFixture.init();
+    defer fixture.deinit();
+    // Version 1, as M26 to M30 wrote it.
+    const values = [_]?data.Value{ .{ .int = 1600 }, .{ .int = 900 }, .{ .float = 0.4 }, .{ .float = 1.5 }, .{ .bool = true } };
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(gpa);
+    try app.settings.encode(gpa, Preferences.schema_v1, &values, .default, &encoded);
+    try fixture.writeRaw(encoded.items);
+
+    var prefs = try fixture.open(true);
+    try testing.expectEqual(app.settings.State.loaded, prefs.file.state());
+    prefs.resolve(&env.store);
+    try testing.expectEqual(@as(u32, 1600), prefs.width.value);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), prefs.volume.value, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.5), prefs.sensitivity.value, 1e-6);
+    try testing.expect(prefs.invert.value);
+    try testing.expectEqual(app.settings.Origin.content, prefs.music.origin);
+    try testing.expectApproxEqAbs(@as(f32, 1), prefs.music.value, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1), prefs.effects.value, 1e-6);
+
+    // The music slider moved: the file is written at version 2 with all seven, and read back.
+    var chosen = prefs.options();
+    chosen.music = 0.3;
+    prefs.noteOptions(chosen);
+    prefs.flush(gpa);
+    prefs.deinit(gpa);
+    var again = try fixture.open(true);
+    defer again.deinit(gpa);
+    try testing.expectEqual(app.settings.State.loaded, again.file.state());
+    again.resolve(&env.store);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), again.music.value, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), again.volume.value, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1), again.effects.value, 1e-6);
 }
 
 test "court: the config record refuses a goal time that is missing, non-finite or out of bounds" {

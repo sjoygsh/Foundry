@@ -1,8 +1,10 @@
 # Overrides replace whole records (music.md §9). The court's calm playlist becomes two tracks
 # of this package's own, at 72 bpm in 3/4, and the beacon's stinger plays this package's
-# sound. The game's code chooses when each plays; what plays is content.
-foundry:sound nocturne:music.nocturne_a { source "music/nocturne_a.ogg" stream true }
-foundry:sound nocturne:music.nocturne_b { source "music/nocturne_b.ogg" stream true }
+# sound. The game's code chooses when each plays; what plays is content. So does the mix
+# (mixing.md §11): a night courtyard rings longer, and the music echoes.
+foundry:sound nocturne:music.nocturne_a { source "music/nocturne_a.ogg" stream true bus court:bus.music priority 255 }
+foundry:sound nocturne:music.nocturne_b { source "music/nocturne_b.ogg" stream true bus court:bus.music priority 255 }
+foundry:sound nocturne:music.beacon { source "music/beacon.ogg" bus court:bus.music priority 255 }
 
 foundry:music_playlist court:music.calm {
     tracks [ nocturne:music.nocturne_a  nocturne:music.nocturne_b ]
@@ -11,3 +13,9 @@ foundry:music_playlist court:music.calm {
 foundry:music_stinger court:music.beacon {
     sound nocturne:music.beacon  quantize "beat"  duck 0.6  duck_fade 0.15
 }
+
+# The courtyard's reverb at night: the same room, a longer tail.
+foundry:audio_reverb court:fx.courtyard { decay 3.2  wet 0.18 }
+# Three eighths of a beat at 72 bpm, so the echo falls between the beats.
+foundry:audio_delay nocturne:fx.echo { time 0.3125  feedback 0.3  wet 0.25 }
+foundry:audio_bus court:bus.music { parent court:bus.master  effects [ nocturne:fx.echo ] }

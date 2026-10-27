@@ -72,7 +72,7 @@ pub const Costs = struct {
             .{ .name = "frame work (no pacing sleep, image acquire or present; includes scripted replay)", .values = self.frame[0..self.len], .budget = 16.67 },
             .{ .name = "character (whole game tick and sound dispatch upper bound)", .values = self.character[0..self.character_len], .budget = 0.25 },
             .{ .name = "render.skin (one warden)", .values = self.skin[0..self.skin_len], .budget = 0.25 },
-            .{ .name = "audio (Mixer.update and Music.update, music.md criterion 4)", .values = self.audio[0..self.audio_len], .budget = 0.10 },
+            .{ .name = "audio (placing, Mixer.update and Music.update; music.md criterion 4, mixing.md criterion 6)", .values = self.audio[0..self.audio_len], .budget = 0.10 },
         }) |metric| {
             const summary = core.profile.summarise(metric.values, &self.scratch);
             log.info("cost {s}: {d} frames, median {d:.4}ms p95 {d:.4}ms; budget {d:.2}ms", .{

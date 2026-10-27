@@ -932,6 +932,39 @@ const court_shaped =
     \\foundry:sound t:s.ui { source "noise.wav" bus t:bus.ui }
 ;
 
+test "the court's evidence: a loud mix is limited by the gain, and none of it passes the ceiling" {
+    // §11's counters, read as the court's log reads them: the samples a limiter's gain left
+    // past its ceiling (none), and the deepest reduction it applied.
+    var keep: std.ArrayList([]u8) = .empty;
+    defer freeAll(&keep);
+    const s = try Stack.init(.{ .channels = 2, .buffer_frames = 512 });
+    defer s.deinit();
+    var noise: [48_000]i16 = undefined;
+    var rng = core.rng.Pcg32.init(0x4c49_4d54, 0);
+    for (&noise) |*n| n.* = @intCast(@as(i32, @intCast(rng.below(65535))) - 32767);
+    try s.writeWav("noise.wav", &noise);
+    try addPackage(s, &keep, "t:content", court_shaped);
+    const id = core.ContentId.fromString;
+    // Without a tree there is no limiter, and nothing to count.
+    _ = try s.step(512);
+    try testing.expectEqual(@as(u32, 0), s.mixer.overCeiling());
+    try testing.expectEqual(@as(f32, 1), s.mixer.deepestLimit());
+    try s.mixer.useMix(id("t:bus.master"));
+    for (0..8) |_| {
+        _ = try s.mixer.play(id("t:s.music"), .{ .looping = true });
+        _ = try s.mixer.play(id("t:s.ui"), .{ .looping = true });
+    }
+    const ceiling = core.math.exp.dbToGain(-1);
+    for (0..40) |_| {
+        s.mixer.update();
+        const out = try s.step(512);
+        for (out) |sample| try testing.expect(@abs(sample) <= ceiling);
+    }
+    try testing.expectEqual(@as(u32, 0), s.mixer.overCeiling());
+    // Sixteen full-scale voices need the gain far down: past 12 dB of reduction.
+    try testing.expect(s.mixer.deepestLimit() < core.math.exp.dbToGain(-12));
+}
+
 test "mixing speed: the court's full load, frames per second, single-threaded, printed" {
     // §14 and criterion 6: at least 20x real time on the Arc PC's i3 in ReleaseSafe. Debug
     // measures nothing worth reading, so it skips, as the stream margin does.

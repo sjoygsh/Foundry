@@ -1,7 +1,24 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-27
-**Current handoff: M31 Step 9 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 10** (`court`: buses, effects, spatial sounds with occlusion, the three sliders, the pause muffle, the title's loop region, calm's resume, `nocturne`'s reverb and echo, and the evidence log, proved from a relocated ReleaseSafe install on the Mac). The engine side of M31 is complete; the court uses none of it yet. Nothing of M31 is pushed.
+**Current handoff: M31 Step 10 of 12 is complete** ([`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before Step 11** (Windows/Vulkan on the Arc PC: clone, the null and Vulkan suites, the mixing-speed test against 20× on the i3, the pins against the Mac's, and the relocated court three times for ten minutes, with and without validation, plus its endings). The PC has no Foundry clone since M30's close. Nothing of M31 is pushed.
+
+**M31 Step 10 is done (2026-10-27): the court's mix, proved on the Mac.**
+- The warden's steps, the gate and the beacons are spatial voices, placed by the engine from the walker's eye and occluded by one ray against the level. `sounds.zig`'s `place` is gone.
+- Buses and effects as content: music, the world (courtyard reverb, compressor, a muffle a pause sweeps to 800 Hz) and the menus under a master limiter at −1 dB. Every sound has its bus and priority.
+- Master, music and effects sliders. `court:preferences` is version 2, and an M30 file migrates unchanged.
+- The title is regenerated: an eight-bar intro, then an eight-bar body it loops. Calm resumes after a chase. The other nine music files are byte for byte unchanged.
+- `nocturne` lengthens the reverb to 3.2 s and echoes the music, with no code.
+- The engine gained two things: the limiter's over-ceiling and deepest-reduction counters (`overCeiling`, `deepestLimit`), and a starting `occlusion` on a spatial play.
+- From a relocated, read-only ReleaseSafe bundle on the M5:
+  - the three endings, three clean ten-minute soundtrack runs (a fourth replaced one interrupted by a focus loss) and a `nocturne` run, all clean on every count;
+  - `audio` p95 at most 0.0091 ms against 0.10.
+- The limiter never acted in the court: its deepest limiting was 0.0 dB in every run. The ceiling rests on the stress tests.
+- Mixing speed is 100× real time in ReleaseSafe. The pins hold.
+- The sliders surviving a restart are proven by tests only, since scripted runs write no preferences. The owner is offered a listening check.
+- Four guards were verified by breaking them.
+
+Bar **2,437/2,441** (four skips), the full bar, all exit 0.
 
 **M31 Step 9 is done (2026-10-27): `Music` on loop regions and resume, and the pin.**
 - A single looping track with a loop region plays as one voice, its intro once and its body forever.

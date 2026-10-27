@@ -9,7 +9,9 @@ in 3/4, so both have bars of exactly 2.5 seconds. Each piece is encoded at quali
 reference libvorbis (`reference.py` builds the tool in <scratch-dir>), and the `.ogg` files are
 written into the repository:
 
-- `samples/court/content/music/tracks/`: title, calm_a, calm_b and chase;
+- `samples/court/content/music/tracks/`: title, calm_a, calm_b and chase. The title has an
+  eight-bar intro before its looped body, and this prints its loop points (M31,
+  docs/design/mixing.md §11); the other pieces are as M30 wrote them, byte for byte;
 - `samples/court/content/music/stingers/`: beacon, gate and ending;
 - `samples/court/testdata/mods/nocturne/music/`: nocturne_a, nocturne_b and beacon.
 
@@ -52,12 +54,23 @@ class Track:
         self.left = [0.0] * self.frames
         self.right = [0.0] * self.frames
 
-    def add(self, start: float, length: float, pan: float, voice):
-        """Adds `voice(t)` from `start` for `length` seconds, panned -1 left to 1 right."""
+    def add(self, start: float, length: float, pan: float, voice, wrap=None):
+        """Adds `voice(t)` from `start` for `length` seconds, panned -1 left to 1 right. With
+        `wrap`, a frame, what would ring past the end is added from that frame instead, so a
+        loop's last notes carry on into its first bar as they would if it really repeated."""
         first = round(start * RATE)
-        count = min(round(length * RATE), self.frames - first)
         gl = math.cos((pan + 1) * math.pi / 4)
         gr = math.sin((pan + 1) * math.pi / 4)
+        if wrap is not None:
+            for i in range(round(length * RATE)):
+                k = first + i
+                if k >= self.frames:
+                    k = wrap + (k - self.frames)
+                v = voice(i / RATE)
+                self.left[k] += v * gl
+                self.right[k] += v * gr
+            return
+        count = min(round(length * RATE), self.frames - first)
         for i in range(max(count, 0)):
             v = voice(i / RATE)
             self.left[first + i] += v * gl
@@ -144,25 +157,25 @@ CHORDS = {
 }
 
 
-def compose(name: str, bars: int, beats: int, tempo: float, progression, *,
-            drums: bool, hats: bool, melody: bool, busy: bool, seed: int) -> Track:
+def play_bars(track: Track, first: int, bars: int, beats: int, tempo: float, progression, *,
+              drums: bool, hats: bool, melody: bool, busy: bool, seed: int, wrap=None) -> None:
+    """Bars `first` to `first + bars` of `track`, the progression starting again at `first`."""
     beat = 60.0 / tempo
     bar = beat * beats
-    track = Track(bars * bar)
-    for n in range(bars):
-        root, tones = CHORDS[progression[n % len(progression)]]
+    for n in range(first, first + bars):
+        root, tones = CHORDS[progression[(n - first) % len(progression)]]
         start = n * bar
         for k, note in enumerate(tones):
-            track.add(start, bar + 0.3, (k - 1) * 0.5, pad(hz(note), bar + 0.3, 0.003 * (k + 1)))
+            track.add(start, bar + 0.3, (k - 1) * 0.5, pad(hz(note), bar + 0.3, 0.003 * (k + 1)), wrap)
         for b in range(beats):
             t = start + b * beat
             if b == 0 or (busy and b % 2 == 0):
-                track.add(t, beat * 1.5, 0, bass(hz(root - 12)))
+                track.add(t, beat * 1.5, 0, bass(hz(root - 12)), wrap)
             if drums and (b == 0 or (beats == 4 and b == 2) or (busy and b % 2 == 1 and n % 2 == 1)):
-                track.add(t, 0.5, 0, kick())
+                track.add(t, 0.5, 0, kick(), wrap)
             if hats:
                 for h in range(4 if busy else 2):
-                    track.add(t + h * beat / (4 if busy else 2), 0.08, 0.4, hat(seed + n * 64 + b * 8 + h, 0.05 if h % 2 else 0.07))
+                    track.add(t + h * beat / (4 if busy else 2), 0.08, 0.4, hat(seed + n * 64 + b * 8 + h, 0.05 if h % 2 else 0.07), wrap)
         if melody:
             step = beat / (4 if busy else 2)
             pattern = (0, 1, 2, 1, 2, 0, 1, 2) if busy else (0, 2, 1, 2)
@@ -171,9 +184,35 @@ def compose(name: str, bars: int, beats: int, tempo: float, progression, *,
                 if not busy and (n + i) % 5 == 4:
                     continue  # rests, so a calm line breathes
                 note = tones[pattern[i % len(pattern)]] + 12
-                track.add(start + i * step, 0.6, -0.3, pluck(hz(note), 0.18 if busy else 0.35))
+                track.add(start + i * step, 0.6, -0.3, pluck(hz(note), 0.18 if busy else 0.35), wrap)
+
+
+def compose(name: str, bars: int, beats: int, tempo: float, progression, *,
+            drums: bool, hats: bool, melody: bool, busy: bool, seed: int) -> Track:
+    beat = 60.0 / tempo
+    bar = beat * beats
+    track = Track(bars * bar)
+    play_bars(track, 0, bars, beats, tempo, progression, drums=drums, hats=hats, melody=melody, busy=busy, seed=seed)
     track.finish()
     print(f"{name}: {bars} bars, {track.frames / RATE:.1f} s")
+    return track
+
+
+def title() -> Track:
+    """The title (mixing.md §11): eight bars of chords and bass, then an eight-bar body with
+    the melody and soft hats, which the court loops by the loop points its record gives. The
+    body's tail wraps into its own first bar and nothing is faded at the end, so the seam is
+    the music carrying on rather than a cut."""
+    intro, body, beats, tempo = 8, 8, 4, 96
+    bar = 60.0 / tempo * beats  # 2.5 s exactly
+    track = Track((intro + body) * bar)
+    loop_start = round(intro * bar * RATE)
+    play_bars(track, 0, intro, beats, tempo, ("Am", "F", "Dm", "E"),
+              drums=False, hats=False, melody=False, busy=False, seed=1)
+    play_bars(track, intro, body, beats, tempo, ("Am", "F", "Dm", "E"),
+              drums=False, hats=True, melody=True, busy=False, seed=1, wrap=loop_start)
+    track.finish(tail=0)
+    print(f"title: {intro} bars of intro, then {body} looped; loop_start {loop_start}  loop_end {track.frames}")
     return track
 
 
@@ -201,8 +240,7 @@ def write_wav(path: str, track: Track) -> None:
 def pieces():
     """(directory, name, track): every piece, in a fixed order, which fixes its serial."""
     calm = ("Am", "F", "C", "G")
-    yield COURT + "/tracks", "title", compose("title", 10, 4, 96, ("Am", "F", "Dm", "E"),
-                                              drums=False, hats=False, melody=True, busy=False, seed=1)
+    yield COURT + "/tracks", "title", title()
     yield COURT + "/tracks", "calm_a", compose("calm_a", 20, 4, 96, calm,
                                                drums=True, hats=True, melody=True, busy=False, seed=2)
     yield COURT + "/tracks", "calm_b", compose("calm_b", 20, 4, 96, ("F", "G", "Em", "Am"),

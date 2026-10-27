@@ -21,6 +21,8 @@ pub const Item = enum {
     to_title,
     quit,
     volume,
+    music,
+    effects,
     sensitivity,
     invert,
     back,
@@ -29,7 +31,7 @@ pub const Item = enum {
 pub const title_items = [_]Item{ .play, .options, .quit };
 pub const pause_items = [_]Item{ .resume_game, .restart, .options, .to_title };
 pub const ended_items = [_]Item{ .restart, .to_title };
-pub const options_items = [_]Item{ .volume, .sensitivity, .invert, .back };
+pub const options_items = [_]Item{ .volume, .music, .effects, .sensitivity, .invert, .back };
 
 /// One frame's menu input, as edges. Arrows, Enter and Escape for a person.
 pub const Keys = struct {
@@ -47,7 +49,11 @@ pub const Keys = struct {
 
 /// What the player can change, with the bounds a preference file is held to as well.
 pub const Options = struct {
+    /// The master, the music bus and the world bus (mixing.md §11), each 0 to 1 by the
+    /// volume's bounds and step.
     volume: f32 = 1,
+    music: f32 = 1,
+    effects: f32 = 1,
     sensitivity: f32 = 1,
     invert: bool = false,
 
@@ -186,7 +192,7 @@ pub const Menus = struct {
                 return .options_changed;
             },
             // A slider has nothing to accept; left and right change it.
-            .volume, .sensitivity => return .none,
+            .volume, .music, .effects, .sensitivity => return .none,
         }
     }
 
@@ -217,10 +223,11 @@ fn indexOf(list: []const Item, item: Item) ?u8 {
 /// One step of a slider, clamped. Returns whether the value changed.
 fn adjust(item: Item, sign: f32, options: *Options) bool {
     switch (item) {
-        .volume => {
-            const next = snap(options.volume + sign * Options.volume_step, Options.volume_step, Options.volume_min, Options.volume_max);
-            if (next == options.volume) return false;
-            options.volume = next;
+        inline .volume, .music, .effects => |which| {
+            const value = &@field(options, @tagName(which));
+            const next = snap(value.* + sign * Options.volume_step, Options.volume_step, Options.volume_min, Options.volume_max);
+            if (next == value.*) return false;
+            value.* = next;
             return true;
         },
         .sensitivity => {
@@ -328,6 +335,19 @@ test "menus: options opens over its menu, changes values within bounds and retur
     try testing.expectEqual(Options.volume_max, o.volume);
     try testing.expectEqual(Command.none, m.update(.paused, .{ .right = true }, null, null, &o));
     for (0..40) |_| _ = m.update(.paused, .{ .left = true }, null, null, &o);
+    try testing.expectEqual(Options.volume_min, o.volume);
+
+    // The music and effects sliders step as the master does, each its own value.
+    _ = m.update(.paused, .{ .down = true }, null, null, &o);
+    try testing.expectEqual(Item.music, m.focused(.paused).?);
+    try testing.expectEqual(Command.options_changed, m.update(.paused, .{ .left = true }, null, null, &o));
+    try testing.expectApproxEqAbs(@as(f32, 0.95), o.music, 1e-6);
+    try testing.expectEqual(Command.none, m.update(.paused, .{ .accept = true }, null, null, &o));
+    _ = m.update(.paused, .{ .down = true }, null, null, &o);
+    try testing.expectEqual(Item.effects, m.focused(.paused).?);
+    for (0..40) |_| _ = m.update(.paused, .{ .left = true }, null, null, &o);
+    try testing.expectEqual(Options.volume_min, o.effects);
+    try testing.expectApproxEqAbs(@as(f32, 0.95), o.music, 1e-6);
     try testing.expectEqual(Options.volume_min, o.volume);
 
     _ = m.update(.paused, .{ .down = true }, null, null, &o);

@@ -745,3 +745,24 @@ test "court: a refused beacon, gate or warden is left out with the game still st
     game.refresh(&env.store, &env.assets, null, dt);
     try testing.expect(game.warden != null);
 }
+
+test "court: a sound behind the closed gate is occluded by one ray, and one in the open is not" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const sounds_mod = @import("sounds.zig");
+    const gpa = testing.allocator;
+    var env = try TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const gate = env.game.gate.?;
+    const world = &env.game.walk.world;
+    // In front of the gate, looking through it toward the exit beyond.
+    const ears = core.math.Vec3.init(0, 1.65, -5);
+    const beyond = core.math.Vec3.init(0, 1, -9);
+    try testing.expectEqual(@as(f32, 1), sounds_mod.occluded(world, ears, beyond, null));
+    // The gate is the only thing in the way: left out, its opening is clear.
+    try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, beyond, gate.body));
+    // Nearer than the gate, nothing is in the way; nor is a source on top of the ears.
+    try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, .init(0.5, 1, -6.5), null));
+    try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, ears, null));
+    // The gate's own sound is not occluded by the gate it comes from.
+    try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, gate.current_pos, gate.body));
+}

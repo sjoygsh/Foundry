@@ -1,6 +1,6 @@
 # Design: M31 — Audio III: spatialisation, buses and effects
 
-**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–9 are done; their Resolutions follow §17.
+**Status:** Accepted 2026-10-27, when the owner asked for Step 1, with §16 as written. Steps 1–10 are done; their Resolutions follow §17.
 **Date:** 2026-10-27
 **Baseline:** `d8d6e42`, tag `m30`. M0–M30 are complete.
 **Decisions:**
@@ -1584,3 +1584,158 @@ checks it on the PC.
 **Bar:** the full bar, all exit 0. `zig build test` is **2,430/2,434** (four skips).
 
 Next is Step 10: the court's mix, proved on the Mac.
+
+## Resolution — Step 10: the court's mix, proved on the Mac (2026-10-27)
+
+`samples/court` is now mixed as a 3D game is:
+- the warden's steps, the gate and the beacons are spatial voices, placed by the engine from
+  the walker's eye and muffled by what one ray finds in the way;
+- music, the world (effects and ambience) and the menus run on buses under a master limiter;
+- the world carries the courtyard reverb, a gentle compressor and a low-pass that a pause
+  sweeps down;
+- the options have master, music and effects sliders;
+- the title plays its intro once and then loops its body, and calm resumes after a chase;
+- `nocturne` lengthens the reverb and echoes the music, with no code.
+
+**Where it is:**
+- **`court.fdt`:**
+  - every `.wav` now has an authored `foundry:sound` record, which speaks for its file so
+    nothing is derived for it, naming its bus and priority: footsteps 32, the warden 64,
+    gate and beacons 128, ambience 160, the endings and clicks 200, and every track and
+    stinger 255;
+  - `court:attenuation.warden` (1.5–16 m) and `court:attenuation.prop` (2–24 m);
+  - the buses and effects of §11, exactly as written, with the limiter at −1 dB;
+  - `court:mix.main`, a `court:mix_set` naming the master, the music and world buses, the
+    muffle, its pause frequency (800 Hz) and its sweep (0.25 s), so `sounds.zig` names no bus;
+  - the title's loop region, at 960,000 and 1,920,000 frames, and `resume true` on calm;
+  - `music_volume` and `effects_volume` in `court:config` and labels in `court:text`, each with
+    a default, so `noon`, which overrides both records whole, compiles unchanged.
+- **`make_court_music.py`:** the title is eight bars of chords and bass, then an eight-bar
+  body with the melody and soft hats, 40 s in all. The body's tail wraps into its own first
+  bar and nothing is faded at the end, so the loop seam is the music carrying on. The script
+  prints the loop points. Regenerated, **only `title.ogg` changed; the other nine files are
+  byte for byte the same**, which is §11's comparison: the generator is deterministic and
+  there is no separate test.
+- **`sounds.zig`:**
+  - `place` is deleted;
+  - `onEvents` plays the gate, beacons and warden steps with a `position` and a starting
+    occlusion;
+  - `frame` sets the listener from the eye and look, then, for each spatial voice still
+    playing (up to 16 tracked), moves it to its source (the warden's body, the sinking gate, or
+    the beacon where it stands) and steps its occlusion an eighth a frame toward the ray's
+    answer;
+  - `useMix`, `applyVolumes` and `setPaused` carry the mix.
+- **Preferences:** `court:preferences` is version 2, adding the two volumes after the first
+  five, with a migration from version 1. An M30 file loads and keeps its values; the new two
+  are the content's until moved. `volume` is the master gain, `music` the music bus's game
+  gain and `effects` the world bus's, each ramped over 20 ms.
+- **`main.zig`:** the mix is built after the loader is registered. The listener, rays and
+  placement now run inside the `audio` scope, before `Mixer.update`, so criterion 6's measure
+  includes them and the placement is the same frame's. The volumes are logged at start.
+- **`nocturne`:** overrides `court:fx.courtyard` (decay 3.2 s), adds `nocturne:fx.echo` (0.3125 s,
+  three eighths of a beat at 72 bpm) and overrides `court:bus.music` to carry it. Its own
+  tracks and beacon stinger gained authored records routing them to the music bus; derived,
+  they would have mixed at the root, past the music slider.
+- **The evidence log:** every ten seconds and at exit, a `mix` line beside the `music` one:
+  voices stolen, steals cut, plays misrouted, samples past the ceiling, and the deepest
+  limiting in dB. Each pause and resume logs its sweep. A scripted run is now clean only with
+  nothing misrouted and nothing past the ceiling as well.
+
+**What §11 left open, and the answers:**
+- **The over-ceiling counter is counted in the callback, not by a test hook.** §11 asked for
+  a counter in the court's log and also said the hook counts "on the stepped device, never in
+  the callback". A ten-minute run on a real device cannot be read any other way, so each
+  limiter counts the samples its gain left more than a rounding past the ceiling, before the
+  final hold, and its lowest gain. The mixer collects both once a buffer into two atomics,
+  `overCeiling()` and `deepestLimit()`. It costs one comparison a sample. The stepped device's
+  stress test reads the same counters.
+- **A spatial play takes a starting `occlusion`** (`PlayParams.occlusion`, clamped, non-finite
+  refused as `InvalidPosition`). Without it a warden step behind the wall began unmuffled and
+  glided to muffled over its first buffer, which is a fifth of a 0.11 s step.
+- **Occlusion is one ray, ears to source, against the level layer**, stopping 0.3 m short so
+  the ground under a source is not in its way. The gate's own sound leaves the gate's body
+  out; the warden's is heard from the middle of its body, not its feet. The answer is 0 or 1,
+  and the court eases toward it, so a source passing behind a wall is muffled over about
+  0.13 s.
+- **`hearing_distance` is deleted from `court:sound_set`**, not kept "as the music's chase
+  trigger": the chase has always been `court:music.main`'s `chase_distance`, and nothing read
+  the field once `place` went.
+- **Which buses the sliders move** is content (`court:mix.main`), not names in code.
+
+**Tests:**
+- `sound_pipeline`: a loud 16-voice mix through the court-shaped tree is limited by the gain,
+  with nothing past the ceiling, and no tree counts nothing.
+- `mixer`: a play occluded from the start is muffled in its first buffer (past the one-pole's
+  first 32 frames, its own start-up), and a non-finite occlusion is refused.
+- Court, against the real content:
+  - every sound's bus and priority, every track and stinger on the music bus at 255, the tree
+    built with nothing misrouted and a 96-frame latency, the muffle found at slot 2;
+  - the title's loop points and 1,920,000 frames, and 46 s of play as one start, one voice and
+    no underrun;
+  - `nocturne`'s reverb, echo and routing, with the tree building either way;
+  - the gate occluding a sound behind it, its opening clear without it, and nothing between
+    the ears and a nearer source;
+  - an M30 preferences file loading unchanged, then written at version 2 and read back;
+  - the music and effects sliders stepping in the options menu.
+
+**Guards verified by breaking them**, each in its own run:
+- a limiter whose gain stays at 1 failed the over-ceiling test;
+- an occlusion ray that never reports a hit failed the gate test;
+- a muffle slot never found failed the mix test;
+- preferences without their migration failed the M30-file test.
+
+**Runtime evidence:** M5, SDL3 `cocoa`, Metal, ReleaseSafe, 4× MSAA and shadows.
+- `zig build dist -Dapp=court` staged the bundle with its 50 files (revision
+  `e6ca301+m31-step10`). Its zip was extracted into scratch, made read-only and run with
+  `env -i`, `PATH=/usr/bin:/bin` and a disposable preferences root per run. The files hash
+  the same after the runs.
+
+| Run | Frames | Starts asked / on their frame / cancelled / pending | Underruns, late, dropped, refused | Stolen, cut, misrouted, past ceiling | Deepest limiting | `audio` median / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| win | 1,217 | 17 / 15 / 0 / 2 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0003 / 0.0091 ms |
+| caught | 110 | 4 / 1 / 0 / 3 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0003 / 0.0008 ms |
+| fell | 186 | 4 / 1 / 0 / 3 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0003 / 0.0023 ms |
+| soundtrack 1 | 7,094 (interrupted) | 9 / 9 / 0 / 0 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0002 / 0.0018 ms |
+| soundtrack 2 | 40,553 | 82 / 81 / 0 / 1 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0001 / 0.0015 ms |
+| soundtrack 3 | 40,553 | 82 / 81 / 0 / 1 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0002 / 0.0019 ms |
+| soundtrack 4 | 40,553 | 82 / 81 / 0 / 1 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0002 / 0.0017 ms |
+| nocturne soundtrack | 40,553 | 81 / 75 / 5 / 1 | 0, 0, 0, 0 | 0, 0, 0, 0 | 0.0 dB | 0.0002 / 0.0017 ms |
+
+The pending starts at exit were asked for within the last frames before the process
+stopped. The five cancelled under `nocturne` are tracks retired behind a fading one, as at M30.
+
+- **Every run is clean on every count**: no start missed, no underrun, late start, dropped
+  command, refusal, steal, misroute or sample past the ceiling. Every replay matched a fresh
+  simulation at every tick, and the endings are unchanged.
+- **Criterion 6, main thread:** the `audio` scope, now with the listener, up to 16 rays and
+  placement, stays at a p95 of 0.0015–0.0091 ms against 0.10.
+- **Criterion 7:** the `nocturne` run selected the mod from the user root and played 208 of
+  208 steps clean. The test proves what it changes.
+- **Each pause swept the world's low-pass**, 800 Hz on pause and back to 20 kHz on resume,
+  ten sweeps a soundtrack run.
+- **The limiter never had to act.** The deepest limiting in every run is 0.0 dB: at the
+  court's own levels nothing reaches −1 dB. The ceiling is held by the limiter's stress tests
+  and the court-shaped one above, not by this sample.
+- **The first soundtrack run was interrupted** when the window lost focus at tick 3,504, a
+  minute in, while the Mac was in use. Losing focus pauses the game, and the script fails a
+  pause it did not ask for, as M30 Step 7's third run did. Its 7,094 frames were clean. It was
+  replaced by a fourth run from a bundle restaged after one change: the cost line's label,
+  which now names placing, a log string only.
+- **The sliders across a restart** are not something a script can show: scripted runs write
+  no preferences, by design (§8). They are proven by the court's preference tests, a write
+  at version 2 read back by a fresh `Preferences` and an M30 file migrated. The owner's
+  listening check covers the window.
+
+**Criterion 9:** M30's sequenced-mix pin and the 2D samples are unchanged; the full bar holds
+them.
+In ReleaseSafe, `integration-test` passes except the known Mac `ui_theme` test. The M30 and M31
+sequenced-mix pins hold with the limiter's new counters in the callback, and the mixing-speed
+test reads **100× real time** on the M5.
+
+**Bar:** the full bar, all exit 0. `zig build test` is **2,437/2,441** (four skips).
+
+**Listening.** The owner is offered a check of the court on the Mac: the title's intro into
+its loop, the warden behind the low wall and the gate, the pause muffle, the three sliders
+across a restart, and `nocturne`'s longer room and echo. It is not an exit criterion.
+
+Next is Step 11: Windows/Vulkan on the Arc PC.

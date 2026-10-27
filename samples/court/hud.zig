@@ -184,6 +184,8 @@ const OptionsLayout = struct {
     heading: f32,
     audio: f32,
     volume: Rect,
+    music: Rect,
+    effects: Rect,
     controls: f32,
     sensitivity: Rect,
     invert: Rect,
@@ -203,6 +205,10 @@ const OptionsLayout = struct {
         l.audio = y;
         y += sectionHeight(ctx);
         l.volume = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing;
+        l.music = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing;
+        l.effects = .init(left, y, width, style.line_height);
         y += style.line_height + style.spacing * 3;
         l.controls = y;
         y += sectionHeight(ctx);
@@ -226,6 +232,8 @@ fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Erro
     var result: Result = .{};
     const placed = [_]Placed{
         .{ .item = .volume, .bounds = l.volume },
+        .{ .item = .music, .bounds = l.music },
+        .{ .item = .effects, .bounds = l.effects },
         .{ .item = .sensitivity, .bounds = l.sensitivity },
         .{ .item = .invert, .bounds = l.invert },
         .{ .item = .back, .bounds = l.back },
@@ -238,6 +246,10 @@ fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Erro
     var buffer: [16]u8 = undefined;
     const volume = std.fmt.bufPrint(&buffer, "{d:.0}%", .{options.volume * 100}) catch buffer[0..0];
     if (try sliderRow(ctx, .volume, t.master_volume, volume, &options.volume, Options.volume_min, Options.volume_max, Options.volume_step, l.volume, focused == .volume, &result)) result.options_changed = true;
+    const music = std.fmt.bufPrint(&buffer, "{d:.0}%", .{options.music * 100}) catch buffer[0..0];
+    if (try sliderRow(ctx, .music, t.music_volume, music, &options.music, Options.volume_min, Options.volume_max, Options.volume_step, l.music, focused == .music, &result)) result.options_changed = true;
+    const effects = std.fmt.bufPrint(&buffer, "{d:.0}%", .{options.effects * 100}) catch buffer[0..0];
+    if (try sliderRow(ctx, .effects, t.effects_volume, effects, &options.effects, Options.volume_min, Options.volume_max, Options.volume_step, l.effects, focused == .effects, &result)) result.options_changed = true;
 
     try section(ctx, t.controls_section, l.left, l.controls, l.width);
     const sensitivity = std.fmt.bufPrint(&buffer, "{d:.1}x", .{options.sensitivity}) catch buffer[0..0];
@@ -374,6 +386,8 @@ fn labelOf(t: *const Text, item: Item) []const u8 {
         .to_title => t.to_title,
         .quit => t.quit,
         .volume => t.master_volume,
+        .music => t.music_volume,
+        .effects => t.effects_volume,
         .sensitivity => t.look_sensitivity,
         .invert => t.invert_look,
         .back => t.back,

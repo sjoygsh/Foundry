@@ -8,6 +8,9 @@ foundry:model_import court:models.warden { source "models/warden.gltf" }
     # Defaults a player's settings.fset may replace (ADR-0031).
     window_width u32 window_height u32
     master_volume f32
+    # The music and the world's buses (mixing.md §11). Added in M31 with defaults, so a
+    # package written before them still reads.
+    music_volume f32 (default 1)  effects_volume f32 (default 1)
     look_sensitivity f32
     invert_look bool
     # How long the goal line stays on screen at the start of each game, seconds.
@@ -29,7 +32,7 @@ foundry:model_import court:models.warden { source "models/warden.gltf" }
 config court:config.main {
     title "Foundry Court"
     window_width 1280 window_height 720
-    master_volume 0.8
+    master_volume 0.8  music_volume 1  effects_volume 1
     look_sensitivity 1
     invert_look false
     goal_seconds 6
@@ -139,16 +142,15 @@ warden court:warden.main {
     pause 1
 }
 
-# What the court sounds like (playable3d.md §6.2). The .wav files become `foundry:sound`
-# records from their paths; this names which one each event plays. Distances are metres.
+# What the court sounds like (playable3d.md §6.2). Each .wav has its record here, which
+# names its bus and its priority (mixing.md §11); this set names which one each event plays.
+# Distances are metres.
 @schema sound_set {
     ambience id  ambience_gain f32
     step id  step_distance f32
     jump id  land id
     gate id
     warden_step id  warden_step_distance f32
-    # A positioned sound is silent at this distance and full at none.
-    hearing_distance f32
     won id  caught id  fell id
     click id
 }
@@ -158,18 +160,82 @@ sound_set court:sounds.main {
     jump court:sounds.jump  land court:sounds.land
     gate court:sounds.gate
     warden_step court:sounds.warden_step  warden_step_distance 0.9
-    hearing_distance 14
     won court:sounds.won  caught court:sounds.caught  fell court:sounds.fell
     click court:sounds.click
+}
+
+# Priorities decide which voice gives way when all of them are in use (mixing.md §7): the
+# player's own footsteps first, then the warden's, and never the music.
+foundry:sound court:sounds.step { source "sounds/step.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.jump { source "sounds/jump.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.land { source "sounds/land.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.warden_step {
+    source "sounds/warden_step.wav" bus court:bus.effects priority 64 attenuation court:attenuation.warden
+}
+foundry:sound court:sounds.gate {
+    source "sounds/gate.wav" bus court:bus.effects priority 128 attenuation court:attenuation.prop
+}
+foundry:sound court:sounds.beacon {
+    source "sounds/beacon.wav" bus court:bus.effects priority 128 attenuation court:attenuation.prop
+}
+foundry:sound court:sounds.ambience { source "sounds/ambience.wav" bus court:bus.ambience priority 160 }
+foundry:sound court:sounds.won { source "sounds/won.wav" bus court:bus.ui priority 200 }
+foundry:sound court:sounds.caught { source "sounds/caught.wav" bus court:bus.ui priority 200 }
+foundry:sound court:sounds.fell { source "sounds/fell.wav" bus court:bus.ui priority 200 }
+foundry:sound court:sounds.click { source "sounds/click.wav" bus court:bus.ui priority 200 }
+
+# How far the warden and the props carry. Behind the low wall or the gate the court calls a
+# sound occluded, from one ray against its walls (`sounds.zig`), and these say what that does.
+foundry:audio_attenuation court:attenuation.warden {
+    min_distance 1.5  max_distance 16  occluded_gain 0.4  occluded_cutoff 900
+}
+foundry:audio_attenuation court:attenuation.prop {
+    min_distance 2  max_distance 24  occluded_gain 0.5  occluded_cutoff 1500
+}
+
+# The mix (mixing.md §11): music, the world and the menus under a master whose limiter keeps
+# twenty loud voices from clipping. The world's courtyard reverb and gentle compressor carry
+# the effects and the ambience, and its low-pass, open until a pause, muffles them.
+foundry:audio_bus court:bus.master { effects [ court:fx.limit ] }
+foundry:audio_limiter court:fx.limit { ceiling_db -1 }
+foundry:audio_bus court:bus.music { parent court:bus.master }
+foundry:audio_bus court:bus.world {
+    parent court:bus.master
+    effects [ court:fx.courtyard  court:fx.world_glue  court:fx.muffle ]
+}
+foundry:audio_reverb court:fx.courtyard { decay 1.4  wet 0.18 }
+foundry:audio_compressor court:fx.world_glue { threshold_db -20  ratio 2 }
+foundry:audio_filter court:fx.muffle { shape "lowpass"  frequency 20000 }
+foundry:audio_bus court:bus.effects { parent court:bus.world }
+foundry:audio_bus court:bus.ambience { parent court:bus.world }
+foundry:audio_bus court:bus.ui { parent court:bus.master }
+
+# Which bus each slider moves, and what a pause does to the world (`sounds.zig`).
+@schema mix_set {
+    master id  music id  effects id
+    muffle id  muffle_frequency f32  muffle_fade f32
+}
+mix_set court:mix.main {
+    master court:bus.master  music court:bus.music  effects court:bus.world
+    muffle court:fx.muffle  muffle_frequency 800  muffle_fade 0.25
 }
 
 # The court's soundtrack (music.md §9), written by scripts/m30/make_court_music.py at 96 bpm
 # in 4/4. Tracks stream, and stingers stay resident so they can land a tenth of a second
 # after they are asked for. Each crossfade is one bar, so a track's beats meet the next's.
-foundry:sound court:music.tracks.title { source "music/tracks/title.ogg" stream true }
-foundry:sound court:music.tracks.calm_a { source "music/tracks/calm_a.ogg" stream true }
-foundry:sound court:music.tracks.calm_b { source "music/tracks/calm_b.ogg" stream true }
-foundry:sound court:music.tracks.chase { source "music/tracks/chase.ogg" stream true }
+# The title plays its eight-bar intro once, then loops its eight-bar body (mixing.md §6.3):
+# the loop points are frames, 20 and 40 seconds in. The calm playlist resumes where the chase
+# left it (§10.2).
+foundry:sound court:music.tracks.title {
+    source "music/tracks/title.ogg" stream true bus court:bus.music priority 255
+    loop_start 960000  loop_end 1920000
+}
+foundry:sound court:music.tracks.calm_a { source "music/tracks/calm_a.ogg" stream true bus court:bus.music priority 255 }
+foundry:sound court:music.tracks.calm_b { source "music/tracks/calm_b.ogg" stream true bus court:bus.music priority 255 }
+foundry:sound court:music.tracks.chase { source "music/tracks/chase.ogg" stream true bus court:bus.music priority 255 }
+foundry:sound court:music.stingers.beacon { source "music/stingers/beacon.ogg" bus court:bus.music priority 255 }
+foundry:sound court:music.stingers.gate { source "music/stingers/gate.ogg" bus court:bus.music priority 255 }
+foundry:sound court:music.stingers.ending { source "music/stingers/ending.ogg" bus court:bus.music priority 255 }
 
 foundry:music_playlist court:music.title {
     tracks [ court:music.tracks.title ]
@@ -177,7 +243,7 @@ foundry:music_playlist court:music.title {
 }
 foundry:music_playlist court:music.calm {
     tracks [ court:music.tracks.calm_a  court:music.tracks.calm_b ]
-    order "shuffle"  crossfade 2.5  gain 0.8  tempo 96  beats_per_bar 4
+    order "shuffle"  crossfade 2.5  gain 0.8  tempo 96  beats_per_bar 4  resume true
 }
 foundry:music_playlist court:music.chase {
     tracks [ court:music.tracks.chase ]
@@ -197,7 +263,7 @@ foundry:music_stinger court:music.ending {
 }
 
 # Which music plays when (`music.zig`). The warden is chased at `chase_distance`, well
-# inside the sound set's hearing distance, which covers the whole court; the chase lasts
+# inside the warden's attenuation, which covers the whole court; the chase lasts
 # `chase_hold` seconds past the last moment the warden was that close.
 @schema music_set {
     title id  calm id  chase id
@@ -224,6 +290,7 @@ music_set court:music.main {
     use_key string  use_prompt string
     menu_hints string  options_hints string
     audio string  master_volume string
+    music_volume string (default "Music")  effects_volume string (default "Effects")
     controls_section string  look_sensitivity string  invert_look string  on string  off string
     applies_at_once string  back string
     no_gate string
@@ -245,7 +312,7 @@ text court:text.main {
     use_key "E"  use_prompt "Light the beacon"
     menu_hints "Up/Down  Choose     Enter  Select     Esc  Back"
     options_hints "Up/Down  Choose     Left/Right  Change     Esc  Back"
-    audio "Audio"  master_volume "Master volume"
+    audio "Audio"  master_volume "Master volume"  music_volume "Music"  effects_volume "Effects"
     controls_section "Controls"  look_sensitivity "Look sensitivity"  invert_look "Invert look"
     on "On"  off "Off"
     applies_at_once "Changes apply at once and are saved."

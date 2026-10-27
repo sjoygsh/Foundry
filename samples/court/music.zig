@@ -8,7 +8,9 @@
 //!
 //! `FOUNDRY_COURT_MUSIC_LOG=on` writes the evidence criteria 2 and 3 read: every start the
 //! sequencer asked for, with the frame it asked and the frame the mixer reports it began on,
-//! and the counters every ten seconds and at exit.
+//! and the counters every ten seconds and at exit. Since M31 the counters include the mix's
+//! (mixing.md §11): voices stolen and cut, plays misrouted, samples a limiter's gain left
+//! past its ceiling, and the deepest reduction a limiter applied.
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
@@ -262,13 +264,17 @@ pub const Soundtrack = struct {
         log.info("music {s}: {d} start(s) asked, {d} on their frame, {d} missed, {d} retired before they began, {d} unread, {d} pending; {d} underrun(s), {d} late start(s), {d} command(s) dropped, {d} refused", .{
             when, e.asked, e.exact, e.missed, e.cancelled, e.lost, e.pending_len, mixer.underruns(), mixer.lateStarts(), mixer.commandsDropped(), self.refused,
         });
+        log.info("mix {s}: {d} voice(s) stolen, {d} steal(s) cut, {d} misrouted, {d} sample(s) past the ceiling; deepest limiting {d:.1} dB", .{
+            when, mixer.stolen(), mixer.cutSteals(), mixer.misrouted(), mixer.overCeiling(), core.math.exp.gainToDb(mixer.deepestLimit()),
+        });
     }
 
     /// What criteria 2 and 3 require of a run: nothing missed, lost, late, underrun or
-    /// refused.
+    /// refused; and mixing.md's criterion 8: nothing misrouted, and no sample a limiter's
+    /// gain left past its ceiling.
     pub fn clean(self: *const Soundtrack) bool {
         const mixer = self.mixer orelse return true;
-        return self.evidence.clean(mixer.underruns(), mixer.lateStarts(), self.refused);
+        return self.evidence.clean(mixer.underruns(), mixer.lateStarts(), self.refused) and mixer.misrouted() == 0 and mixer.overCeiling() == 0;
     }
 };
 

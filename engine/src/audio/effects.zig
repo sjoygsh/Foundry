@@ -479,6 +479,10 @@ pub const Compressor = struct {
 /// it reaches each frame's requirement by the time the frame leaves the delay, so no output
 /// exceeds the ceiling. Release is a one-pole back up.
 pub const Limiter = struct {
+    /// How far past the ceiling a sample may leave the gain and count as a rounding: the
+    /// one-ulp case the hold corrects.
+    pub const over_tolerance: f32 = 1 + 1e-6;
+
     params: mix.Limiter,
     rate: u32,
     ceiling: f32 = 1,
@@ -502,6 +506,10 @@ pub const Limiter = struct {
     /// The largest output magnitude before the hold to the ceiling, so a test can tell the
     /// gain doing its work from the hold doing it (criterion 3).
     unheld: f32 = 0,
+    /// Samples that left the gain past the ceiling by more than a rounding, and the lowest
+    /// gain applied, since the mixer last took them (`Mixer.overCeiling`, `deepestLimit`).
+    over: u32 = 0,
+    deepest: f32 = 1,
 
     pub fn init(gpa: Allocator, l: mix.Limiter, rate: u32, channels: u8) Allocator.Error!Limiter {
         const length: usize = @max(1, @as(usize, @intFromFloat(@round(l.lookahead * @as(f32, @floatFromInt(rate))))));
@@ -580,6 +588,7 @@ pub const Limiter = struct {
             // reached it, and this holds it exactly against rounding in the running sum.
             const leaving = self.required[(now + 1) % window];
             const gain = @min(self.gain, leaving);
+            self.deepest = @min(self.deepest, gain);
 
             const delayed = self.line[(now % self.length) * channels ..][0..channels];
             // A sample times `ceiling / peak` can round one unit in the last place past the
@@ -589,6 +598,7 @@ pub const Limiter = struct {
                 const x = s.*;
                 const y = d.* * gain;
                 self.unheld = @max(self.unheld, @abs(y));
+                if (@abs(y) > ceiling * over_tolerance) self.over += 1;
                 s.* = std.math.clamp(y, -ceiling, ceiling);
                 d.* = x;
             }

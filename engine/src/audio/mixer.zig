@@ -83,6 +83,9 @@ pub const PlayParams = struct {
     position: ?core.math.Vec3 = null,
     /// The `foundry:audio_attenuation` a spatial voice uses, in place of its sound record's.
     attenuation: ?core.ContentId = null,
+    /// A spatial voice's occlusion from its first buffer, 0 (open) to 1 (fully), clamped as
+    /// `setOcclusion` clamps it, so a sound behind a wall does not begin unmuffled.
+    occlusion: f32 = 0,
     /// Overrides the sound record's `priority` (0–255; higher is kept when voices run out).
     priority: ?u8 = null,
 };
@@ -126,7 +129,7 @@ pub const VoiceError = error{
     OutOfMemory,
     /// `start_frame` is at or past the sound's end: caller arithmetic, refused by name.
     InvalidStart,
-    /// A spatial play's position is not finite.
+    /// A spatial play's position or occlusion is not finite.
     InvalidPosition,
     /// A spatial play's attenuation names no `foundry:audio_attenuation`, or one that does not
     /// decode.
@@ -472,6 +475,10 @@ pub fn MixerOf(comptime P: type) type {
         /// Buffers in which a streamed voice found a frame missing and played silence for
         /// it. Written by the callback; a diagnostic, so monotonic.
         underrun_count: std.atomic.Value(u32) = .init(0),
+        /// Samples a limiter's gain left past its ceiling, and the lowest gain any limiter has
+        /// applied, as `f32` bits (§9, §11). Written by the callback once a buffer.
+        over_ceiling: std.atomic.Value(u32) = .init(0),
+        deepest_limit: std.atomic.Value(u32) = .init(@bitCast(@as(f32, 1))),
 
         pub fn init(
             gpa: Allocator,
@@ -925,12 +932,14 @@ pub fn MixerOf(comptime P: type) type {
             // first buffer is already where it is rather than gliding there (`mixing.md` §5).
             var space: ?Space = null;
             if (params.position) |position| {
-                if (!position.isFinite()) return error.InvalidPosition;
+                if (!position.isFinite() or !std.math.isFinite(params.occlusion)) return error.InvalidPosition;
                 const attenuation = try self.resolveAttenuation(params.attenuation orelse stored.settings.attenuation);
+                const occlusion = std.math.clamp(params.occlusion, 0, 1);
                 space = .{
                     .position = position,
                     .attenuation = attenuation,
-                    .sent = spatial.place(self.listener, position, attenuation, 0, self.info.sample_rate),
+                    .occlusion = occlusion,
+                    .sent = spatial.place(self.listener, position, attenuation, occlusion, self.info.sample_rate),
                 };
             }
 
@@ -1159,6 +1168,18 @@ pub fn MixerOf(comptime P: type) type {
                 longest = @max(longest, total);
             }
             return @intCast(longest);
+        }
+
+        /// Samples a limiter's gain left past its ceiling by more than a rounding, which its
+        /// final hold then corrected. Criterion 8 requires none: the gain, not the hold, keeps
+        /// the ceiling.
+        pub fn overCeiling(self: *const Self) u32 {
+            return self.over_ceiling.load(.monotonic);
+        }
+
+        /// The lowest gain any limiter has applied since the mixer started: 1 for never.
+        pub fn deepestLimit(self: *const Self) f32 {
+            return @bitCast(self.deepest_limit.load(.monotonic));
         }
 
         /// Plays whose sound names a bus the tree does not have, mixed into the root instead.
@@ -1714,8 +1735,26 @@ pub fn MixerOf(comptime P: type) type {
                 const gain = tree.base[0] * tree.level[0].at(self.mixed + f) * self.master_gain;
                 for (out[f * ch ..][0..ch]) |*sample| sample.* = std.math.clamp(sample.* * gain, -1.0, 1.0);
             }
+            self.takeLimits(tree);
             self.mixed += frames;
             self.clock_frames.store(self.mixed, .release);
+        }
+
+        /// What the tree's limiters did this buffer, into the counters the game reads.
+        fn takeLimits(self: *Self, tree: *bus.Tree) void {
+            var over: u32 = 0;
+            var deepest: f32 = @bitCast(self.deepest_limit.load(.monotonic));
+            for (0..tree.count()) |k| for (tree.chain(@intCast(k))) |*unit| switch (unit.*) {
+                .limiter => |*l| {
+                    over +|= l.over;
+                    deepest = @min(deepest, l.deepest);
+                    l.over = 0;
+                    l.deepest = 1;
+                },
+                else => {},
+            };
+            if (over != 0) _ = self.over_ceiling.fetchAdd(over, .monotonic);
+            self.deepest_limit.store(@bitCast(deepest), .monotonic);
         }
 
         /// Every active voice into `out`, or into its bus's buffer when there is a tree, in slot
@@ -2960,12 +2999,32 @@ test "occlusion muffles: the low-pass passes a steady level and stops the highes
     try testing.expectApproxEqAbs(@as(f32, 0.25), settled[255], 1e-4);
 }
 
+test "a play occluded from the start is muffled in its first buffer, not after it" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 256 });
+    defer f.deinit();
+    const sound = try asset.Sound.alloc(testing.allocator, 4096, 1, 48_000);
+    for (sound.samples, 0..) |*s, i| s.* = if (i % 2 == 0) 0.5 else -0.5;
+    const nyquist = try f.mixer.insertSound(sound);
+    const v = try f.mixer.playSound(nyquist, .{ .looping = true, .position = .init(0, 0, -0.5), .occlusion = 1 });
+    const first = try f.step(256);
+    // Unoccluded, this buffer would be ±0.5 throughout. The one-pole starts from zero, so its
+    // first few frames are its own start-up; past them, the first buffer is already muffled.
+    var peak: f32 = 0;
+    for (first[32..]) |s| peak = @max(peak, @abs(s));
+    try testing.expect(peak < 0.5 * 0.5 * 0.1);
+    // Out of range is clamped, as `setOcclusion` clamps it.
+    f.mixer.stop(v);
+    f.mixer.update();
+    _ = try f.mixer.playSound(nyquist, .{ .position = .zero, .occlusion = 7 });
+}
+
 test "spatial refusals: not finite, not spatial, not playing, no such attenuation, and pan" {
     const f = try Fixture.init(testing.allocator, .{});
     defer f.deinit();
     const sound = try dcSound(f, 1000, 1, &.{0.5});
     const nan = std.math.nan(f32);
     try testing.expectError(error.InvalidPosition, f.mixer.playSound(sound, .{ .position = .init(nan, 0, 0) }));
+    try testing.expectError(error.InvalidPosition, f.mixer.playSound(sound, .{ .position = .zero, .occlusion = nan }));
     try testing.expectError(error.UnknownAttenuation, f.mixer.playSound(sound, .{ .position = .zero, .attenuation = core.ContentId.fromString("t:nowhere") }));
     try testing.expectEqual(@as(u32, 0), f.mixer.activeVoices());
 
