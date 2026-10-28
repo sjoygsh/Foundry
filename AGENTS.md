@@ -464,7 +464,15 @@ effects, or the background pool changes:
   about 100× on the M5 at M31), and, with a real audio backend, command delivery. It passes
   on the Mac too since 2026-10-28, when `render2d`'s sRGB curve became a compile-time table.
 
-On the Windows target, `scripts/m31/windows.ps1` runs them all, with M31's court runs.
+M32's build times also mean something only optimized, and the Debug bar skips both real-level
+tests. Run them when `nav`, either sample's navigation glue or its level changes:
+- `zig build nav-test sandbox3d-test court-test -Doptimize=ReleaseSafe` prints the stand-in
+  scenes' build times and each sample's real level, single-threaded: the court's warden mesh
+  in at most 50 ms on the M5 and 150 ms on the Arc PC's i3 (5.66 ms and 14.36 ms at M32), and
+  `sandbox3d`'s in no more. `nav-test` also asserts the course pin in every mode.
+
+On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
+and `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs.
 
 ### Staging a release
 

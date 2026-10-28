@@ -1,7 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 8 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 9** (close M32: the contract discrepancies in `playable3d.md` and the roadmap, `nav` in `CLAUDE.md` §4.3, the indexes, packing up the PC, tag `m32`). Nothing is pushed since `m31`.
+**Current handoff: M32 is complete** (2026-10-29, tag `m32`; [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069). **Stop before M33's design** (Navigation II: paths, agents, avoidance, off-mesh links, areas, running obstacles and a navigation panel). `main` and `m32` are pushed.
+
+**M32 Step 9 is done (2026-10-29): M32 closed.**
+- `playable3d.md`'s warden rows now give the mesh to M32 and the chase to M33.
+- The roadmap's intent lines for M33, M48, M60, M63 and M66 gain navigation.md §13's items.
+- `CLAUDE.md` records `nav` at L1 on `core` (§4.3), in both samples' grants, in §4.5's tree, and M32 in §9. ADR-0069 records its implementation.
+- `AGENTS.md` gains the optimized `nav-test sandbox3d-test court-test` measurement.
+- The PC and the Mac were packed up. Only documents changed, so the bar was not rerun after Steps 7 and 8.
+
+**M32 in one paragraph.** A new L1 module `nav`, on `core` alone, builds navigation meshes from copied collision triangles by the Recast voxel method, reimplemented in Zig:
+- the mesh is rasterised, filtered, eroded by the agent's radius, cut into watershed regions, traced into contours and made into convex polygons;
+- each polygon has neighbour links and a detail surface, and `locate` finds the polygon under a point.
+
+`foundry:nav_mesh` is a recipe that the background pool builds at load from the merged content, so a mod's change is never stale. `sandbox3d` draws its mesh, `plinth` cuts it and `stout` narrows it. The court builds the warden's mesh and proves its islands. The course pin and every mesh agree on Metal and Windows/Vulkan. The court's mesh builds in 5.66 ms on the M5 and 14.36 ms on the i3. There is no ABI change.
 
 **M32 Step 8 is done (2026-10-29): navigation on Windows/Vulkan, on the Arc A750.**
 - Cloned at `m31` plus a git bundle of M32's commits; harness `scripts/m32/windows.ps1` (suites over SSH, samples from a scheduled task). No engine code changed.

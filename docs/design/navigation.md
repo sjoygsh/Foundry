@@ -1,6 +1,7 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–8 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. All nine steps are done (2026-10-28 to 10-29), and M32 is complete at tag `m32`; their
+Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -1301,3 +1302,48 @@ The request runs inside the load frame, so the load window's worst frame include
 
 **Bar:** the tree is Step 7's, whose full bar passed, plus this step's PowerShell harness and
 documents. No Zig, content or build file changed, so the bar was not rerun.
+
+## Resolution — Step 9: Close M32 (2026-10-29)
+
+**M32 is complete, at tag `m32`.** Criteria 1 to 8 hold: Steps 1 to 5 proved 1 to 4 on the
+library; Steps 6 and 7 proved 5 to 8 on the Mac; Step 8 proved 4 to 6 on the Arc PC.
+
+**The contract discrepancies, resolved where they were written:**
+- `playable3d.md` §1 and §5 gave navigation and the chasing warden to "M32–M33". Each now says
+  that M32 builds the warden's mesh and proves its islands, and that M33 walks it.
+- `playable3d.md` §13's warden row moves to M33 and points here.
+- The roadmap's intent lines gain §13's items:
+  - M33: off-mesh links, area types and costs, obstacles that cut a running mesh, and a
+    navigation panel;
+  - M48: a mesh built from a recipe, and `locate`;
+  - M60: tiles, a baked mesh asset and tiles rebuilt around a point;
+  - M63 and M66: heightfields and voxel chunks.
+
+  M49's line already binds what M48 publishes.
+
+**The indexes:**
+- **ADR-0069** records its implementation, and `CLAUDE.md` §4.1's row says so.
+- **`CLAUDE.md`:**
+  - §4.3 gains `nav` at L1 on `core`;
+  - `nav` is in both samples' grants;
+  - `nav/` is in §4.5's tree;
+  - §9's row gains M32.
+- **`AGENTS.md`** gains M32's optimized-only measurement beside M30's and M31's: the release
+  `nav-test sandbox3d-test court-test` run, its budgets and figures, and the Windows harness.
+  The bar itself is unchanged, since `zig build test` already runs `nav`.
+- **The roadmap's M32 row, the design index, the README and `PROJECT_STATE.md`** say M32 is
+  done.
+
+**Packed up:**
+- **The PC:** exactly `src\Foundry-m32`, `m32`, `state-m32.ps1` and `%LOCALAPPDATA%\zig` were
+  deleted, after the install's read-only ACL was removed. The scheduled task is gone. The
+  toolchains and the owner's own files are untouched.
+- **The Mac:** the session's scratch, including the relocated installs, the read-only `dist`
+  bundle and the PC bundle, and the build caches.
+
+**Not in M32, each with its owner (§13):** M33 has paths, agents, avoidance, links, areas,
+running obstacles and the panel. M48 and M49 have the table and Lua, M60 tiles and baking, and
+M63 and M66 terrain and voxels.
+
+**Bar:** this step changed only documents. Steps 7 and 8's code is unchanged, and its full bar
+passed on the Mac (2,510/2,517) and its suites on the PC, so the bar was not rerun.

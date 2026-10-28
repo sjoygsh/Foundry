@@ -1,6 +1,6 @@
 # ADR-0069: Navigation meshes are built by Foundry from collision triangles, at load
 
-**Status:** Accepted 2026-10-28 (the owner asked for M32 Step 1; `docs/design/navigation.md`)
+**Status:** Accepted 2026-10-28 (the owner asked for M32 Step 1; `docs/design/navigation.md`); implemented in M32 (2026-10-29, tag `m32`)
 **Date:** 2026-10-28
 
 ## Context

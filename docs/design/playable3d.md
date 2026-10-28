@@ -44,7 +44,8 @@ sample, the build graph and three machines, so it writes its own document.
 
 **Not in M26**, each with its place in the long roadmap or its trigger in §13:
 - anything in `FoundryApi_v6`, which is frozen, or a v7;
-- 3D audio spatialisation (M31), navigation or a chasing AI (M32–M33), a third-person body, an
+- 3D audio spatialisation (M31), navigation or a chasing AI (M32–M33; M32, done 2026-10-29, builds
+  the warden's mesh, and M33 walks it), a third-person body, an
   engine animation component (M34), dynamics, a sky, a save game, a mod screen in 3D, gamepads;
 - a published release. M26 stages; publishing a pre-release is the owner's separate decision;
 - certification. ADR-0060 re-dated it to M150, so M26 no longer triggers it (§12 corrects the
@@ -232,6 +233,8 @@ share source, because each is the reference for a separate consumer.
 - **The warden** is a `court:warden` record: the model, patrol waypoints, speed and clips, as
   `sandbox3d`'s walker is. It follows its waypoints and nothing else. It does not see, chase or
   path-find; a chasing warden needs navigation (M32–M33) and would be game AI in a sample.
+  *(2026-10-29, M32's close: the court now builds the warden's navigation mesh at load and
+  tests its islands, and the warden still patrols; paths, agents and the chase are M33's.)*
 - **The exit and the pit** are a volume and a height in the `court:rules` record.
 
 ### 5.5 Everything is content
@@ -551,7 +554,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | Raw-input selection or normalised motion units in `platform` | **M45**, Input |
 | Gamepads | **M45**, Input, with its own Linux run |
 | 3D spatialised audio and a listener | **Done in M31** (2026-10-27, tag `m31`, [`mixing.md`](mixing.md), ADR-0068): spatial voices from one listener with attenuation records and occlusion; the court's main-thread audio, placing included, stays under its 0.10 ms p95 on the M5 and the Arc PC |
-| A warden that sees and chases | **M32–M33**, navigation; the court's fixed patrol is deliberate. M32's design is [`navigation.md`](navigation.md) (proposed 2026-10-28) |
+| A warden that sees and chases | **M33**, navigation's second half; the court's fixed patrol is deliberate. M32 ([`navigation.md`](navigation.md), done 2026-10-29) builds the warden's mesh from the level and proves its islands; M33 gives it paths, an agent and the chase |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
 | A hierarchy authored in content | **M103**, Prefabs |
 | An animation component saved with a world | **M34**; the court saves no pose |
