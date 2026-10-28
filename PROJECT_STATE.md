@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-28
-**Current handoff: M31 is complete** (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068). **Stop before M32's design** (Navigation I: navigation meshes built from collision geometry). The PC is packed up; its toolchains remain. `main` and tag `m31` are pushed.
+**Current handoff: M32's design is proposed** (2026-10-28, [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069): a new L1 module `nav` builds navigation meshes from collision triangles at load, from the `foundry:nav_mesh` recipe, in nine steps. **Awaiting the owner's acceptance of §14. Stop before Step 1.** M31 is complete (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); `main` and tag `m31` are pushed, and `4aca795` (the sRGB fix) is not. The PC is packed up; its toolchains remain.
 
 **The Mac's ReleaseSafe `ui_theme` failure is fixed (2026-10-28), before M32 as the owner asked.**
 - Cause: `render2d.Color.srgb8` ran `std.math.pow` at run time, and an optimized Mac build gave the test's constant colour and the file's colour different last bits (0.7605246 against 0.76052463).
