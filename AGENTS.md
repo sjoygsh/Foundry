@@ -461,8 +461,8 @@ effects, or the background pool changes:
   2,000 flips;
 - `zig build integration-test -Doptimize=ReleaseSafe` prints the stream margin, the mixing
   speed of the court-shaped load (at least 20× real time on the Arc PC's i3; 39× there and
-  about 100× on the M5 at M31), and, with a real audio backend, command delivery. On the Mac
-  its `ui_theme` test fails in ReleaseSafe alone, as it has since M30; Windows passes it.
+  about 100× on the M5 at M31), and, with a real audio backend, command delivery. It passes
+  on the Mac too since 2026-10-28, when `render2d`'s sRGB curve became a compile-time table.
 
 On the Windows target, `scripts/m31/windows.ps1` runs them all, with M31's court runs.
 

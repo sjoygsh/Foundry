@@ -70,10 +70,22 @@ pub const Color = extern struct {
 /// The sRGB transfer function, exactly as the standard defines it. Not an approximation
 /// with 2.2: the linear segment near black is where the difference is visible.
 fn srgbToLinear(value: u8) f32 {
-    const c = @as(f32, @floatFromInt(value)) / 255.0;
-    if (c <= 0.04045) return c / 12.92;
-    return std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
+    return srgb_to_linear[value];
 }
+
+/// Every eight-bit value's answer, computed once at compile time. `pow` evaluated at run
+/// time is not one function: an optimized build may fold a constant argument one way and
+/// call the platform's libm for another, so a colour from a file and the same colour
+/// written in code disagreed in the last bit on macOS. A table has one answer per input.
+const srgb_to_linear: [256]f32 = blk: {
+    @setEvalBranchQuota(100_000);
+    var table: [256]f32 = undefined;
+    for (&table, 0..) |*out, i| {
+        const c = @as(f32, @floatFromInt(i)) / 255.0;
+        out.* = if (c <= 0.04045) c / 12.92 else std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
+    }
+    break :blk table;
+};
 
 /// How a sprite combines with what is already in the target.
 ///

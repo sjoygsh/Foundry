@@ -1850,6 +1850,13 @@ The pins are one value on both machines. Every item of §13 now names its owner 
 It passes in ReleaseSafe on Windows, which fits a macOS libm last bit. It is untouched by
 M30, and the bar runs Debug, where it passes.
 
+*Closed 2026-10-28, after M31:* the cause was `render2d.Color.srgb8` calling `std.math.pow` at
+run time. In an optimized Mac build the test's constant colour and the theme's colour from
+the file took different routes through it and differed in the last bit. The curve is now a
+256-entry table computed at compile time, so one input has one answer on every build. The
+full bar is unchanged at 2,437/2,441 (four skips), and the Mac's ReleaseSafe
+`integration-test` passes.
+
 **The PC is packed up.** These were removed by exact path, 3.66 GB:
 - `src\Foundry-m30`;
 - `%USERPROFILE%\m30`, after the read-only install's ACL was reset;
