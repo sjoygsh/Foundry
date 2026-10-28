@@ -1,7 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 6 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 7** (`court`: the warden's mesh, proved on the Mac). `sandbox3d` builds and draws its navigation mesh; the court is not granted `nav` yet.
+**Current handoff: M32 Step 7 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 8** (Windows/Vulkan on the Arc PC). Both samples build and draw their navigation meshes on the Mac; nothing has run on Windows yet.
+
+**M32 Step 7 is done (2026-10-29): the court's warden mesh, proved on the Mac.**
+- `court:nav.warden` (radius 0.22, height 1.7, climb 0.25) and `court:materials.navigation`.
+- `samples/court/nav.zig`: built once at load, since the court never reloads content.
+- `FOUNDRY_COURT_NAV=show|off`, and `nav` granted in the court's build and in `dist`'s release imports.
+- Tests against the compiled court:
+  - the two waypoints and the spawn are one island;
+  - the gap is empty at floor height;
+  - the pit floor and the ledge are islands of their own;
+  - the low wall is cut, with the floor joined round its ends.
+- Criterion 5: the real level builds in 5.66 ms in ReleaseSafe on the M5.
+- From the `dist` bundle, read-only, with `env -i`:
+  - `win`, `caught` and `fell` are unchanged with the mesh shown, and every replay matched;
+  - Metal validation is clean on `win`.
+- The load window's ~46 ms frame is the court's startup, identical with `NAV=off`. The pump costs at most 0.017 ms, the request at most 0.032 ms.
+- Two guards were verified by breaking them. No person has looked at the court's view yet.
+
+Bar **2,510/2,517** (seven skips), the full bar, all exit 0.
 
 **M32 Step 6 is done (2026-10-29): `sandbox3d`'s navigation mesh, proved on the Mac.**
 - `sandbox3d:nav.walker` and `sandbox3d:materials.navigation` (particle shading, white emission).

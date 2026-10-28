@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–6 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–7 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -1110,3 +1110,84 @@ Bar **2,506/2,511** (five skips: M31's four and the Debug-only skip of the new t
 
 Bar **2,509/2,515** (six skips: Step 5's five and the new sample timing test's Debug skip),
 127/127 steps, up 4 tests from Step 5. The full bar, all exit 0.
+
+## Resolution — Step 7: `court`, the warden's mesh, proved on the Mac (2026-10-29)
+
+**What exists now:**
+- **`build.zig`** grants the court `nav`, both in its ordinary build and in `dist`'s release
+  imports.
+- **`samples/court/content/court.fdt`** gains two records:
+  - `court:nav.warden`, over `court:models.court.collision`, with the warden's radius 0.22
+    and height 1.7, the player's 0.25 step and 0.785398 slope;
+  - `court:materials.navigation`, the same particle material as the sandbox's, with emission
+    at 40 for the darker court.
+- **`samples/court/nav.zig`:**
+  - `gather`, the recipe's sources;
+  - `Navigation`, which requests at load, pumps at the frame's start inside
+    `navigation.pump`, writes the view before `begin`, and draws after the warden;
+  - its own frame measure, from the request to 60 frames after arrival, with the pump's
+    worst span.
+- **`samples/court/main.zig`:**
+  - `FOUNDRY_COURT_NAV=show` draws the mesh;
+  - `FOUNDRY_COURT_NAV=off` builds nothing and measures the same frames, as the sandbox's
+    baseline does.
+- **`samples/court/nav_tests.zig`:** the tests, against the compiled court.
+
+**Where the step sharpened the design:**
+- **Built once, at load.** §9.2 said "built when the level loads and again on reload". The court
+  has never reloaded content: its loop has no reload. So the mesh is built once. A court that
+  gains a reload gains the second build with it.
+- **Not every solid thing is a source.** The gate and the beacons are bodies the game adds, not
+  collision content. A gate that opens while the court runs is M33's running obstacle (§13).
+- **The level, as `scripts/m26/make_court.py` builds it:**
+  - the court floor over z −2 to 8;
+  - the 1.2 m gap to z −3.2, with the pit floor at y −4.5;
+  - the ledge from −3.2 to −7.5;
+  - the 0.65 m low wall over x −5 to −1 at z 0.85 to 1.15.
+
+  The tests' points come from there, and from the warden's and the rules' records.
+
+**Measured:**
+- **In `court-test`, against the compiled court:**
+  - The two waypoints, (−2, 0, 2.5) and (2, 0, 2.5), and the spawn, (0, 0, 5), locate and
+    are joined by links.
+  - Nothing locates in the gap at floor height.
+  - The pit floor locates and is an island of its own.
+  - The ledge locates and is not reachable from the spawn: the warden cannot jump the gap.
+  - Nothing locates at the low wall's middle up to its top.
+  - The floor either side of the low wall is joined round its ends.
+- **Criterion 5:** the warden's real level builds in **5.66 ms** in ReleaseSafe on one thread
+  on the M5, best of five, against 50 ms. The test asserts the 50.
+- **From the staged release.** `zig build dist -Dapp=court -Dplatform=sdl3 -Drhi=metal
+  -Doptimize=ReleaseSafe -Drevision=67468a4+m32-step7` staged the bundle. Its zip was
+  extracted into scratch, made read-only and run with `env -i`, `PATH=/usr/bin:/bin` and a
+  disposable preferences root per run.
+  - **The endings, with the mesh shown,** are unchanged: `win` 46 of 46 steps, `caught` 7 of 7
+    and `fell` 6 of 6. Each run's replay matched to the end, because a mismatch stops the run.
+    - The mesh is 19 polygons and 36 detail triangles.
+    - It arrived 9.2–17.3 ms after the request, which cost the main thread 0.012–0.032 ms.
+    - `win`'s frame count, 1,217 or 1,218, moves with the pacing, as it always has
+      (`playable3d.md` records 1,216 and 1,218). The ticks the endings fall on are asserted by
+      `game_tests` and are unchanged.
+  - **Validation:** with `MTL_DEBUG_LAYER=1` and `MTL_DEBUG_LAYER_ERROR_MODE=assert`, `win` ran
+    all 46 steps to exit 0, with no validation message.
+  - **The frames,** three 300-frame runs of each mode:
+
+    | Mode | Load window's worst frame | `navigation.pump`, at most | Request on the main thread |
+    | --- | --- | --- | --- |
+    | `off` (no build) | 46.9, 46.0, 45.8 ms | 0.001 ms | — |
+    | `show` (built and drawn) | 46.6, 46.4, 46.0 ms | 0.017 ms | 0.022, 0.013, 0.018 ms |
+
+    The court's first frames after load cost about 46 ms whether or not a mesh is built: it is
+    the court's startup, as Step 6 found for the sandbox. The rest of each run's frames have a
+    median of 0.6–0.7 ms. Navigation adds no frame over 16.67 ms.
+- **Seen by eye:** no person has looked at the court's view yet. The owner is offered a look.
+
+**Guards verified by breaking them:**
+- Dropping the recipe's sources in `gather` fails the island test.
+- A warden climb of 1.2 m in the record fails the low-wall test: the wall becomes walkable.
+- **One change moved no result:** a radius of 0.05 m in the record. The wall's top then
+  survives erosion, but at 0.4 m² it is below `region_min_area` and is dropped anyway.
+
+Bar **2,510/2,517** (seven skips: Step 6's six and the court timing test's Debug skip),
+127/127 steps, up 2 tests from Step 6. The full bar, all exit 0. `dist -Dapp=court` stages.

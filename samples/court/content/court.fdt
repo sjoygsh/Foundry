@@ -359,3 +359,20 @@ foundry:ui_theme court:ui.theme {
         { name "reticle" x 1  y 37  w 6  h 6 }
     ]
 }
+
+# M32: the warden's navigation mesh (`docs/design/navigation.md` §9.2), a recipe the court
+# builds when it loads. The agent is the warden's: its radius and height, the player's step,
+# and the player's slope. The game does not walk it yet; M33's warden will.
+foundry:nav_mesh court:nav.warden {
+    sources [ court:models.court.collision ]
+    agent_radius 0.22  agent_height 1.7  agent_climb 0.25  agent_slope 0.785398
+}
+
+# How FOUNDRY_COURT_NAV=show draws it: premultiplied vertex colour, its own light.
+foundry:material court:materials.navigation {
+    shading            foundry:shading.particle
+    base_color         { r 0  g 0  b 0  a 1 }
+    alpha_mode         "blend"
+    emissive           { r 1  g 1  b 1 }
+    emissive_strength  40
+}

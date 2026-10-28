@@ -668,7 +668,8 @@ pub fn build(b: *std.Build) void {
 
     // M26: the playable 3D consumer, with no RHI or ABI import (playable3d.md §12).
     const court_mod = b.createModule(.{ .root_source_file = b.path("samples/court/main.zig"), .target = target, .optimize = optimize });
-    for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "mod", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
+    // `nav` since M32 Step 7 (`navigation.md` §9.2): the warden's navigation mesh.
+    for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
     court_mod.addImport("platform", platform_module);
     court_mod.addImport("build_options", build_options_module);
     const court = b.addExecutable(.{ .name = "court", .root_module = court_mod });
@@ -1055,8 +1056,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const release_imports: []const []const u8 = if (dist_app == .court) &.{
-            "app",       "asset",    "audio",    "anim",  "core", "data", "debug", "mod",
-            "physics3d", "render2d", "render3d", "scene", "ui",
+            "app", "asset",     "audio",    "anim",     "core",  "data", "debug", "mod",
+            "nav", "physics3d", "render2d", "render3d", "scene", "ui",
         } else &.{
             "app",      "asset", "audio", "core", "data", "debug", "mod", "physics2d",
             "render2d", "rhi",   "scene", "ui",

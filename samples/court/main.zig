@@ -7,7 +7,8 @@
 //! Host bootstrap: `--msaa=1|4`, `--shadows=on|off`, and for scripted runs
 //! `FOUNDRY_COURT_FRAMES`, `FOUNDRY_COURT_PLAY=win|caught|fell|soundtrack`, `FOUNDRY_COURT_WORKERS`,
 //! `FOUNDRY_COURT_SAVE_DIR` (a disposable preferences root), `FOUNDRY_COURT_OVERLAY=1`
-//! (the debug overlay, also F1) and `FOUNDRY_COURT_MUSIC_LOG=on|off` (`music.zig`'s
+//! (the debug overlay, also F1), `FOUNDRY_COURT_NAV=show|off` (M32's warden navigation mesh drawn, or
+//! not built at all as a measured baseline; `nav.zig`) and `FOUNDRY_COURT_MUSIC_LOG=on|off` (`music.zig`'s
 //! evidence: every scheduled start, and the counters every ten seconds).
 const std = @import("std");
 const app = @import("app");
@@ -21,6 +22,7 @@ const platform = @import("platform");
 const render2d = @import("render2d");
 const render3d = @import("render3d");
 const ui = @import("ui");
+const nav_mod = @import("nav.zig");
 const walk_mod = @import("walk.zig");
 const game_mod = @import("game.zig");
 const menus_mod = @import("menus.zig");
@@ -383,6 +385,21 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         game.stride = set.step_distance;
         game.warden_stride = set.warden_step_distance;
     }
+    // M32: the warden's navigation mesh, built on the pool from the level it just loaded.
+    var navigation = nav_mod.Navigation.init(gpa);
+    defer navigation.deinit(engine.tasks(), &renderer, &content);
+    if (engine.os.envVar("FOUNDRY_COURT_NAV")) |value| {
+        if (std.mem.eql(u8, value, "show")) {
+            navigation.shown = true;
+        } else if (std.mem.eql(u8, value, "off")) {
+            navigation.off = true;
+        } else log.warn("FOUNDRY_COURT_NAV='{s}' is neither show nor off; the mesh is built and not drawn", .{value});
+    }
+    {
+        const asked = engine.os.monotonicNanos(); // Measurement only.
+        navigation.request(engine.tasks(), &engine.store, &engine.assets, asked);
+        log.info("navigation: the request took {d:.3}ms on the main thread", .{@as(f64, @floatFromInt(engine.os.monotonicNanos() - asked)) / core.time.ns_per_ms});
+    }
     const text = Text.read(&engine.store);
     const goal_ticks: u64 = @intFromFloat(@round(settings.goal_seconds / engine.step_delta.toSecondsF32()));
 
@@ -420,6 +437,11 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     while (!engine.shouldQuit()) {
         const started = if (!headless) engine.os.monotonicNanos() else 0;
         engine.beginFrame();
+        {
+            const scope = engine.beginScope("navigation.pump");
+            defer scope.end();
+            navigation.pump(engine.frame_index, engine.os.monotonicNanos());
+        }
         var lost_focus = false;
         while (engine.nextEvent()) |event| switch (event) {
             .window_resized => |resized| prefs.noteResize(resized.logical_size),
@@ -519,7 +541,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
 
         const extent: render3d.Extent2D = if (info) |i| .{ .width = i.pixel_size.width, .height = i.pixel_size.height } else .{ .width = logical.width, .height = logical.height };
-        const drew = draw(engine, &renderer, &content, &screens, level, &game, settings, extent, logical, if (info) |i| i.scale else 1) catch |err| blk: {
+        navigation.prepare(&renderer, &content);
+        const drew = draw(engine, &renderer, &content, &screens, level, &game, &navigation, settings, extent, logical, if (info) |i| i.scale else 1) catch |err| blk: {
             if (!app.Engine.frameSkippable(err)) return err;
             break :blk false;
         };
@@ -546,7 +569,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         prefs.tick(gpa);
         // The profiler measures frame work, not the deliberate 60 Hz idle below.
         engine.endFrame();
-        if (engine.profiler()) |recorder| costs.add(recorder);
+        if (engine.profiler()) |recorder| {
+            costs.add(recorder);
+            navigation.noteFrame(recorder);
+        }
         if (!drew) {
             skipped += 1;
             engine.os.sleep(engine.step_delta);
@@ -616,7 +642,7 @@ test "court: scripted runtime refuses a different replay hash" {
     try std.testing.expectError(error.ReplayMismatch, verifyReplay(1, 2));
 }
 
-fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, game: *game_mod.Game, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
+fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, game: *game_mod.Game, navigation: *const nav_mod.Navigation, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
     const dt = engine.step_delta.toSecondsF32();
     if (extent.isEmpty()) return false;
     try renderer.begin(.{
@@ -655,6 +681,7 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         w.evaluate(content, dt) catch |err| log.debug("warden pose skipped ({t})", .{err});
         try w.draw(content);
     }
+    try navigation.draw(renderer);
     try screens.draw(engine, logical, scale);
     try engine.renderScene(.{}, renderer, &screens.overlay);
     return true;
@@ -677,4 +704,5 @@ test {
     _ = @import("packages.zig");
     _ = @import("timing.zig");
     _ = @import("mod_tests.zig");
+    _ = @import("nav_tests.zig");
 }
