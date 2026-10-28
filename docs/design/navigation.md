@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–7 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–8 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -1191,3 +1191,113 @@ Bar **2,509/2,515** (six skips: Step 5's five and the new sample timing test's D
 
 Bar **2,510/2,517** (seven skips: Step 6's six and the court timing test's Debug skip),
 127/127 steps, up 2 tests from Step 6. The full bar, all exit 0. `dist -Dapp=court` stages.
+
+## Resolution — Step 8: Windows/Vulkan on the Arc PC (2026-10-29)
+
+Criteria 4 to 6 hold on the Arc A750 (i3-10105F, Windows 11), at `1ca5ba5`. No engine, sample
+or content code changed in this step.
+
+**How it ran:**
+- **The clone:** `m31` from GitHub, then M32's nine unpushed commits from a git bundle, so the
+  PC built exactly the Mac's commit and nothing went to GitHub.
+- **The harness:** `scripts/m32/windows.ps1`, M31's with M32's runs.
+  - `build` mode, over SSH: the suites, the optimized tests and a relocated, read-only
+    ReleaseSafe install.
+  - `desktop` mode, from a scheduled task in the player's session: both samples from that
+    install, with private user-data roots.
+  - Every run is at `-j2` and below-normal priority, gated on the PC's CPU.
+- **One harness fix:** the first desktop attempt stopped before any run, because a loop
+  variable `$mode` is the script's own `-Mode` parameter to PowerShell, which ignores case. It
+  is `$nav` now.
+
+**The suites:**
+- `zig build test -Dplatform=null -Drhi=null`: 2,489/2,505 (16 skipped).
+- `zig build test vulkan-test -Drhi=vulkan`: 2,770/2,797 (27 skipped), validation and
+  synchronization required by the test binaries themselves.
+- ReleaseSafe `nav-test sandbox3d-test court-test`: 159/159.
+
+**Criterion 4:** the course pin, `14865720887737603270`, passes in Debug and ReleaseSafe on
+x86_64 Windows. It is equal to the Mac's, so there is no difference to record. The samples'
+meshes agree too: the same polygon and detail-triangle counts as on the Mac in every run.
+
+| Mesh | Polygons | Detail triangles |
+| --- | --- | --- |
+| `sandbox3d`, base | 25 | 60 |
+| `sandbox3d`, `plinth` | 30 | 60 |
+| `sandbox3d`, `stout` | 10 | 27 |
+| the court's warden | 19 | 36 |
+
+**Criterion 5, the build,** in ReleaseSafe on one thread on the i3, best of five:
+
+| Level | i3 | M5 (Steps 6 and 7) | Budget on the i3 |
+| --- | --- | --- | --- |
+| the court's warden | **14.36 ms** | 5.66 ms | 150 ms |
+| `sandbox3d`'s walker | **2.07 ms** | 2.12 ms | 150 ms |
+| the course (stand-in) | 2.34 ms | about 1 ms | — |
+| the yard (stand-in) | 66.98 ms | 16 ms | — |
+
+The court is 2.5 times the M5's, and the stand-ins about 2.3 to 4 times. The walker's level
+measuring the same as the M5's does not fit that ratio. The PC has shown timer anomalies before
+(M20 Step 7). Either way the figure is far inside the budget, so it is recorded as measured.
+
+**Criterion 5, the frames.** On the PC the main thread pays more for navigation than on the
+Mac, and it is still small:
+- the request costs 0.24–0.66 ms, against 0.01–0.03 ms on the M5;
+- the pump on the arrival frame costs up to 0.63 ms, against 0.03 ms. That frame frees the
+  finished build and writes its log line. The pump's p95 is 0.001–0.002 ms in every run, and in
+  the `off` runs, which take nothing, its worst is 0.013 ms.
+
+The request runs inside the load frame, so the load window's worst frame includes it:
+
+- **`sandbox3d`,** 600 frames each, with a reload at frame 300:
+
+  | Run | Load window's worst frame | Reload window's worst frame | Request to arrival, load / reload |
+  | --- | --- | --- | --- |
+  | `show` 1 | 246.8 ms | 15.6 ms | 62.5 / 5.1 ms |
+  | `show` 2 | 11.8 ms | 5.4 ms | 53.2 / 14.9 ms |
+  | `show` 3 | 11.0 ms | 6.4 ms | 53.4 / 14.0 ms |
+  | `off` 1–3 | 14.9, 10.2, 10.9 ms | 11.2, 6.3, 7.2 ms | — |
+  | `plinth` | 11.3 ms | 8.2 ms | 52.7 / 2.3 ms |
+  | `stout` | 11.9 ms | 6.5 ms | 53.7 / 2.0 ms |
+  | `plinth`, validation | 16.3 ms | 12.2 ms | 59.2 / 2.2 ms |
+
+  - **The 246.8 ms frame** was the first run after the install, a cold first launch, as Step 6's
+    79.9 ms one was on the Mac. Navigation's share of that frame was a 0.41 ms request. Every
+    later run, shown or off, stays under 16.67 ms at load and at reload, the validated one
+    included.
+  - **Request to arrival** is 52–62 ms at load and 2–15 ms at a reload. At load the build
+    shares the pool with the sample's other loading.
+- **The court,** 300 frames at the title in each mode:
+
+  | Mode | Load window's worst frame | Request on the main thread |
+  | --- | --- | --- |
+  | `off` (no build) | 84.4, 87.0, 82.8 ms | — |
+  | `show` (built and drawn) | 83.6, 88.8, 85.4 ms | 0.59, 0.66, 0.38 ms |
+
+  - The court's first frames after load cost 83–89 ms on the PC whether or not a mesh is built.
+    It is the court's startup, as on the Mac at 46 ms.
+  - After the load window, the median frame is about 0.3 ms off validation.
+  - **Request to arrival** is 91–117 ms: at startup the build waits on the pool behind the
+    court's own loading. It was 16.5 ms in one run, `caught` under validation. An arrival is
+    presentation (ADR-0061), so a late one changes nothing a tick computes.
+
+**Criterion 6, the samples,** from the relocated, read-only install:
+- **`sandbox3d`:** every shown run built at load and again at its reload, and drew the view,
+  with no navigation warning. `plinth` cut the mesh (25 to 30 polygons) and `stout` narrowed it
+  (to 10), as on the Mac. The `plinth` run under synchronization validation was clean.
+- **The court:** `win`, `caught` and `fell` ran with the mesh shown, under validation and off.
+  Every replay matched (1,224 or 1,225, 112 or 113, and 187 ticks), with 0 frames skipped and
+  nothing dropped. All three validated runs were clean.
+- **Validation:** each validated run's log holds only the layer's live info line and no error,
+  warning, VUID or hazard.
+- The install hashed the same after every run, and no preferences were written.
+- **Seen by eye:** no person has looked at either view on the PC.
+
+**Left on the PC, for Step 9 to delete by exact path:**
+- `%USERPROFILE%\src\Foundry-m32`;
+- `%USERPROFILE%\m32`;
+- `%USERPROFILE%\state-m32.ps1`;
+- `%LOCALAPPDATA%\zig`.
+
+**Bar:** the tree is Step 7's, whose full bar passed, plus this step's PowerShell harness and
+documents. No Zig, content or build file changed, so the bar was not rerun.

@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 7 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 8** (Windows/Vulkan on the Arc PC). Both samples build and draw their navigation meshes on the Mac; nothing has run on Windows yet.
+**Current handoff: M32 Step 8 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 9** (close M32: the contract discrepancies in `playable3d.md` and the roadmap, `nav` in `CLAUDE.md` §4.3, the indexes, packing up the PC, tag `m32`). Nothing is pushed since `m31`.
+
+**M32 Step 8 is done (2026-10-29): navigation on Windows/Vulkan, on the Arc A750.**
+- Cloned at `m31` plus a git bundle of M32's commits; harness `scripts/m32/windows.ps1` (suites over SSH, samples from a scheduled task). No engine code changed.
+- Suites: null 2,489/2,505 (16 skipped); Vulkan 2,770/2,797 (27 skipped); ReleaseSafe `nav-test sandbox3d-test court-test` 159/159.
+- Criterion 4: the course pin `14865720887737603270` is equal to the Mac's. Every sample mesh has the Mac's polygon and detail counts (25, 30, 10; the court 19).
+- Criterion 5: on the i3, the court's mesh builds in 14.36 ms and the sandbox's in 2.07 ms, against 150 ms. After a cold first launch (246.8 ms), no load or reload frame was over 16.67 ms. The court's 83–89 ms load frame is its startup, the same with `NAV=off`. On the main thread, the request costs up to 0.66 ms and the pump up to 0.63 ms.
+- Criterion 6: both samples ran from a relocated, read-only ReleaseSafe install with the mesh shown. `plinth` cut it and `stout` narrowed it, and the court's three endings replayed. Vulkan validation was clean in all four validated runs.
+- Left on the PC for Step 9: `src\Foundry-m32`, `m32`, `state-m32.ps1` and `%LOCALAPPDATA%\zig`.
 
 **M32 Step 7 is done (2026-10-29): the court's warden mesh, proved on the Mac.**
 - `court:nav.warden` (radius 0.22, height 1.7, climb 0.25) and `court:materials.navigation`.
