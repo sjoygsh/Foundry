@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–2 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–3 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -763,4 +763,89 @@ cells. Each fails at least one test. The steep-neighbour rule had none until thi
 one.
 
 Bar **2,463/2,467** (four skips), 126/126 steps, up 11 tests from Step 1. The full bar, all
+exit 0.
+
+## Resolution — Step 3: the open heightfield, erosion and regions (2026-10-29)
+
+**What exists now:**
+- **`engine/src/nav/open.zig`:**
+  - `OpenField`, the walkable floors with their clearance and four links each, stored column by
+    column in scan order (Z, then X, then bottom to top);
+  - `erode`;
+  - `buildDistanceField`.
+- **`engine/src/nav/regions.zig`:** `build`, which runs the watershed, drops islands, merges
+  small regions and renumbers what is left.
+
+**Where the step sharpened the design:**
+- **Links.** A link goes to the first span in the neighbouring column whose floor is within
+  the climb and whose clearance overlaps the agent's height. Links are span indices.
+  - They are symmetric whenever the agent's height exceeds twice its climb. Then at most one
+    span in a column can qualify, which is true of both samples' agents.
+  - With the ledge filter in place, the climb test rarely refuses anything: a span above a
+    drop larger than the climb is already unwalkable. It is tested on hand-made spans without
+    filters, where it is the only thing that refuses.
+- **Erosion** is a two-pass chamfer over the links. A span counts 0 if it has fewer than four
+  walkable neighbours; each further step costs 2 straight and 3 diagonally. Spans below
+  2 × the radius are removed. So for the walker's 3 cells, the boundary span and the two
+  inside it go, and an agent's centre stays 3 cells, about 0.3 m, from the last walkable cell
+  next to a wall.
+- **Two distance fields, not one.** §5.4 said the watershed reuses erosion's field. It cannot,
+  because erosion moves the boundary.
+  - The regions' field is computed again after erosion, where a boundary is a span with a
+    missing or other-area neighbour.
+  - It is then blurred once with Recast's 3 × 3 box: a span within a cell of the boundary
+    keeps its distance, and a missing neighbour counts as the span itself.
+- **The watershed is Recast's in its plain form:**
+  - levels fall two at a time from the highest distance;
+  - at each level, regions grow for at most 8 passes, then unclaimed spans seed new regions in
+    index order;
+  - at the end, growth runs with no limit.
+
+  Growth takes the neighbour region nearest its seed, and a tie goes to the first direction
+  (−X, +Z, +X, −Z). Each pass's changes are applied together at its end. A flood stops
+  wherever it meets another region, straight or diagonal.
+- **A region may have holes.** §5.4 said it has none. The floor around a pillar can be one
+  region with the pillar's hole in it. §5.5's contours bridge holes into their outline, which
+  is how §11 already described the ear clipping.
+- **Small regions,** in spans of `cell_size²`, rounded up:
+  - An island is a set of regions joined by any link. An island smaller than
+    `region_min_area` is dropped whole, and its spans become unwalkable.
+  - Then, repeatedly and in id order, a region smaller than `region_merge_area` merges into
+    the live neighbour it shares the most links with, ties to the lower id.
+  - Two regions that share a column never merge, since one would lie over the other.
+  - What is left is renumbered in the order of each region's first span.
+  - Region ids are `u16`. More than 65,534 seeds is refused as `TooLarge`.
+- **Watershed regions are not islands.** The floor around a platform or a pillar is one
+  island but several regions (four or five in the tests), each larger than the 4 m² merge
+  area, which is what watershed does. The tests count islands where the design meant
+  connectivity, and count regions only where it meant regions.
+
+**Measured, in the tests:**
+- A corridor with 4 free columns between walls closes, and one with 8 keeps 2, for a 3-cell
+  radius.
+- A pillar's hole across its middle is its 11 columns plus 3 on each side, within one cell.
+  The pillar's hollow inside and its top erode to 3 × 3 and are dropped as islands.
+- An open floor is one region. A floor and a platform it cannot reach are two islands.
+- A 5.29 m² platform is kept at a 2 m² minimum and dropped at 8 m², and a 50 m² minimum drops
+  everything.
+- An L of corridors gives 4 regions with merging off and 1 with it on.
+- Every walkable span has exactly one region and every region has a span.
+- Two builds of the same scene give the same regions.
+- The two-pass chamfer equals a brute-force search, on an open floor and around a tall pillar.
+- An allocation-failure sweep through regions reports every failure and leaks nothing.
+- **Pins:** the L, with merging off, is 4 regions of 422, 1,064, 371 and 579 spans. The pillar
+  floor with a second wall is 5 regions of 2,716, 2,009, 1,984, 1,037 and 189.
+
+**Guards verified by breaking them:**
+- Each of these fails at least one test: the link's climb test, its clearance test, erosion
+  shifted by one cell, a missing diagonal in the chamfer, the island drop, the stacked-merge
+  refusal, merging switched off, the growth tie rule (a pin moves), and the blur (both pins
+  move).
+- The diagonal had passed until the brute-force test gained the pillar: on a plain rectangle
+  the nearest boundary is never diagonal.
+- **One rule changed no result,** the flood's stop-beside-another-region rule. Removing it
+  changes nothing in any scene the suite builds, because growth claims those spans first. It
+  is kept, as Recast has it, and the course pin in Step 5 is the next chance to see it act.
+
+Bar **2,478/2,482** (four skips), 126/126 steps, up 15 tests from Step 2. The full bar, all
 exit 0.

@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 2 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 3** (the open heightfield, erosion and regions). `nav.solid` gives a filtered solid heightfield; nothing links spans or makes polygons yet.
+**Current handoff: M32 Step 3 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 4** (contours and polygons). The surface is linked, eroded and partitioned into regions; nothing traces outlines or makes polygons yet.
+
+**M32 Step 3 is done (2026-10-29): the open heightfield, erosion and regions.**
+- `nav/open.zig`: open spans in scan order, four links each (the floor within the climb, room for the agent), erosion by a two-pass chamfer, and the regions' distance field, blurred once.
+- `nav/regions.zig`: Recast's plain watershed (levels down by two, 8 growth passes, then seeds in index order), islands below the minimum dropped, small regions merged into their longest border unless stacked, and renumbering by first appearance.
+- Two corrections to §5.4, with the reasons in the Resolution:
+  - the distance field is computed again after erosion, not reused;
+  - a region may have holes, which Step 4 bridges.
+- Corridors close and open at their exact widths, and a pillar's hole is its footprint plus the radius. Every walkable span has one region.
+- The L scene and the pillar scene are pinned by their region sizes.
+- Nine guards were verified by breaking them. One rule, the flood's stop-beside-another-region, changes no result in any scene the suite builds; it is kept, as Recast has it.
+
+Bar **2,478/2,482** (four skips), the full bar, all exit 0.
 
 **M32 Step 2 is done (2026-10-29): rasterisation and the filters.**
 - `nav/heightfield.zig`:

@@ -22,12 +22,15 @@
 pub const config = @import("config.zig");
 pub const input = @import("input.zig");
 pub const heightfield = @import("heightfield.zig");
+pub const open = @import("open.zig");
+pub const regions = @import("regions.zig");
 
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Config = config.Config;
 pub const Grid = input.Grid;
 pub const Heightfield = heightfield.Heightfield;
+pub const OpenField = open.OpenField;
 pub const InputError = input.InputError;
 pub const Pose = input.Pose;
 pub const Source = input.Source;
@@ -48,4 +51,6 @@ test {
     _ = config;
     _ = input;
     _ = heightfield;
+    _ = open;
+    _ = regions;
 }
