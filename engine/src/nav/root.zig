@@ -26,6 +26,10 @@ pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
 pub const contour = @import("contour.zig");
 pub const poly = @import("poly.zig");
+pub const detail = @import("detail.zig");
+pub const locate = @import("locate.zig");
+pub const task = @import("task.zig");
+pub const view = @import("view.zig");
 
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
@@ -35,6 +39,11 @@ pub const Heightfield = heightfield.Heightfield;
 pub const OpenField = open.OpenField;
 pub const Mesh = poly.Mesh;
 pub const Polygon = poly.Polygon;
+pub const Build = task.Build;
+pub const BuildError = poly.BuildError;
+pub const Detail = detail.Detail;
+pub const Located = locate.Located;
+pub const ViewVertex = view.ViewVertex;
 pub const none_polygon = poly.none_polygon;
 pub const InputError = input.InputError;
 pub const Pose = input.Pose;
@@ -51,7 +60,10 @@ pub const max_triangles = input.max_triangles;
 
 pub const measure = input.measure;
 pub const solid = heightfield.solid;
+pub const build = poly.build;
 pub const buildPolygons = poly.buildPolygons;
+pub const debugView = view.debugView;
+pub const debugViewCount = view.debugViewCount;
 
 test {
     _ = config;
@@ -62,4 +74,9 @@ test {
     _ = contour;
     _ = poly;
     _ = @import("poly_tests.zig");
+    _ = detail;
+    _ = locate;
+    _ = task;
+    _ = view;
+    _ = @import("build_tests.zig");
 }

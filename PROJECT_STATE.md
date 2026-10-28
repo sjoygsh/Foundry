@@ -1,7 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 4 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 5** (detail, `locate`, the task, the view and the pin). `nav.buildPolygons` gives a well-formed polygon mesh with neighbour links; there is no detail mesh, `locate`, task or pin yet.
+**Current handoff: M32 Step 5 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 6** (`sandbox3d`: the walker's mesh, proved on the Mac). `nav` is complete as a library: `nav.build`, `Mesh.locate`, `nav.Build` and `nav.debugView`. No sample is granted it yet.
+
+**M32 Step 5 is done (2026-10-29): detail, `locate`, the task, the view and the pin.**
+- `detail.zig`:
+  - edge samples from the lexicographically lower end, read without regard to region, so shared edges agree to the bit;
+  - the hull ear-clipped, then made Delaunay by Lawson flips;
+  - interior samples inserted with flips while they stray more than `detail_max_error`.
+- `locate.zig`: a scan that takes the nearest point within the extent, reading the height from the detail.
+- `task.zig`: `nav.Build` copies its sources, answers once, and discards an untaken mesh.
+- `view.zig`: lifted, premultiplied triangles in region colours, with edge strips.
+- `scenes.zig` gains `course` (collision3d.md §10.2) and `yard` (court-sized).
+- Criteria 1–4 hold.
+  - The course is pinned at `14865720887737603270`, equal in Debug, ReleaseSafe and x86_64 under Rosetta.
+  - A thousand mutated inputs neither panic nor hang.
+  - The allocation-failure sweep found and fixed one leak.
+- Stand-in times, ReleaseSafe on the M5: the course in 1.10 ms and the court-sized yard in 16.2 ms. The real levels are timed in Steps 6 and 7.
+- Seven guards were verified by breaking them. Two rules change no result: the edge-sampling direction and region-blind edge heights.
+
+Bar **2,506/2,511** (five skips), the full bar, all exit 0.
 
 **M32 Step 4 is done (2026-10-29): contours and polygons.**
 - `nav/contour.zig`: Recast's walk on integer grid corners, simplification along walls only (so shared borders agree from both sides), and holes bridged leftmost first.

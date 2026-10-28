@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–4 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–5 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -929,3 +929,93 @@ exit 0.
 
 Bar **2,493/2,497** (four skips), 126/126 steps, up 15 tests from Step 3. The full bar, all
 exit 0.
+
+## Resolution — Step 5: detail, `locate`, the task, the view and the pin (2026-10-29)
+
+**What exists now:**
+- `engine/src/nav/detail.zig`: the detail mesh.
+- `engine/src/nav/locate.zig`: `Mesh.locate`.
+- `engine/src/nav/task.zig`: `nav.Build`.
+- `engine/src/nav/view.zig`: `debugView` and `debugViewCount`.
+- `poly.build`, now `nav.build`: the whole build, with detail. `buildPolygons` remains for the
+  earlier stages' tests.
+- `engine/src/nav/build_tests.zig`.
+- `scenes.zig` gains:
+  - `course`, `collision3d.md` §10.2's course of boxes and ramps: three step boxes and the
+    platform, so the fourth rise reaches it; the 25° ramp; the 55° ramp against a west wall;
+  - `yard`, a court-sized level: 30 m by 20 m walled round, a pit, a low wall, a ledge with a
+    25° ramp to it, and five boxes.
+
+**Where the step sharpened the design:**
+- **The detail triangulation.** A polygon is convex, so its boundary with edge samples is the
+  hull of its points.
+  - The hull is ear-clipped by strictly convex tips, shortest diagonal first. It is then made
+    Delaunay by Lawson flips over every interior edge.
+  - Interior samples go in one at a time, farthest from the surface first, while one strays
+    more than `detail_max_error`. Each splits the triangle it falls in, or the pair either side
+    of the edge it falls on, and the new point's opposite edges are flipped until Delaunay. A
+    hull edge is never flipped.
+  - This is §5.7's "constrained Delaunay" without a general constraint solver, because a
+    convex polygon's only constraints are its hull.
+  - The pass after the hull was found missing by the Delaunay test: ear clipping alone left
+    edges that the insertions never revisited.
+- **Edge samples** are taken from the lexicographically lower end, with heights looked up by
+  nearness to the edge's own height and never by region. So both polygons sharing an edge read
+  the same samples, to the bit.
+- **Interior samples** lie on a lattice aligned to the grid's origin, at least half a spacing
+  inside the polygon, and prefer the polygon's own region's floor.
+- **Limits.** A polygon gets at most 256 detail vertices, and an edge at most 32 samples.
+  Across a riser no sample can follow the floor; the bound below holds where the source surface
+  is continuous.
+- **`locate`** scans polygons in index order:
+  - it rejects by bounding box;
+  - it takes the point itself if it is inside a polygon, or the nearest point on the polygon's
+    boundary;
+  - it reads the height from the detail;
+  - it keeps the nearest in 3D whose every axis is within the extent, ties to the lower index.
+
+  Non-finite or negative input locates nothing. M33 decides whether its agents need something
+  faster than a scan.
+- **`nav.Build`:**
+  - `start` copies every source into one owned buffer before it returns;
+  - `take` answers once;
+  - `deinit` needs a finished build, and frees an untaken mesh, which is how a stale build is
+    discarded;
+  - a full executor refuses `start` and frees what it copied.
+- **The view** writes each polygon's detail triangles lifted 2 cm in its region's colour at
+  45%. Each boundary edge gets a 3 cm strip at 90% in the colour darkened, and each edge between
+  neighbours, once, a 1 cm strip at 30%. Colours are premultiplied.
+- **Timing comes in two parts.** `nav`'s tests cannot reach the samples' content, so this
+  step times stand-ins, and Steps 6 and 7 time the real levels against criterion 5.
+
+**Measured:**
+- **Criteria 1 and 2.** Every stage's scenes still hold. On the course, every detail triangle
+  is counter-clockwise, over its polygon, and together they cover it to 1e-4. A polygon's own
+  vertices lead its range. With no sampling the detail is the polygon's own vertices.
+- **Detail heights.** Every detail vertex is within `detail_max_error` plus a cell height plus
+  a 25° cell's rise of the source surface. So is the surface between samples on the floor and
+  up the ramp.
+- **Delaunay.** Every detail triangulation is Delaunay, at a fine error that makes it sample.
+  Shared edges carry identical samples on the course and on the course turned 0.6 rad.
+- **Criterion 3.** A thousand seeded mutations neither panic nor hang: special values, indices
+  out of range, moved positions, dropped indices and swapped indices. An allocation-failure
+  sweep over a whole build reports every failure and leaks nothing, after fixing one leak in
+  `detail.build`, found by that sweep.
+- **Criterion 4.** The course's mesh is pinned at `14865720887737603270`: 15 polygons and 35
+  detail triangles. It is equal in Debug, ReleaseSafe and x86_64 under Rosetta
+  (`zig build nav-test -Dtarget=x86_64-macos -Dplatform=null -Drhi=null -frosetta`).
+  - An earlier pin, `8918394819607249104`, was recorded before the Delaunay pass. It moved
+    deliberately when the pass was added.
+- **Criterion 5, stand-ins,** in ReleaseSafe on one thread on the M5, best of five: the course
+  in 1.10 ms and the court-sized yard in 16.2 ms with 75 polygons, against 50 ms.
+
+**Guards verified by breaking them:**
+- Each of these fails at least one test: Lawson's flips after insertion, the Delaunay pass
+  after the hull, interior insertion, `locate`'s nearest choice, `locate`'s extent, the task
+  copying its sources, and `take` answering once.
+- **Two rules changed no result,** and are kept: the canonical direction of edge sampling, and
+  edge heights looked up without regard to region. The samples that land on shared edges come
+  out bit-equal either way, axis-aligned or slanted.
+
+Bar **2,506/2,511** (five skips: M31's four and the Debug-only skip of the new timing test),
+126/126 steps, up 14 tests from Step 4. The full bar, all exit 0.

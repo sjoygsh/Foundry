@@ -14,6 +14,8 @@ const heightfield = @import("heightfield.zig");
 const input = @import("input.zig");
 const open_mod = @import("open.zig");
 const regions = @import("regions.zig");
+const detail_mod = @import("detail.zig");
+const locate_mod = @import("locate.zig");
 
 const Allocator = std.mem.Allocator;
 const Vertex = contour.Vertex;
@@ -38,7 +40,7 @@ pub const Polygon = struct {
     }
 };
 
-/// A navigation mesh's polygons (§6). Detail is Step 5's.
+/// A navigation mesh (§6): polygons over grid corners, linked, and each one's detail surface.
 pub const Mesh = struct {
     origin: Vec3,
     cell_size: f32,
@@ -48,12 +50,17 @@ pub const Mesh = struct {
     polygons: []Polygon,
     /// Regions left out because their outline could not be made one loop or triangulated.
     skipped: u32 = 0,
+    /// Empty from `buildPolygons`; `build` fills it.
+    detail: detail_mod.Detail = .{},
 
     pub fn deinit(self: *Mesh, gpa: Allocator) void {
         gpa.free(self.vertices);
         gpa.free(self.polygons);
+        self.detail.deinit(gpa);
         self.* = undefined;
     }
+
+    pub const locate = locate_mod.locate;
 
     /// A vertex in the world.
     pub fn position(self: *const Mesh, v: u32) Vec3 {
@@ -87,9 +94,18 @@ pub fn polygonArea2(m: *const Mesh, p: *const Polygon) i64 {
 
 pub const BuildError = input.InputError || heightfield.Error || regions.Error;
 
-/// The whole build so far: validate and measure, rasterise and filter, link and erode,
-/// partition, trace and polygonise (§5.1–§5.6).
+/// The whole build: validate and measure, rasterise and filter, link and erode, partition,
+/// trace, polygonise and add detail (§5), always in this order.
+pub fn build(gpa: Allocator, config: config_mod.Config, sources: []const input.Source) BuildError!Mesh {
+    return run(gpa, config, sources, true);
+}
+
+/// `build` without the detail surface, for the tests of the stages before it.
 pub fn buildPolygons(gpa: Allocator, config: config_mod.Config, sources: []const input.Source) BuildError!Mesh {
+    return run(gpa, config, sources, false);
+}
+
+fn run(gpa: Allocator, config: config_mod.Config, sources: []const input.Source, with_detail: bool) BuildError!Mesh {
     var hf = try heightfield.solid(gpa, config, sources);
     defer hf.deinit(gpa);
     var field = try open_mod.OpenField.init(gpa, &hf);
@@ -99,7 +115,9 @@ pub fn buildPolygons(gpa: Allocator, config: config_mod.Config, sources: []const
     var loops = try contour.build(gpa, &field, count, .of(config.edge_max_error, config.edge_max_length, config.cell_size));
     defer loops.deinit(gpa);
     var mesh = try polygonize(gpa, &loops, config.polygon_max_vertices, hf.grid);
+    errdefer mesh.deinit(gpa);
     mesh.skipped += loops.skipped;
+    if (with_detail) mesh.detail = try detail_mod.build(gpa, &mesh, &field, .of(config));
     return mesh;
 }
 
