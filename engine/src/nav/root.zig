@@ -24,6 +24,8 @@ pub const input = @import("input.zig");
 pub const heightfield = @import("heightfield.zig");
 pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
+pub const contour = @import("contour.zig");
+pub const poly = @import("poly.zig");
 
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
@@ -31,6 +33,9 @@ pub const Config = config.Config;
 pub const Grid = input.Grid;
 pub const Heightfield = heightfield.Heightfield;
 pub const OpenField = open.OpenField;
+pub const Mesh = poly.Mesh;
+pub const Polygon = poly.Polygon;
+pub const none_polygon = poly.none_polygon;
 pub const InputError = input.InputError;
 pub const Pose = input.Pose;
 pub const Source = input.Source;
@@ -46,6 +51,7 @@ pub const max_triangles = input.max_triangles;
 
 pub const measure = input.measure;
 pub const solid = heightfield.solid;
+pub const buildPolygons = poly.buildPolygons;
 
 test {
     _ = config;
@@ -53,4 +59,7 @@ test {
     _ = heightfield;
     _ = open;
     _ = regions;
+    _ = contour;
+    _ = poly;
+    _ = @import("poly_tests.zig");
 }

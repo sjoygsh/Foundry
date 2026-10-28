@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–3 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–4 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -848,4 +848,84 @@ exit 0.
   is kept, as Recast has it, and the course pin in Step 5 is the next chance to see it act.
 
 Bar **2,478/2,482** (four skips), 126/126 steps, up 15 tests from Step 2. The full bar, all
+exit 0.
+
+## Resolution — Step 4: contours and polygons (2026-10-29)
+
+**What exists now:**
+- **`engine/src/nav/contour.zig`:** tracing, simplification and bridging holes, all on integer
+  grid corners, with `turn`, `area2` and `intersects` as exact predicates.
+- **`engine/src/nav/poly.zig`:**
+  - ear clipping, welding, convex merging and neighbour links;
+  - `Mesh` and `Polygon` as §6 gives them, without detail, which is Step 5's;
+  - `buildPolygons(gpa, config, sources)`, the whole build so far.
+- **`engine/src/nav/poly_tests.zig`:** criterion 2's checks, which run on every mesh the
+  suite builds.
+
+**Where the step sharpened the design:**
+- **Winding.** "Counter-clockwise seen from +Y" means `turn(a, b, c) =
+  (b.z − a.z)(c.x − a.x) − (b.x − a.x)(c.z − a.z) > 0`. A traced outline has positive area
+  under that sign, and a traced hole negative.
+- **Tracing** is Recast's walk. On an edge that leaves the region, it records the edge's
+  start corner and turns clockwise; across a link, it steps and turns anticlockwise.
+  - A corner's height is the highest floor of the up to four walkable spans around it, so two
+    regions give a shared corner the same height.
+  - A walk that does not close leaves its region out (`skipped`), rather than panicking. That
+    is zero in every scene.
+- **Links are made symmetric** in `OpenField`: a link the other side did not choose is
+  dropped. Two spans of one column can both qualify for a neighbour only when the climb equals
+  the agent's height. Neither sample's agent is like that, and a seeded sweep of 2,000 random
+  column pairs with such an agent found no asymmetric link, so this fix is defensive.
+- **Simplification is Recast's:**
+  - keep every vertex where the region across changes, or a loop's lower-left and upper-right
+    corners when nothing changes;
+  - Douglas–Peucker only along walls, walked in a fixed lexicographic direction, so a shared
+    border stays one straight line between its change points, the same from both sides;
+  - split walls longer than `edge_max_length` at their raw midpoint;
+  - drop repeated vertices.
+- **Holes,** which Step 3 found a region can have, are bridged leftmost first. A bridge is the
+  shortest segment from a hole vertex, starting at its leftmost, to an outline vertex whose
+  cone contains it, crossing neither the loop nor the hole nor any hole still to come.
+- **Ear clipping: a correction to Recast, found by the new property test.** Recast tests a
+  diagonal's cone at its start only. In a bridged loop the bridge's two ends repeat, so which
+  copy a diagonal ends at decides which side of the bridge it lies on. With a one-sided cone, a
+  random case produced a folded triangle.
+  - Diagonals are now O'Rourke's full test: the cone at both ends and no crossing.
+  - Among ears, the shortest new diagonal is taken, with a loose fallback before giving up.
+  - Zero-area triangles are dropped before merging.
+- **Welding** is by exact corner, and by height within two cells, which is Recast's tolerance.
+  Because corner heights are equal from both sides, no scene needs the tolerance.
+- **Merging** works within a region, always on the pair with the longest shared edge that
+  stays strictly convex within `polygon_max_vertices`. Links pair each edge with the polygon
+  that has it reversed.
+
+**Measured, in the tests (criterion 2 holds on every mesh):**
+- The open floor is one island of 9.2 m², within a cell, at 3, 4 and 6 vertices per polygon.
+  Quads and hexagons take fewer polygons than triangles.
+- The pillar's hole is bridged, nothing covers its middle, and the area is the floor's less
+  1.7 m square.
+- A floor and a 1 m platform are two islands, and a 0.15 m step makes them one.
+- The L is three regions in one island, with matching borders.
+- Two stacked floors are two islands.
+- Wall edges stay at or under a 3 m limit.
+- A floor turned 30° by its pose keeps its area within the staircase's error, and simplifies to
+  between 4 and 24 vertices.
+- A T of a floor and a 40° ramp is one island of several regions.
+- Two holes placed by hand, and 2,000 seeded random arrangements of up to six holes, each join
+  into a simple loop. Their triangles are all counter-clockwise, cover no hole and sum exactly
+  to the outline less the holes.
+- An allocation-failure sweep over a scene with a hole passes.
+
+**Guards verified by breaking them:**
+- Each of these fails at least one test: convexity in merging, linking neighbours, Douglas–
+  Peucker, splitting walls, the bridge's loop and hole check, the check against later holes,
+  the diagonal's crossing test, and the cone at both ends.
+- The four ear-clipping and bridge guards changed nothing in the hand-made scenes. They were
+  caught only once the random-holes property test existed, which is why it was written.
+- **Three rules changed no result,** and are kept as defensive:
+  - the strict cone's rejection of collinear diagonals;
+  - the link-symmetry fix (above);
+  - the two-cell weld tolerance (above).
+
+Bar **2,493/2,497** (four skips), 126/126 steps, up 15 tests from Step 3. The full bar, all
 exit 0.

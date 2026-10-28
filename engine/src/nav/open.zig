@@ -125,6 +125,12 @@ pub const OpenField = struct {
                 }
             }
         };
+        // Links are symmetric whenever the agent is taller than twice its climb. When it is not,
+        // two spans of a column can both qualify, and a link the other side did not choose is
+        // dropped, so every later stage can walk links both ways.
+        for (self.spans, 0..) |*s, i| for (&s.links, 0..) |*j, k| {
+            if (j.* != none and self.spans[j.*].links[(k + 2) % 4] != i) j.* = none;
+        };
     }
 
     /// The span one step from `i` in direction `k`, if it is linked and has `i`'s area.
@@ -406,5 +412,32 @@ test "a link needs a floor within the climb and room for the agent across both" 
         defer f.deinit(gpa);
         try testing.expectEqual(case.linked, f.spans[0].links[2] != none);
         try testing.expectEqual(case.linked, f.spans[1].links[0] != none);
+    }
+}
+
+test "links are symmetric for any agent, even one whose climb is its height" {
+    const gpa = testing.allocator;
+    const grid: Grid = .{ .origin = .zero, .cell_size = 0.1, .cell_height = 0.05, .width = 2, .depth = 1, .height = 64, .triangles = 0 };
+    var rng = @import("core").rng.Pcg32.init(32, 4);
+    for (0..2000) |_| {
+        // Only a climb equal to the height lets two spans of a column both qualify for one
+        // neighbour, which is when the first-match rule alone would be one-sided.
+        var hf = try Heightfield.init(gpa, grid, .{ .height = 6, .climb = 6, .radius = 0 });
+        defer hf.deinit(gpa);
+        for (0..2) |x| {
+            var y: u16 = 0;
+            for (0..3) |_| {
+                const lo = y + @as(u16, @intCast(rng.below(6)));
+                const hi = lo + 1 + @as(u16, @intCast(rng.below(3)));
+                if (hi >= 60) break;
+                try hf.addSpan(gpa, @intCast(x), 0, lo, hi, walkable);
+                y = hi + 1;
+            }
+        }
+        var f = try OpenField.init(gpa, &hf);
+        defer f.deinit(gpa);
+        for (f.spans, 0..) |s, i| for (s.links, 0..) |j, k| {
+            if (j != none) try testing.expectEqual(@as(u32, @intCast(i)), f.spans[j].links[(k + 2) % 4]);
+        };
     }
 }

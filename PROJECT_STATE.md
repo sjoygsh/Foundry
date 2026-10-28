@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 3 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 4** (contours and polygons). The surface is linked, eroded and partitioned into regions; nothing traces outlines or makes polygons yet.
+**Current handoff: M32 Step 4 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 5** (detail, `locate`, the task, the view and the pin). `nav.buildPolygons` gives a well-formed polygon mesh with neighbour links; there is no detail mesh, `locate`, task or pin yet.
+
+**M32 Step 4 is done (2026-10-29): contours and polygons.**
+- `nav/contour.zig`: Recast's walk on integer grid corners, simplification along walls only (so shared borders agree from both sides), and holes bridged leftmost first.
+- `nav/poly.zig`: ear clipping, welding, longest-edge convex merging, neighbour links, `Mesh`/`Polygon`, and `buildPolygons`.
+- A correction to Recast, found by a new property test (2,000 seeded arrangements of random holes): a diagonal's cone is tested at both ends, O'Rourke's full test. Recast's one-sided cone folded a triangle at a bridge's repeated vertex.
+- Links are made symmetric in `OpenField` as a defensive rule.
+- Criterion 2 holds on every mesh the suite builds: floors, a pillar's hole, a step, an L, stacked floors, long walls, a floor turned by its pose, and a slope.
+- Eight guards were verified by breaking them. Three defensive rules change no result: the strict cone's collinear rejection, the link-symmetry fix and the two-cell weld tolerance.
+
+Bar **2,493/2,497** (four skips), the full bar, all exit 0.
 
 **M32 Step 3 is done (2026-10-29): the open heightfield, erosion and regions.**
 - `nav/open.zig`: open spans in scan order, four links each (the floor within the climb, room for the agent), erosion by a two-pass chamfer, and the regions' distance field, blurred once.
