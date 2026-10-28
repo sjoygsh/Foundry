@@ -51,7 +51,9 @@
 //!   canvas along a fixed stroke every tick, for a run nobody watches, and
 //!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline;
 //! - `FOUNDRY_SANDBOX3D_EFFECTS=on|off` makes M29's effects corner (`effects.zig`) or leaves it
-//!   out; P faces it from the patch and B fires its sparks.
+//!   out; P faces it from the patch and B fires its sparks;
+//! - `FOUNDRY_SANDBOX3D_NAV=show` starts with M32's navigation mesh drawn (`nav.zig`), which N
+//!   shows and hides, and `off` builds none, measuring the same frames as a baseline.
 //!
 //! **M22's is a lit room a content mod changes** (`light.md` §10). Lights, ambient and
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Player mods live
@@ -113,6 +115,7 @@ const gallery_mod = @import("gallery.zig");
 const Gallery = gallery_mod.Gallery;
 const generated = @import("generated.zig");
 const effects_mod = @import("effects.zig");
+const nav_mod = @import("nav.zig");
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -299,6 +302,11 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
         // Beside the engine's asset pump, before simulation: what the pool filled finishes.
         if (sample.corner) |corner| corner.pump(engine, @as(f32, @floatFromInt(engine.stepper.tick)) * engine.step_delta.toSecondsF32());
+        {
+            const scope = engine.beginScope("navigation.pump");
+            defer scope.end();
+            sample.navigation.pump(engine.frame_index, engine.os.monotonicNanos());
+        }
 
         // Drained so the window keeps answering; the engine acts on a close itself. Text is
         // kept for the overlay's filter box.
@@ -350,6 +358,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (engine.profiler()) |recorder| {
             sample.gallery.window.add(recorder, paced_ns);
             if (sample.corner) |corner| corner.landmark.window.add(recorder, paced_ns);
+            sample.navigation.window.add(recorder, paced_ns);
         }
         if (sample.tour) |*tour| if (tour.done() and sample.walkers[0].tick >= Walker.proof_ticks) break;
 
@@ -403,6 +412,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     sample.gallery.window.report();
     if (sample.corner) |corner| corner.report();
     if (sample.effects) |effects| effects.report();
+    sample.navigation.window.report();
     report(gpa, engine, &sample, skipped_frames);
     if (engine.os.envVar("FOUNDRY_SANDBOX3D_NATIVE_TRACE")) |path| {
         if (native.ticks != Native.proof_ticks or !native.blocked) return error.IncompleteNativeTrace;
@@ -692,6 +702,8 @@ const Sample = struct {
     corner: ?*generated.Corner = null,
     /// M29's effects corner, made at `load` unless `FOUNDRY_SANDBOX3D_EFFECTS=off`.
     effects: ?*effects_mod.Effects = null,
+    /// M32's navigation mesh, built on the pool at each content refresh; N draws it.
+    navigation: nav_mod.Navigation,
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
     move_times: [Tour.max_ticks]i64 = undefined,
@@ -778,6 +790,7 @@ const Sample = struct {
             .world = world,
             .overlay = overlay,
             .walk = walk_mod.Walk.init(gpa),
+            .navigation = nav_mod.Navigation.init(gpa),
             .walkers = walkers,
             .cube = cube,
             .cube_material = cube_material,
@@ -799,6 +812,14 @@ const Sample = struct {
         }
         self.content = render3d.Content.init(self.gpa, &self.world, &engine.assets, .default);
         self.gallery.mode = gallery_mod.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_LOAD"));
+        // Before the first refresh, which makes the first request.
+        if (engine.os.envVar("FOUNDRY_SANDBOX3D_NAV")) |value| {
+            if (std.mem.eql(u8, value, "show")) {
+                self.navigation.shown = true;
+            } else if (std.mem.eql(u8, value, "off")) {
+                self.navigation.off = true;
+            } else log.warn("FOUNDRY_SANDBOX3D_NAV='{s}' is neither show nor off; the mesh starts hidden", .{value});
+        }
         self.refresh(engine);
         // After the walk world exists and before the first tick: the patch is simulation.
         const generate = generated.Mode.parse(engine.os.envVar("FOUNDRY_SANDBOX3D_GENERATE"));
@@ -826,7 +847,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, r reload content, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -872,6 +893,7 @@ const Sample = struct {
                 log.warn("the scene could not follow a content change ({t}); drawing what it had", .{err});
             if (self.corner) |corner| corner.noteReload(&self.world);
             if (self.effects) |effects| effects.contentChanged();
+            if (self.content) |*content| self.navigation.contentChanged(content);
             self.releaseModels();
         }
         self.room = self.follow(self.room, before.room, self.settings.room, first);
@@ -882,6 +904,10 @@ const Sample = struct {
         if (self.content) |*content| self.props.refresh(self.gpa, &engine.store, &self.walk.world, content, &engine.assets) catch |err|
             log.warn("prop set omitted ({t})", .{err});
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
+        // After the props, whose collision it is built from too.
+        const asked = engine.os.monotonicNanos(); // Measurement only.
+        self.navigation.request(engine.tasks(), &engine.store, &engine.assets, &self.props, engine.frame_index, asked);
+        self.navigation.noteRequestCost(engine.os.monotonicNanos() - asked);
         if (self.content) |*content| for (self.walkers) |*walker| {
             walker.refresh(self.gpa, &engine.store, &self.walk.world, content, engine.step_delta.toSecondsF32()) catch |err|
                 log.warn("walker disabled ({t})", .{err});
@@ -1064,6 +1090,7 @@ const Sample = struct {
                 } else |err| log.warn("p: the player could not be moved ({t})", .{err});
             }
         }
+        if ((in.wasPressed(.n) and !typing) or scripted.n) self.navigation.toggle();
         if ((in.wasPressed(.r) and !typing) or scripted.r) {
             log.info("r: reloading every package", .{});
             engine.reloadContent();
@@ -1212,6 +1239,7 @@ const Sample = struct {
         };
         // Particle meshes are written here, outside the window, for this frame's camera.
         if (self.effects) |effects| effects.prepare(engine, view);
+        if (self.content) |*content| self.navigation.prepare(&self.world, content);
         try self.world.begin(view);
 
         if (!self.shadow_ground.isNone()) {
@@ -1234,6 +1262,7 @@ const Sample = struct {
         if (self.content) |*content| try self.props.draw(content);
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.effects) |effects| try effects.draw();
+        try self.navigation.draw(&self.world);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
             // an independently sampled pose and collision character; no engine crowd API.
@@ -1342,6 +1371,8 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        // It waits for its builds on the pool, and holds a runtime mesh and a material.
+        self.navigation.deinit(engine.tasks(), &self.world, if (self.content) |*c| c else null);
         // First: it waits for its work on the pool, and holds content, renderer and walk.
         if (self.corner) |corner| {
             corner.deinit(&self.world, &self.content.?, &self.walk.world);
@@ -1435,13 +1466,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1584,6 +1615,7 @@ test {
     _ = @import("walk_tests.zig");
     _ = @import("walker_tests.zig");
     _ = @import("props_tests.zig");
+    _ = @import("nav_tests.zig");
     _ = @import("native_tests.zig");
     _ = gallery_mod;
     _ = generated;

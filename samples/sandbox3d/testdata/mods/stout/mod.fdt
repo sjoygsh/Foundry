@@ -1,0 +1,7 @@
+foundry:mod stout:content {
+    name     "Stout"
+    version  1
+    license  "Apache-2.0"
+    summary  "A walker twice as wide: one navigation record overridden, no code."
+    requires [ { id sandbox3d:content } ]
+}

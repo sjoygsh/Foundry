@@ -1,7 +1,31 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 5 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 6** (`sandbox3d`: the walker's mesh, proved on the Mac). `nav` is complete as a library: `nav.build`, `Mesh.locate`, `nav.Build` and `nav.debugView`. No sample is granted it yet.
+**Current handoff: M32 Step 6 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 7** (`court`: the warden's mesh, proved on the Mac). `sandbox3d` builds and draws its navigation mesh; the court is not granted `nav` yet.
+
+**M32 Step 6 is done (2026-10-29): `sandbox3d`'s navigation mesh, proved on the Mac.**
+- `sandbox3d:nav.walker` and `sandbox3d:materials.navigation` (particle shading, white emission).
+- `samples/sandbox3d/nav.zig`:
+  - the record's sources plus every prop's collision at its pose, built on `Engine.tasks()` at each refresh;
+  - superseded builds discarded once finished;
+  - the view written before `begin`.
+- **N** toggles the view, `FOUNDRY_SANDBOX3D_NAV=show` starts with it shown, and `FOUNDRY_SANDBOX3D_NAV=off` builds nothing but measures the same frames, as a baseline.
+- New test mod `stout` (radius 0.6): the 1 m steps and platform close.
+- Tests, against the compiled package:
+  - the floor, steps, platform and 25° ramp are one island;
+  - the 55° ramp and the floor under the table are absent;
+  - `plinth` cuts the floor and `stout` drops the platform;
+  - with `Manual` tasks, a mesh arrives only after its build has run, and a superseded build is discarded.
+- Criterion 5: the real level builds in 2.12 ms in ReleaseSafe on the M5, against 50 ms.
+- From a relocated ReleaseSafe Metal install, three 600-frame runs (base, `plinth`, `stout`) each with a reload:
+  - arrival in 17–41 ms;
+  - pump at most 0.03 ms;
+  - reload windows' worst frame at most 2.3 ms;
+  - Metal API validation clean, with assert mode on.
+- The load window's one over-budget frame (18–26 ms) is the sample's startup: identical with `NAV=off`. The request costs at most 0.03 ms.
+- Three guards were verified by breaking them. No person has looked at the view yet; the owner is offered a look.
+
+Bar **2,509/2,515** (six skips), the full bar, all exit 0.
 
 **M32 Step 5 is done (2026-10-29): detail, `locate`, the task, the view and the pin.**
 - `detail.zig`:

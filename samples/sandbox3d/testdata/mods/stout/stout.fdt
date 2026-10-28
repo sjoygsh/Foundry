@@ -1,0 +1,7 @@
+# M32's content-only navigation mod (`docs/design/navigation.md` §9.1): the walker's recipe,
+# restated whole with twice the radius. The 1 m steps and platform are too narrow for it now,
+# so the navigation mesh closes over them, with no code.
+foundry:nav_mesh sandbox3d:nav.walker {
+    sources [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
+    agent_radius 0.6  agent_height 1.8  agent_climb 0.35  agent_slope 0.785398
+}

@@ -65,6 +65,24 @@ walker sandbox3d:walker.main {
     collision [id]
 }
 
+# M32: the walker's navigation mesh (`docs/design/navigation.md` §9.1), a recipe the sample builds
+# at load from the merged content. Its agent is the walk's capsule, in the walk's own units, and
+# every `sandbox3d:prop` with collision joins its sources in code, at the prop's place.
+foundry:nav_mesh sandbox3d:nav.walker {
+    sources [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
+    agent_radius 0.3  agent_height 1.8  agent_climb 0.35  agent_slope 0.785398
+}
+
+# How N draws it: premultiplied vertex colour through the particle model, its own light, so the
+# room's exposure does not hide it.
+foundry:material sandbox3d:materials.navigation {
+    shading            foundry:shading.particle
+    base_color         { r 0  g 0  b 0  a 1 }
+    alpha_mode         "blend"
+    emissive           { r 1  g 1  b 1 }
+    emissive_strength  80
+}
+
 walk sandbox3d:walk.main {
     spawn { x 1.1 y 0.004 z 2.5 }
     radius 0.3 height 1.8 eye_height 1.65

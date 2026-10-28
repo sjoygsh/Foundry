@@ -657,7 +657,8 @@ pub fn build(b: *std.Build) void {
     // the overlay that inspects it, hosted as the room hosts it. `physics3d` since M23
     // (`collision3d.md` §3): the first-person walk. The overlay itself is not granted it (§12).
     // `anim` since M24 Step 6: the sample owns patrol/playback, not an engine component.
-    for ([_][]const u8{ "abi", "anim", "app", "asset", "core", "data", "debug", "mod", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
+    // `nav` since M32 Step 6 (`navigation.md` §9.1): the walker's navigation mesh.
+    for ([_][]const u8{ "abi", "anim", "app", "asset", "core", "data", "debug", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);
@@ -892,9 +893,16 @@ pub fn build(b: *std.Build) void {
                     .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
                 });
                 walk_test_options.addOptionPath("embers_package", embers.fpk);
+                // M32's content-only navigation mod (`navigation.md` §9.1).
+                const stout = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/stout",
+                    .stem = "stout",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("stout_package", stout.fpk);
                 // Optional packages in the installation, never automatically selected.
                 for ([_]struct { stem: []const u8, compiled: @TypeOf(plinth) }{
-                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers },
+                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers }, .{ .stem = "stout", .compiled = stout },
                 }) |fixture| {
                     b.getInstallStep().dependOn(&b.addInstallFileWithDir(fixture.compiled.fpk, .prefix, b.fmt("content/{s}.fpk", .{fixture.stem})).step);
                     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = fixture.compiled.generated, .install_dir = .prefix, .install_subdir = b.fmt("content/{s}", .{fixture.stem}) }).step);

@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–5 are done (2026-10-28 to 10-29); their Resolutions follow §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–6 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -1019,3 +1019,94 @@ exit 0.
 
 Bar **2,506/2,511** (five skips: M31's four and the Debug-only skip of the new timing test),
 126/126 steps, up 14 tests from Step 4. The full bar, all exit 0.
+
+## Resolution — Step 6: `sandbox3d`, the walker's mesh, proved on the Mac (2026-10-29)
+
+**What exists now:**
+- **`build.zig`** grants `sandbox3d` the `nav` module. It compiles `samples/sandbox3d/testdata/
+  mods/stout` beside `plinth` and `embers`, and installs it as an optional package.
+- **`samples/sandbox3d/content/sandbox3d.fdt`** gains two records:
+  - `sandbox3d:nav.walker`, a `foundry:nav_mesh` over the room's and the course's collision,
+    with the walk's capsule: radius 0.3, height 1.8, climb 0.35, slope 0.785398;
+  - `sandbox3d:materials.navigation`, the view's material. It is particle shading with a black
+    base and white emission at 80, so the vertex colour is the light, and a mod can restyle it
+    as content.
+- **`samples/sandbox3d/nav.zig`:**
+  - `gather` is §7's glue. It decodes and checks the recipe, acquires each source, and adds
+    every prop with collision at its position and yaw. A source that does not load is said and
+    left out.
+  - `Navigation` requests a build at each content refresh, on `Engine.tasks()`. It pumps
+    arrivals at the frame's start, inside a `navigation.pump` scope.
+  - It writes the view's runtime mesh before `begin`, as ADR-0063 requires, and only when the
+    view is shown and out of date. It draws after the effects.
+  - A superseded build is kept until it finishes and then discarded untaken. On teardown it
+    waits for the pool before freeing.
+- **`samples/sandbox3d/main.zig`:**
+  - **N** toggles the view, and `FOUNDRY_SANDBOX3D_KEYS` can press it.
+  - `FOUNDRY_SANDBOX3D_NAV=show` starts with the view shown.
+  - `FOUNDRY_SANDBOX3D_NAV=off` builds nothing but measures the same frames, as a baseline.
+  - The gallery's frame `Window` measures navigation's frames, from a request to 60 frames
+    after the mesh arrives.
+- **`samples/sandbox3d/nav_tests.zig`:** the real compiled package through the sample's own
+  glue.
+
+**Where the step sharpened the design:**
+- **The `stout` passage.** §9.1 left Step 6 to name the passage `stout` closes. It is the
+  course itself: the steps and the platform are 1 m wide, so a 0.6 m radius erodes them away,
+  and the platform drops off the mesh.
+- **The test's floor point** is (1.8, 0, 1.0), clear of every wall by more than 0.6 m. The
+  walker's spawn at z 2.5 lies inside the 0.3 m walker's floor but outside the 0.6 m one,
+  whose floor ends 0.6 m from the wall at z ≈ 2.4.
+- **The over-budget frame at load is the sample's own, not navigation's.** Each run's first
+  window, which starts at load, had one frame over 16.67 ms. The baseline settles it, three
+  runs each from the relocated install:
+
+  | Mode | Load window's worst frame | Request on the main thread |
+  | --- | --- | --- |
+  | `off` (no build) | 23.2, 18.4, 18.5 ms | — |
+  | `show` (built and drawn) | 18.6, 18.5, 25.5 ms | 0.031, 0.014, 0.017 ms |
+
+  The worst frame is the sample's startup either way. The very first run after the install was
+  79.9 ms, a cold first launch. Navigation's own share is the request's tens of microseconds
+  and a pump of at most 0.03 ms. So criterion 5's "adds no frame over 16.67 ms" holds at
+  load. At each reload, where the sample does no starting up, every frame of every window is
+  under 2.3 ms, view rewrite included.
+
+**Measured:**
+- **In the tests, against the compiled package:**
+  - The floor, a step, the platform and the 25° ramp are one island: the floor reaches all
+    three through polygon links.
+  - The platform locates at 0.6 m within 0.1.
+  - Nothing locates at the 55° ramp's middle, or under the table, where the clearance is less
+    than the walker's height.
+  - `plinth`'s prop removes the floor at its place and shrinks the area.
+  - `stout` removes the steps and the platform, keeps the open floor, and shrinks the area.
+  - Under `core.tasks.Manual`: nothing arrives until the build has run, a reload's superseded
+    build is discarded when it finishes, and the pending one then arrives.
+- **Criterion 5:** the walker's real level builds in **2.12 ms** in ReleaseSafe on one thread on
+  the M5, best of five, against 50 ms. The test asserts the 50.
+- **From a relocated ReleaseSafe install on the M5 with Metal** (`zig build install -Drhi=metal
+  -Doptimize=ReleaseSafe` to a staging prefix, moved, then run windowed):
+  - **Three runs of 600 frames, each with a reload at frame 300:**
+
+    | Run | Polygons | Detail triangles | Request to arrival | Pump, at most | Reload window, worst frame |
+    | --- | --- | --- | --- | --- | --- |
+    | base | 25 | 60 | 41.2 ms, 17.3 ms on reload | 0.03 ms | under 2.0 ms |
+    | `plinth` | 30 | 60 | 31.4 ms, 17.3 ms | 0.03 ms | 2.2 ms |
+    | `stout` | 10 | 27 | 31.3 ms, 17.4 ms | 0.03 ms | 2.2 ms |
+
+  - **Validation:** a run with `MTL_DEBUG_LAYER=1` and `MTL_DEBUG_LAYER_ERROR_MODE=assert`,
+    with `plinth`, the view shown and a reload, ran its 300 frames to exit 0 with no validation
+    message.
+- **Staging:** `dist` stages no `sandbox3d`, as M28 and M29 recorded. The relocated install is
+  the staging evidence.
+- **Seen by eye:** no person has looked at the view yet. The owner is offered a look.
+
+**Guards verified by breaking them:**
+- Leaving the props out of the sources fails the `plinth` test.
+- Adding a prop without its pose fails the same test, because the plinth's collision then
+  lands at the origin.
+- Never discarding finished stale builds crashes the request test: a build is left unfreed.
+
+Bar **2,509/2,515** (six skips: Step 5's five and the new sample timing test's Debug skip),
+127/127 steps, up 4 tests from Step 5. The full bar, all exit 0.
