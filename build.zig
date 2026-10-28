@@ -70,6 +70,13 @@ const layering = [_]Module{
     // is no clock to read (I9).
     .{ .name = "particles", .deps = &.{"core"} },
 
+    // L1 — navigation meshes built from collision triangles (ADR-0069,
+    // docs/design/navigation.md). `core` alone, for `physics3d`'s reasons: no `asset`, because
+    // geometry arrives as values the build copies; no `physics3d`, because collision and
+    // navigation change for different reasons and share content, not code; no `scene`, no
+    // renderer and no `platform`, so a build is a function of its inputs (I9).
+    .{ .name = "nav", .deps = &.{"core"} },
+
     // L1 — the immediate-mode UI kernel (ADR-0024, docs/design/ui.md). `platform` for the
     // input snapshot it is handed; `core` for maths and logging. **No `render2d`**, which
     // is the decision rather than an omission: the kernel emits a draw list and something
@@ -1547,7 +1554,7 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "abi")) {
             b.step("abi-test", "Run the public ABI agreement, refusal and caller-context tests").dependOn(&run.step);
         }
-        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles")) {
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
     }
@@ -1703,7 +1710,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "particles", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "particles", "nav", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());

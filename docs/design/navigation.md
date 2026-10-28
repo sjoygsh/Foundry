@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Proposed 2026-10-28; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Step 1 is done (2026-10-28); its Resolution follows §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -649,3 +649,61 @@ Then:
 - pack up the PC by exact path.
 
 Tag `m32`, push when asked, and stop before M33's design.
+
+## Resolution — Step 1: the module, the inputs and the record (2026-10-28)
+
+**Accepted.** The owner asked for Step 1 with §14 as written. ADR-0069 is Accepted and in
+`CLAUDE.md` §4.1. §4.3's layer graph gains `nav` at the close (Step 9), as §15 says.
+
+**What exists now:**
+- **`nav`** (`engine/src/nav/`), on `core` alone in `build.zig`, with its own `zig build
+  nav-test` and a place in the integration suite's imports. No sample is granted it yet.
+  - `config.zig`: `Config`, the record's fields one for one with §4's defaults, and
+    `invalidField()`, which names the first field out of bounds in declaration order. A bound
+    that depends on another field (height on radius, climb on height) is reported as the
+    dependent one.
+  - `input.zig`: `Pose` (rigid, as `physics3d`'s), `Source`, and `measure(config, sources)`,
+    which validates everything and answers the `Grid` a build will use, or `InvalidConfig`,
+    `InvalidGeometry` or `TooLarge`. It allocates nothing. Every later `build` calls it first.
+- **`foundry:nav_mesh` version 1** (`engine/src/asset/nav_mesh.zig`): the schema, `Settings`,
+  `decode`, `describe` and `checkSources`. Registered by the engine (`app/engine.zig`) and by
+  the compiler (`registerAvailableSchemas`), checked in `checkMeanings` as "navigation mesh
+  '<id>' <reason>", and listed in `engine_schema_names` so the editor's New Record form
+  offers it.
+- **`engine/tests/nav_mesh.zig`** holds the two modules' rules together: the record's defaults
+  are the builder's, and over 31 float values per field (bounds, either side of them, NaN and
+  infinity) and seven vertex counts, the record refuses exactly the field the builder
+  refuses.
+
+**Where the step sharpened the design:**
+- **The grid.** §5's inputs said the bounds are "grown by the radius". They are not, because
+  erosion only removes spans and nothing is ever placed outside the sources. Instead the grid
+  has one cell of margin on every side: the origin is the minimum lowered by a cell, and each
+  extent is the cell holding the maximum plus that cell plus one. Measured in `f64`, so a
+  16 km extent at 1 cm cannot overflow before it is compared. A 10 m floor at 0.1 m is
+  103 × 103 columns and 3 cells high.
+- **Sources.** The record allows 16. `nav` allows 4,096, because a game adds its props to its
+  level's sources (§7).
+- **Every position is checked, referenced or not,** before and after its pose, as
+  `physics3d.mesh.validate` does. A position that is not a coordinate means a damaged source,
+  whichever triangle it would have joined.
+- **The record's own refusals,** besides one per field: `NoSources`, `TooManySources`,
+  `InvalidSource` (a `none`), `DuplicateSource`, and, at load, `NotACollisionMesh`. That one
+  covers a source that is missing as well as one of the wrong schema, since both leave the
+  mesh without geometry it was promised.
+- **Degenerate triangles** are not looked at by `measure`. §5 skips them at rasterisation
+  (Step 2), where the area is computed anyway.
+
+**Guards verified by breaking them:**
+- Removing `measure`'s index check fails the invalid-input test.
+- Dropping the record's `agent_height ≥ 2 × agent_radius` rule fails "every refusal is named".
+- Dropping the builder's copy of the same rule fails the agreement test.
+- Skipping the compiler's `foundry:nav_mesh` branch fails its refused-at-its-line test.
+- The engine-schema spelling test failed on its own, before the name was added: the guard
+  that exists for this.
+
+**Not yet:** rasterisation and everything after it (Steps 2–5). No sample content changes, so
+no `dist` staging is needed.
+
+Bar **2,452/2,456** (four skips), 126/126 steps, up 15 tests from M31's 2,437. The full bar,
+all exit 0.

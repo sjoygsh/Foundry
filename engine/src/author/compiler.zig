@@ -336,6 +336,9 @@ fn checkMeanings(
         } else if (asset.mix.check(view.schema_id, fields)) |result| blk: {
             result catch |err| break :blk .{ asset.mix.noun(view.schema_id).?, asset.mix.describe(err) };
             continue;
+        } else if (view.schema_id.eql(asset.nav_mesh.nav_mesh.id)) blk: {
+            _ = asset.nav_mesh.decode(fields) catch |err| break :blk .{ "navigation mesh", asset.nav_mesh.describe(err) };
+            continue;
         } else continue;
         ok = false;
         if (declarationOf(docs, view.id)) |origin| {
@@ -435,6 +438,14 @@ pub fn registerAvailableSchemas(
         },
     };
 
+    asset.nav_mesh.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's navigation mesh schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -479,6 +490,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.mix.reverb_name,
     asset.mix.compressor_name,
     asset.mix.limiter_name,
+    asset.nav_mesh.nav_mesh_name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
@@ -2661,6 +2673,40 @@ test "mixing records and version 3 sounds compile, and one out of range is refus
         var buf: [2048]u8 = undefined;
         const text = try g.rendered(&buf);
         try testing.expect(std.mem.containsAtLeast(u8, text, 1, "mix.fdt:2:"));
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, case.says));
+    }
+}
+
+test "a navigation mesh recipe compiles, and one out of range is refused at its line" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("nav.fdt",
+        \\foundry:nav_mesh demo:walker { sources [ demo:level ] agent_radius 0.3 agent_height 1.8 agent_climb 0.35 agent_slope 0.785398 }
+    );
+    try f.compileIt("demo:content");
+    var reader = try f.open();
+    defer reader.deinit();
+    const view = recordNamed(&reader, "demo:walker").?;
+    const settings = try asset.nav_mesh.decode(reader.fieldsOf(view, reader.schemaFor(view.schema_id).?.*));
+    try testing.expectEqual(@as(f32, 0.1), settings.cell_size);
+
+    const agent = " agent_radius 0.3 agent_height 1.8 agent_climb 0.35 agent_slope 0.785398";
+    const cases = [_]struct { source: []const u8, says: []const u8 }{
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ ]" ++ agent ++ " }", .says = "navigation mesh 'demo:n' has no sources" },
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a demo:a ]" ++ agent ++ " }", .says = "navigation mesh 'demo:n' names a source twice" },
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ] agent_radius 0.3 agent_height 1.8 agent_climb 0.35 agent_slope 2 }", .says = "navigation mesh 'demo:n' has an agent_slope" },
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ]" ++ agent ++ " cell_size 0 }", .says = "navigation mesh 'demo:n' has a cell_size" },
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ]" ++ agent ++ " polygon_max_vertices 8 }", .says = "navigation mesh 'demo:n' has a polygon_max_vertices" },
+    };
+    for (cases) |case| {
+        var g = try Fixture.init();
+        defer g.deinit();
+        try g.write("nav.fdt", case.source);
+        try testing.expectError(error.ContentInvalid, g.compileIt("demo:content"));
+        try testing.expectEqual(@as(usize, 0), g.bytes.items.len);
+        var buf: [2048]u8 = undefined;
+        const text = try g.rendered(&buf);
+        try testing.expect(std.mem.containsAtLeast(u8, text, 1, "nav.fdt:2:"));
         try testing.expect(std.mem.containsAtLeast(u8, text, 1, case.says));
     }
 }

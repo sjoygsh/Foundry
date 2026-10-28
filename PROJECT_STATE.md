@@ -1,7 +1,17 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-28
-**Current handoff: M32's design is proposed** (2026-10-28, [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069): a new L1 module `nav` builds navigation meshes from collision triangles at load, from the `foundry:nav_mesh` recipe, in nine steps. **Awaiting the owner's acceptance of §14. Stop before Step 1.** M31 is complete (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); `main` and tag `m31` are pushed, and `4aca795` (the sRGB fix) is not. The PC is packed up; its toolchains remain.
+**Last updated:** 2026-10-29
+**Current handoff: M32 Step 1 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 2** (rasterisation and the three filters). No build stage exists yet: `nav` validates and measures its inputs, and nothing rasterises. M31 is complete (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); `main` and tag `m31` are pushed, and `4aca795` (the sRGB fix) is not. The PC is packed up; its toolchains remain.
+
+**M32 Step 1 is done (2026-10-28): the module, the inputs and the record.**
+- The owner accepted §14 as written. ADR-0069 is Accepted and in `CLAUDE.md` §4.1; §4.3 gains `nav` at Step 9.
+- `nav` at L1 on `core` alone (`engine/src/nav/`, `zig build nav-test`): `Config` and its named refusals, `Source`, a rigid `Pose`, and `measure`, which validates everything, allocates nothing and answers the grid.
+- The grid has one cell of margin on every side and is not grown by the radius, correcting §5's inputs.
+- `foundry:nav_mesh` v1 in `asset`: registered by the engine and the compiler, refused at its line by `fpack`, and offered by the editor. `checkSources` runs at load.
+- `engine/tests/nav_mesh.zig` proves that the record and the builder refuse the same field at the same values.
+- Four guards were verified by breaking them.
+
+Bar **2,452/2,456** (four skips), the full bar, all exit 0.
 
 **The Mac's ReleaseSafe `ui_theme` failure is fixed (2026-10-28), before M32 as the owner asked.**
 - Cause: `render2d.Color.srgb8` ran `std.math.pow` at run time, and an optimized Mac build gave the test's constant colour and the file's colour different last bits (0.7605246 against 0.76052463).

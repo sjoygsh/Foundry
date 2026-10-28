@@ -710,6 +710,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+            // `foundry:nav_mesh` (ADR-0069): a navigation mesh's recipe is content, so its
+            // record type is the engine's to declare.
+            asset.nav_mesh.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own navigation mesh schema was refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
 
             var diags: data.Diagnostics = .init(gpa, .default);
             defer diags.deinit(gpa);

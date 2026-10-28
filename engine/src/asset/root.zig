@@ -62,6 +62,9 @@ pub const music = @import("music.zig");
 /// `foundry:audio_bus`, the effect records, `foundry:audio_attenuation` and how a sound is
 /// mixed (ADR-0067, ADR-0068). Here for the same reason.
 pub const mix = @import("mix.zig");
+/// `foundry:nav_mesh`, the recipe for a navigation mesh built at load (ADR-0069). Here for
+/// the same reason: `fpack` checks it with no `nav` linked.
+pub const nav_mesh = @import("nav_mesh.zig");
 pub const wav = @import("wav.zig");
 
 pub const Image = image.Image;
@@ -163,5 +166,6 @@ test {
     _ = vorbis;
     _ = music;
     _ = mix;
+    _ = nav_mesh;
     _ = wav;
 }
