@@ -21,11 +21,13 @@
 
 pub const config = @import("config.zig");
 pub const input = @import("input.zig");
+pub const heightfield = @import("heightfield.zig");
 
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Config = config.Config;
 pub const Grid = input.Grid;
+pub const Heightfield = heightfield.Heightfield;
 pub const InputError = input.InputError;
 pub const Pose = input.Pose;
 pub const Source = input.Source;
@@ -36,11 +38,14 @@ pub const max_coordinate = input.max_coordinate;
 pub const max_polygon_vertices = config.max_polygon_vertices;
 pub const max_positions = input.max_positions;
 pub const max_sources = input.max_sources;
+pub const max_spans = heightfield.max_spans;
 pub const max_triangles = input.max_triangles;
 
 pub const measure = input.measure;
+pub const solid = heightfield.solid;
 
 test {
     _ = config;
     _ = input;
+    _ = heightfield;
 }

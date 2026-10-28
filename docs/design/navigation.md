@@ -1,6 +1,6 @@
 # Design: M32 — Navigation I: navigation meshes built from collision geometry
 
-**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Step 1 is done (2026-10-28); its Resolution follows §15.
+**Status:** Accepted 2026-10-28, when the owner asked for Step 1, with §14 as written. Steps 1–2 are done (2026-10-28 to 10-29); their Resolutions follow §15.
 **Date:** 2026-10-28
 **Baseline:** `4aca795`, one commit past tag `m31` (`e46fa46`), which gave each sRGB byte one
 linear value on every build. M0–M31 are complete.
@@ -707,3 +707,60 @@ no `dist` staging is needed.
 
 Bar **2,452/2,456** (four skips), 126/126 steps, up 15 tests from M31's 2,437. The full bar,
 all exit 0.
+
+## Resolution — Step 2: rasterisation and the filters (2026-10-29)
+
+**What exists now:** `engine/src/nav/heightfield.zig`, which holds `Heightfield`, `Span`,
+`Agent`, `rasterize`, the three filters, and `solid(gpa, config, sources)`. `solid` runs
+`measure` and then §5.1 and §5.2 in their order. `scenes.zig` is test geometry (floors,
+closed boxes and ramps) for this step and the ones after it.
+
+**Where the step sharpened the design:**
+- **A span is `[min, max)` in cells.** `max` is the first empty cell, and it is also the floor
+  an agent stands on. A span merges with one it overlaps or touches. Touching means the new
+  span's `max` equals the old one's `min`, or the reverse. Spans one empty cell apart stay
+  apart.
+- **The agent in cells** rounds toward caution: the height is rounded up, the climb down, and
+  the radius up (Step 3 uses the radius). For the walker that is 36, 7 and 3 cells.
+- **Cells are half-open on X and Z.** A polygon ending exactly on a column boundary does not
+  reach the next column, so a floor gives no sliver beyond its edge. A wall with no extent on
+  an axis falls in the column its coordinate is in.
+  - Where the rounding of a coordinate on a boundary decides the column, the tests allow one
+    cell, as criterion 1 does.
+  - The tests' boxes and slabs sit half a cell off the grid, so that their checks need no
+    tolerance.
+- **A closed mesh is its bottom and its top, hollow between.** The floor under a box becomes a
+  span whose ceiling is the box's top, and the low-ceiling filter cuts it. Only the box's top
+  is walkable. Columns that hold one of the box's walls are a single solid span.
+- **The ledge filter adds Recast's steep-neighbour rule,** which §5.2 did not name: a span is
+  also unwalkable if the neighbours the agent could step to differ among themselves by more
+  than the climb. The gap under a neighbour's first span counts as a drop. So does the grid's
+  edge, although the one-cell margin means no span is ever on the edge.
+- **The low-obstacle filter reads each flag as it was before the pass,** so a stack of short
+  obstacles does not climb itself.
+- **The slope's cosine comes from `core.math.trig`,** so the walkable flag does not depend on a
+  linked libm (ADR-0064's lesson). The comparison is squared, `n.y² ≥ cos²θ · |n|²`, which
+  makes it two-sided and free of square roots.
+- **Limits:** at most `max_spans` (8,388,608) live spans, refused as `TooLarge`. A merge frees
+  spans to a free list, which the next span reuses. The low-ceiling filter walks columns, not
+  the span array, because freed spans are still in it.
+
+**Measured, in the tests:**
+- A 10 m floor is one walkable span per column. Its outer ring goes to the ledge filter, and it
+  is walkable wound either way.
+- Ramps at 25° and 44° are walkable, and at 46° and 55° are not, against a 45° limit. Each
+  ramp's top is within a cell of the surface.
+- A 0.15 m step keeps its edge with a climb of 0.35 m and loses it with a climb of 0.1 m. The
+  floor beside it stays walkable either way.
+- A 1.5 m ceiling cuts the floor under it for a 1.8 m agent, and a 2.0 m ceiling does not.
+- A platform over nothing loses exactly its outer ring.
+- An allocation-failure sweep over a small scene reports every failure and leaks nothing.
+
+**Guards verified by breaking them:** a one-sided walkable test, the climb rule in merging,
+flags that chain in the low-obstacle filter, no drop under a neighbour's first span, no ledge
+filter, the steep-neighbour rule, no low-ceiling filter, and closed rather than half-open
+cells. Each fails at least one test. The steep-neighbour rule had none until this step added
+one.
+
+Bar **2,463/2,467** (four skips), 126/126 steps, up 11 tests from Step 1. The full bar, all
+exit 0.

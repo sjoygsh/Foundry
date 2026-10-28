@@ -1,7 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-29
-**Current handoff: M32 Step 1 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 2** (rasterisation and the three filters). No build stage exists yet: `nav` validates and measures its inputs, and nothing rasterises. M31 is complete (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); `main` and tag `m31` are pushed, and `4aca795` (the sRGB fix) is not. The PC is packed up; its toolchains remain.
+**Current handoff: M32 Step 2 of 9 is complete** ([`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069, accepted 2026-10-28). **Stop before Step 3** (the open heightfield, erosion and regions). `nav.solid` gives a filtered solid heightfield; nothing links spans or makes polygons yet.
+
+**M32 Step 2 is done (2026-10-29): rasterisation and the filters.**
+- `nav/heightfield.zig`:
+  - triangles are clipped into half-open columns and become `[min, max)` spans, which merge where they touch;
+  - the walkable flag is two-sided and uses `core.math.trig`'s cosine;
+  - the low-obstacle, ledge and low-ceiling filters run in that order;
+  - `solid` runs it all after `measure`.
+- The ledge filter also has Recast's steep-neighbour rule, which §5.2 had not named.
+- A closed box rasterises as its bottom and its top, so the floor under it is cut by its own low ceiling.
+- Tests: floors, ramps either side of the slope, steps against two climbs, ceilings against the agent's height, and a platform over nothing. An allocation-failure sweep passes.
+- Eight guards were verified by breaking them.
+
+Bar **2,463/2,467** (four skips), the full bar, all exit 0. M31 is complete (2026-10-27, tag `m31`, [`docs/design/mixing.md`](docs/design/mixing.md), ADR-0067 and ADR-0068); `main` and tag `m31` are pushed, and `4aca795` (the sRGB fix) is not. The PC is packed up; its toolchains remain.
 
 **M32 Step 1 is done (2026-10-28): the module, the inputs and the record.**
 - The owner accepted §14 as written. ADR-0069 is Accepted and in `CLAUDE.md` §4.1; §4.3 gains `nav` at Step 9.

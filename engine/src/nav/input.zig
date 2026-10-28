@@ -126,8 +126,9 @@ pub fn measure(config: Config, sources: []const Source) InputError!Grid {
 }
 
 /// A pose from outside, with its rotation normalised through the one entry point every
-/// rotation from outside takes.
-fn validPose(pose: Pose) InputError!Pose {
+/// rotation from outside takes. Rasterisation applies the same normalised pose `measure`
+/// measured with, so the two cannot disagree about where a triangle is.
+pub fn validPose(pose: Pose) InputError!Pose {
     if (!inEnvelope(pose.position)) return error.InvalidGeometry;
     const r = pose.rotation;
     const rotation = Quat.validated(r.x, r.y, r.z, r.w) catch return error.InvalidGeometry;
