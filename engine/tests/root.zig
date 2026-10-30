@@ -26,6 +26,7 @@ pub const debug_overlay = @import("debug_overlay.zig");
 pub const overlay_batches = @import("overlay_batches.zig");
 pub const particle_emitter = @import("particle_emitter.zig");
 pub const nav_mesh = @import("nav_mesh.zig");
+pub const nav_adoption = @import("nav_adoption.zig");
 pub const particles3d = @import("particles3d.zig");
 pub const render_jobs = @import("render_jobs.zig");
 pub const mod_pipeline = @import("mod_pipeline.zig");
@@ -51,6 +52,7 @@ test {
     _ = overlay_batches;
     _ = particle_emitter;
     _ = nav_mesh;
+    _ = nav_adoption;
     _ = particles3d;
     _ = render_jobs;
     _ = mod_pipeline;

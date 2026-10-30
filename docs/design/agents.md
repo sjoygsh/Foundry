@@ -1101,3 +1101,59 @@ Bar **2,580/2,589** (nine skips: Step 4's eight and the crowd timing test's Debu
 steps, up 17 tests from Step 4. The full bar, all exit 0, before the timing test's change to count
 walking ticks, which is a Debug skip and reran `nav-test` in both modes. No sample's content
 changed, so no `dist` staging.
+
+## Resolution — Step 6: running obstacles and adoption (2026-10-30)
+
+**What exists now:**
+- **`engine/src/nav/meshes.zig`:**
+  - `boxSource` and `BoxGeometry`;
+  - `Meshes`, one recipe's rebuilds and their generations, with `markDirty`, `wantsBuild`, `start`,
+    `pump`, `add`, `get`, `use` and `deinit`;
+  - `Arrival`, a new generation or a failure.
+- **`engine/src/nav/meshes_tests.zig`,** and **`engine/tests/nav_adoption.zig`,** the real pool,
+  which only the integration suite can reach, since `nav` sits on `core` alone.
+
+**Where the step sharpened the design:**
+- **`Meshes` holds the coalescing as well as the list.** §9 gave the rule and no owner. A change
+  calls `markDirty`, and `wantsBuild` is true only with a change owed and no build running, so the
+  sample cannot get the rule wrong. The caller gathers sources only when asked to, so a crate
+  dragged across a room copies its level a few times and not once a tick.
+- **Entries are heap-allocated,** so a mesh does not move while a crowd borrows it.
+- **`Options.keep` bounds the list:** 0 keeps every generation, for a game with a replay. Past it
+  the oldest goes, except the first, the one a crowd `use`s, and the newest.
+- **A failed build is an `Arrival`,** not a silent nothing, because §9's Play gate must treat it
+  as arrived.
+- **A full executor leaves the change owed.** `start` fails, and `wantsBuild` stays true.
+- **Reverse order has nothing to reverse.** ADR-0061's decision 6 asks for `Manual` forward and
+  reverse. One `Meshes` has one build in flight, so there is no second to finish first. The
+  proof runs under `immediate`, `Manual` forward, `Manual` held across 37 polls, and the real pool.
+- **The real pool's test compares bytes and a fixed adoption tick.** Arrival on the pool is a
+  wall-clock fact, so the test does not adopt at it: it proves the pool's bytes equal a direct
+  build, and that a run and its replay agree at one recorded tick.
+
+**Measured, in the tests:**
+- **Criterion 4.** A box source gives the mesh a static box in the same place gives, to the byte,
+  at four places, one overhead and one under the floor. No box gives the plain mesh's bytes.
+- **The gate's two places:** a box across a floor at `closed` makes two islands, and sunk with its
+  top under the floor it makes one, with the area within 0.3 m² of no box.
+- A pose turns a box as well as moving it.
+- **Coalescing:** a box moved on 30 ticks, with the pool finishing one build per 10, makes 3 or 4
+  builds, and the mesh that settles is the last pose's, to the byte.
+- **Criterion 5, adoption.** A run under each executor, adopting a mesh on the tick it arrived,
+  replays exactly from its recorded input, on every one of 600 ticks. The three runs adopted at
+  different ticks. Forced to one tick, all three give identical bytes on every tick. Forced to a
+  later tick, the bytes differ, so the proof can fail.
+- **Agents re-route:** an agent walking at a new wall goes round its end and arrives.
+- **Corridors do not survive a rebuild.** From a 75-polygon mesh to one under a quarter of that,
+  an agent searches again on the next tick and arrives.
+
+**Guards verified by breaking them.** All 8 mutations fail a test: the box's geometry, no
+coalescing, dirty never cleared, nothing evicted, the mesh in use evicted, the first evicted, a
+failure lost, and corridors kept across `setMesh`. **That last one survived at first.** With no
+test, an agent would have carried old polygon numbers onto a rebuilt mesh, which is the very thing
+ADR-0069 warns of, and the new test crashes without the line that clears them.
+
+**Not yet:** no sample rebuilds or adopts anything. The court's `Intent.navigation` is Step 9.
+
+Bar **2,591/2,600** (nine skips), 127/127 steps, up 11 tests from Step 5. The full bar, all exit
+0. No sample's content changed, so no `dist` staging.

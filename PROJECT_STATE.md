@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 5 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 6** (`nav`: running obstacles and adoption). `boxSource`, `nav.Meshes` and the adoption proof do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 6 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 7** (`nav` and `debug`: the view and the panel). No sample uses any of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 6 is done (2026-10-30): running obstacles and adoption.**
+- `nav.boxSource` makes a running obstacle an ordinary source, and gives the same mesh as a static box to the byte, overhead and under the floor included.
+- `nav.Meshes` runs one rebuild at a time, coalesces changes, and numbers arrivals as generations. It does not touch a crowd.
+- The proof: a run adopting a mesh on the tick it arrived replays exactly from the recorded input, under `immediate`, `Manual` forward and `Manual` held. Forced to one tick, all three give identical bytes. The real pool's mesh equals a direct build.
+- `Crowd.setMesh` must drop every corridor, and a test now crashes if it does not.
+- Bar 2,591/2,600 (nine skips), 127/127 steps.
 
 **M33 Step 5 is done (2026-10-30): ORCA, the crowd's pin and its budget.**
 - `nav/avoidance.zig` is ORCA from the paper, with no RNG and no trig. `Crowd.step` prefers, avoids from last tick's velocities, then applies them together, so a slot's number changes nothing.
