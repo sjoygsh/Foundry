@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 4 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 5** (`nav`: ORCA, the crowd's pin and its budget). Agents walk through each other until then. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 5 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 6** (`nav`: running obstacles and adoption). `boxSource`, `nav.Meshes` and the adoption proof do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 5 is done (2026-10-30): ORCA, the crowd's pin and its budget.**
+- `nav/avoidance.zig` is ORCA from the paper, with no RNG and no trig. `Crowd.step` prefers, avoids from last tick's velocities, then applies them together, so a slot's number changes nothing.
+- Crossing, head-on, a ring of 32 and a 2 m gap both ways all arrive, with no two agents nearer than 0.55 m on any tick.
+- Agents sent to one point cannot all arrive, and a gap one wide jams a large crowd. Both are a game's to manage, and both are recorded.
+- The crowd's pin is `9298260793551547065`, equal in Debug, ReleaseSafe and x86_64.
+- On the M5, 32 agents take 0.011 ms a tick against 1 ms.
+- Bar 2,580/2,589 (nine skips), 127/127 steps.
 
 **M33 Step 4 is done (2026-10-30): `nav.Crowd`, the corridor and links, without avoidance.**
 - A crowd is a value a game ticks: `step` gives each agent a wish, the game moves the body, and `place` reports it. A game with no bodies skips `place`.

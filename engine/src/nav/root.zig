@@ -28,6 +28,7 @@ pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
 pub const search = @import("search.zig");
 pub const surface = @import("surface.zig");
+pub const avoidance = @import("avoidance.zig");
 pub const contour = @import("contour.zig");
 pub const crossing = @import("crossing.zig");
 pub const crowd = @import("crowd.zig");
@@ -114,6 +115,8 @@ test {
     _ = search;
     _ = funnel;
     _ = @import("search_tests.zig");
+    _ = avoidance;
+    _ = @import("avoidance_tests.zig");
     _ = surface;
     _ = crossing;
     _ = crowd;

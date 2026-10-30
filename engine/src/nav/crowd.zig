@@ -19,6 +19,7 @@
 const std = @import("std");
 const core = @import("core");
 
+const avoidance = @import("avoidance.zig");
 const crossing = @import("crossing.zig");
 const features = @import("features.zig");
 const funnel = @import("funnel.zig");
@@ -34,6 +35,12 @@ const Mesh = poly.Mesh;
 const Step = search.Step;
 const Vec3 = core.math.Vec3;
 const none_link = search.none_link;
+const Vec2 = avoidance.Vec2;
+
+/// Turns every preferred velocity the same small way when neighbours are near, so that two agents
+/// exactly head-on drift to their own sides (§8). Its sine and cosine, for about half a degree.
+const keep_side_sine: f32 = 0.01;
+const keep_side_cosine: f32 = 0.99995;
 
 pub const Agents = opaque {};
 pub const AgentHandle = core.Handle(Agents);
@@ -52,6 +59,8 @@ pub const Options = struct {
     max_nodes: u32 = search.default_query_nodes,
     /// Ticks of barely moving before an agent says it is blocked.
     blocked_ticks: u32 = 60,
+    /// How far ahead avoidance looks, seconds.
+    horizon: f32 = 1.5,
 };
 
 pub const AgentParams = struct {
@@ -127,6 +136,10 @@ const Agent = struct {
     position: Vec3 = .zero,
     last_position: Vec3 = .zero,
     velocity: Vec3 = .zero,
+    /// Where it would go this tick with no one else there, and where avoidance sends it.
+    preferred: Vec2 = .{},
+    chosen: Vec2 = .{},
+    steering: bool = false,
     wish: Vec3 = .zero,
     polygon: u32 = poly.none_polygon,
     has_target: bool = false,
@@ -177,6 +190,7 @@ pub const Crowd = struct {
 
     pub fn init(gpa: Allocator, options: Options) InitError!Crowd {
         if (options.max_agents == 0 or options.max_agents > max_agents or options.max_searches_per_step == 0) return error.InvalidOptions;
+        if (!within(options.horizon, 0.1, 60)) return error.InvalidOptions;
         const agents = try gpa.alloc(Agent, options.max_agents);
         errdefer gpa.free(agents);
         @memset(agents, .{});
@@ -379,15 +393,69 @@ pub const Crowd = struct {
         for (self.agents) |*a| {
             if (!a.used) continue;
             a.wish = .zero;
+            a.steering = false;
             if (a.crossing != null) {
                 self.cross(a, dt);
                 continue;
             }
             switch (a.state) {
-                .walking, .blocked => self.walk(mesh, a, dt),
+                .walking, .blocked => self.prefer(mesh, a, dt),
                 .idle, .arrived, .off_mesh, .on_link => {},
             }
         }
+        // From where everyone is, and from last tick's velocities, then applied together: so no
+        // agent's answer depends on which slot it is in.
+        for (self.agents, 0..) |*a, i| {
+            if (a.used and a.steering) self.avoid(a, i, dt);
+        }
+        for (self.agents) |*a| {
+            if (a.used and a.steering) self.drive(mesh, a, dt);
+        }
+    }
+
+    /// `a.chosen`: its preferred velocity, kept clear of its eight nearest neighbours.
+    fn avoid(self: *const Crowd, a: *Agent, self_index: usize, dt: f32) void {
+        const me: avoidance.Party = .{ .position = flat(a.position), .velocity = flat(a.velocity), .radius = a.params.radius };
+        const reach = a.params.speed * self.options.horizon + a.params.radius;
+        var nearest: [avoidance.max_lines]u32 = undefined;
+        var distances: [avoidance.max_lines]f32 = undefined;
+        var count: usize = 0;
+        for (self.agents, 0..) |*b, i| {
+            if (!b.used or i == self_index) continue;
+            // Another floor is no neighbour.
+            if (@abs(b.position.y - a.position.y) > @max(a.params.height, b.params.height)) continue;
+            const limit = reach + b.params.radius;
+            const offset = flat(b.position).sub(me.position);
+            const d = offset.x * offset.x + offset.z * offset.z;
+            if (d > limit * limit) continue;
+            // Kept sorted by distance, then by slot, and the far end falls off.
+            var at = count;
+            while (at > 0 and d < distances[at - 1]) at -= 1;
+            if (at == avoidance.max_lines) continue;
+            if (count < avoidance.max_lines) count += 1;
+            var move = count - 1;
+            while (move > at) : (move -= 1) {
+                nearest[move] = nearest[move - 1];
+                distances[move] = distances[move - 1];
+            }
+            nearest[at] = @intCast(i);
+            distances[at] = d;
+        }
+        if (count == 0) {
+            a.chosen = a.preferred;
+            return;
+        }
+        var lines: [avoidance.max_lines]avoidance.Line = undefined;
+        for (nearest[0..count], lines[0..count]) |i, *line| {
+            const b = &self.agents[i];
+            const moving = b.steering;
+            const other: avoidance.Party = .{ .position = flat(b.position), .velocity = if (moving) flat(b.velocity) else .{}, .radius = b.params.radius };
+            const tie: f32 = if (self_index < i) -1 else 1;
+            line.* = avoidance.lineFor(me, other, self.options.horizon, dt, if (moving) 0.5 else 1, tie);
+        }
+        const p = a.preferred;
+        const turned: Vec2 = .{ .x = p.x * keep_side_cosine - p.z * keep_side_sine, .z = p.x * keep_side_sine + p.z * keep_side_cosine };
+        a.chosen = avoidance.solve(lines[0..count], turned, a.params.speed);
     }
 
     /// Finds the target's polygon, if it moved. The corridor's end and its neighbours first:
@@ -460,7 +528,8 @@ pub const Crowd = struct {
         }
     }
 
-    fn walk(self: *Crowd, mesh: *const Mesh, a: *Agent, dt: f32) void {
+    /// What `a` would do alone: its state, and `a.preferred`.
+    fn prefer(self: *Crowd, mesh: *const Mesh, a: *Agent, dt: f32) void {
         const moved = flatLength(a.position.sub(a.last_position));
         a.last_position = a.position;
         if (moved < 0.1 * a.params.speed * dt) {
@@ -497,7 +566,13 @@ pub const Crowd = struct {
         var speed = a.params.speed;
         if (last) speed = @min(speed, @sqrt(2 * a.params.acceleration * d));
         const scale = if (d > 0) speed / d else 0;
-        const wanted: Vec3 = .init((next.point.x - a.position.x) * scale, 0, (next.point.z - a.position.z) * scale);
+        a.preferred = .{ .x = (next.point.x - a.position.x) * scale, .z = (next.point.z - a.position.z) * scale };
+        a.steering = true;
+    }
+
+    /// Moves `a` by what avoidance chose, as far as its acceleration and the mesh allow.
+    fn drive(self: *Crowd, mesh: *const Mesh, a: *Agent, dt: f32) void {
+        const wanted: Vec3 = .init(a.chosen.x, 0, a.chosen.z);
         const change = wanted.sub(a.velocity);
         const room = a.params.acceleration * dt;
         const size = change.length();
@@ -575,6 +650,10 @@ pub const Crowd = struct {
         return h.final();
     }
 };
+
+fn flat(v: Vec3) Vec2 {
+    return .{ .x = v.x, .z = v.z };
+}
 
 fn flatLength(v: Vec3) f32 {
     return @sqrt(v.x * v.x + v.z * v.z);

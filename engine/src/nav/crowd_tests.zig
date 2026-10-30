@@ -371,7 +371,7 @@ test "a rebuilt mesh re-paths every agent, within the search budget, and a cross
     var b_scene: scenes.Scene = .{};
     b_scene.floor(.init(0, 0, 0), .init(5, 0, 30), false);
     b_scene.floor(.init(7, 0, 0), .init(12, 0, 30), false);
-    b_scene.box(.init(1, 0, 10), .init(4, 2, 11));
+    b_scene.box(.init(2.2, 0, 10), .init(2.8, 2, 11));
     var second = try built(&b_scene, .{ .links = &.{across} });
     defer second.deinit(gpa);
 
@@ -380,11 +380,13 @@ test "a rebuilt mesh re-paths every agent, within the search budget, and a cross
     crowd.setMesh(&first);
     var agents: [32]AgentHandle = undefined;
     for (&agents, 0..) |*h, i| {
-        const z = 0.5 + @as(f32, @floatFromInt(i)) * 0.15;
-        h.* = try crowd.add(params, .init(2 + @as(f32, @floatFromInt(i % 4)) * 0.5, 0, z));
-        try testing.expect(crowd.setTarget(h.*, .init(2, 0, 28)));
+        // Apart, and each with a place of its own: two agents cannot both stand on one point.
+        const x = 0.8 + @as(f32, @floatFromInt(i % 5)) * 0.7;
+        const z = 4 + @as(f32, @floatFromInt(i / 5)) * 0.7;
+        h.* = try crowd.add(params, .init(x, 0, z));
+        try testing.expect(crowd.setTarget(h.*, .init(x, 0, z + 20)));
     }
-    const jumper = try crowd.add(params, .init(4.3, 0, 2.5));
+    const jumper = try crowd.add(params, .init(4.3, 0, 2));
     try testing.expect(crowd.setTarget(jumper, .init(10, 0, 2.5)));
     var ticks: u32 = 0;
     while (crowd.agent(jumper).?.state != .on_link) : (ticks += 1) {
@@ -399,10 +401,12 @@ test "a rebuilt mesh re-paths every agent, within the search budget, and a cross
     }
     try testing.expectEqual(@as(u32, 8), most);
     var left: u32 = 0;
-    for (0..1800) |_| {
+    for (0..2400) |_| {
         crowd.step(dt);
+        // Past the new box. Not all at their places: those that stop first stand 0.7 m apart, which
+        // those behind them, 0.6 m wide, cannot pass.
         left = 0;
-        for (agents) |h| left += @intFromBool(crowd.agent(h).?.state != .arrived);
+        for (agents) |h| left += @intFromBool(crowd.agent(h).?.position.z < 11.5);
         if (left == 0) break;
     }
     try testing.expectEqual(@as(u32, 0), left);

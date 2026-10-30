@@ -1032,3 +1032,72 @@ steps, up 12 tests from Step 2. The full bar, all exit 0. No sample's content ch
 
 Bar **2,563/2,571** (eight skips), 127/127 steps, up 18 tests from Step 3. The full bar, all exit
 0. No sample's content changed, so no `dist` staging.
+
+## Resolution — Step 5: ORCA, the crowd pin and the budget (2026-10-30)
+
+**What exists now:**
+- **`engine/src/nav/avoidance.zig`:** `Vec2`, `Line`, `Party`, `lineFor` and `solve`. It is ORCA's
+  half-planes and its small linear program, from the paper, on X and Z.
+- **`crowd.zig`'s `step` has three passes:** each agent's `prefer`, then `avoid` for every agent
+  from last tick's velocities, then `drive`, which applies them together.
+- **`Options.horizon`,** 0.1 to 60 s, default 1.5.
+- **`engine/src/nav/avoidance_tests.zig`.**
+
+**Where the step sharpened the design:**
+- **§8's parity rule was wrong, and was corrected before this step:** every preferred velocity
+  turns the same way, by about half a degree. It is not ornament. Without it, an agent walking
+  straight at a standing one cannot get round it, and the mutation fails that test.
+- **The turn applies only when a neighbour is near,** so a lone agent's path is exact and Step 4's
+  tests are unchanged.
+- **Velocity is clamped at the end of `solve`.** Nearly parallel lines meet far from the origin,
+  where `f32` cannot hold the disc's edge, and a sweep found 2.012 against a top speed of 2. A
+  velocity must never pass the top speed, so `solve` enforces it.
+- **Coincident agents.** Two at one point have no direction between them. `lineFor` takes `tie`,
+  which is opposite for the pair, by slot, so they part. The zero vectors this could divide by
+  are guarded.
+- **Neighbours are the eight nearest within `speed × horizon` plus both radii,** sorted by
+  distance and then slot. A neighbour moving by more than the taller agent's height in Y is on
+  another floor and does not count.
+- **Who is "moving"** is `steering`: an agent walking this tick. Anyone else, whether arrived,
+  idle, off the mesh or on a link, counts as standing, and leaves the whole change to the walker.
+- **Agents sent to one point cannot all arrive.** One arrives, and the rest stand off at their
+  radii. They report `walking` or `blocked`, and a test holds it. Giving agents distinct places
+  is a game's job, like a passage one wide.
+- **Standing agents can wall others off.** Arrived agents 0.7 m apart stop 0.6 m wide agents
+  from passing, as bodies would. Two scenes of the crowd's own tests met this and now keep their
+  agents out of it.
+- **A gap one agent wide jams a large crowd.** Sent through one in a single direction, 32 agents
+  did not all pass within 40 seconds, and this is not a criterion. The owner of §15's `blocked`
+  policy, a game, also owns this.
+- **The timing test counts only ticks with at least 24 agents walking.** The first version's
+  worst tick was barely above its p95, which looked diluted by idle ticks. It was not: the figure
+  did not move.
+
+**Measured, in the tests:**
+- **Criterion 3,** with the separation bound (0.55 m for two 0.3 m agents) checked on every tick:
+  two crossing at right angles, two exactly head-on, a ring of 32 across a 20 m floor, and six
+  through a 2 m gap from both sides. All arrive.
+- A gap of 1 m with two agents head-on reports `blocked`, with everything finite.
+- A walker goes round a standing agent, which does not move. Two agents at one point part. Agents
+  on floors 2.5 m apart ignore each other, to 1 cm.
+- **Order:** five agents added forward and backward have equal positions on every tick of 300.
+- **The crowd's pin:** 16 agents ringed on the course for 600 ticks hash to
+  `9298260793551547065`, equal in Debug, ReleaseSafe and x86_64 under Rosetta.
+- **Criterion 7, on the M5 in ReleaseSafe:** a step of 32 agents has a p95 of **0.011 ms** and a
+  worst of 0.012 ms, against 1 ms, over 613 ticks with at least 24 agents walking. The test
+  asserts the 1 ms. The i3's figure comes at Step 11.
+
+**Guards verified by breaking them.** Each of these fails at least one test: no avoidance, no
+turn to one side, other floors counted, a standing agent taking half, neighbours unsorted, walkers
+taking the whole change, no speed clamp, no fallback program, the tie the same on both sides, and
+agents applied in turn rather than together. "A walker takes the whole change" is caught only by
+the pin. Two first failed only by not compiling, and were redone as real mutations.
+
+**Not yet:** a running obstacle and adopting a rebuilt mesh are Step 6. Criterion 3 holds with an
+acceleration of 20 m/s². The samples' agents take theirs from content, so Steps 8 and 10 must
+check the bound against what they use.
+
+Bar **2,580/2,589** (nine skips: Step 4's eight and the crowd timing test's Debug skip), 127/127
+steps, up 17 tests from Step 4. The full bar, all exit 0, before the timing test's change to count
+walking ticks, which is a Debug skip and reran `nav-test` in both modes. No sample's content
+changed, so no `dist` staging.
