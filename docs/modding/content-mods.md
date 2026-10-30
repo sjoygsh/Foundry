@@ -560,7 +560,46 @@ the next track boundary, so a track already playing is never cut. A playlist wit
 or more than 64, an unknown `order` or `quantize`, a crossfade above 30 seconds, a tempo
 above 400, or a track that is not a `foundry:sound` is refused by name.
 
-## 9. Hot reload
+## 9. Navigation
+
+A game that walks agents names a `foundry:nav_mesh` record, a recipe, and builds the mesh from it
+at load. Nothing is baked, so your change is in the mesh the next time it builds. Two things in a
+recipe are yours to change: what parts of the floor cost, and where an agent may leave the floor.
+
+```
+foundry:nav_area marsh:nav.area.bog { cost 30 }
+
+foundry:nav_mesh sandbox3d:nav.walker {
+    sources [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
+    agent_radius 0.3  agent_height 1.8  agent_climb 0.35  agent_slope 0.785398
+    volumes [
+        { area marsh:nav.area.bog  min { x -1 y -0.5 z 2.1 }  max { x 1 y 0.5 z 2.8 } }
+    ]
+    links [
+        { kind "ladder"  from { x -2.35 y 0 z -1.7 }  to { x -1.45 y 0.6 z -1.95 } }
+    ]
+}
+```
+
+- **An area** is its own record, with a `cost`: walking there counts as that many times the
+  distance, so 30 means an agent goes a long way round. A `volumes` entry marks the floor inside a
+  box with an area. A recipe may name eight areas and hold 32 volumes.
+- **A link** joins two points the floor does not: `kind` is `"jump"`, `"drop"` or `"ladder"`, and
+  `from` and `to` are where it starts and lands. `two_way` makes it usable both ways, `cost` adds
+  to a path through it, `snap` is how far an end may sit from the floor, and `arc` is the height of
+  a jump. A recipe may hold 64 links. An end that lands on no floor is logged and the link is left
+  out, and the rest of the mesh still builds.
+- **An override replaces the whole recipe,** as any override does, so restate the sources and the
+  agent's four numbers. The link you leave out is gone, which is how `marsh` takes the drop away.
+
+`samples/sandbox3d/testdata/mods/marsh` is a complete mod of two files, and `zig build install`
+stages it beside the game. Run the sandbox with
+`FOUNDRY_SANDBOX3D_PACKAGES=marsh:content` and `FOUNDRY_SANDBOX3D_NAV=show`, and the crowd changes
+route. How an agent moves, what it sees and what it does on arrival are the game's. Its own records
+are what a mod overrides there: the court's warden has a speed, a sight range and a sight angle in
+`court:warden.main`.
+
+## 10. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just
 save an image, and the running program picks it up at the start of the next frame:
@@ -581,7 +620,7 @@ packages declaring the same record type at the same version must agree about it,
 could read either one's records. Add a field, raise the version, give the field a default —
 content written against the old version keeps working, which is what versioning is for.
 
-## 10. Types
+## 11. Types
 
 The list is closed. There are no others, on purpose: every type costs three implementations
 that have to agree, and a type that reaches a compiled package can never be removed.
@@ -600,7 +639,7 @@ An inline struct composes, which is why there is no colour type and no vector ty
 a mod might want to override *on its own* should be a record with a content ID instead;
 that choice is the most consequential one a schema author makes.
 
-## 11. When something is wrong
+## 12. When something is wrong
 
 `fpack` prints the file, the line, the column and the line itself with a caret under the
 problem. It reports every mistake it can rather than stopping at the first, and it exits
@@ -611,7 +650,7 @@ different fixes — an asset that is *missing* is a different sentence from one 
 *corrupt*, and a record that is not the type you asked for is a third. That distinction is
 deliberate and tested.
 
-## 12. What this does not cover yet
+## 13. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: the room's mod screen is
 the only mod manager so far; there are no partial edits (`@patch` and `@remove` are reserved

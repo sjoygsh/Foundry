@@ -1,7 +1,7 @@
 # Design: M33 — Navigation II: paths, agents and avoidance
 
-**Status:** Accepted 2026-10-30, when the owner asked for Step 1, with §16 as written. Each
-step's Resolution follows §16.
+**Status:** Complete 2026-10-31, tag `m33`. Accepted 2026-10-30, when the owner asked for Step 1,
+with §16 as written. Each step's Resolution follows §16.
 **Date:** 2026-10-30
 **Baseline:** `d59f5e5`, tag `m32`. M0–M32 are complete.
 **Decisions:**
@@ -754,6 +754,8 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | Navigation in the public table, and in Lua | M48, M49 | §12. M48's line gains this at the close |
 | The clip an agent plays on a link | M34 | Its events are the right hook. `AgentView` already reports a crossing |
 | Crowds over 256 agents, on `core.Jobs` | M100 | Its parallel systems are the first general reason to split a step |
+| The ~5 ms a crate's rebuild request spends in `navigation.pump` on the i3 (Step 11) | M60 | Inside the frame and unexplained. Tiles replace this request, and M60 measures its replacement |
+| A reload's landmark upload passing 16.67 ms on the i3 (Step 11) | M60 | Not navigation's: `uploads.pump` takes 7–14 ms of the frame a person asked for with **r**. Streaming is the first work that needs uploads inside a frame's budget |
 | Two agents meeting in a passage one wide | Not planned for the engine | No avoidance solves it. The engine reports `blocked`, and who backs up is a game's policy |
 | Senses and game AI | Not planned for the engine | The warden's sight is the court's, in a sample (ADR-0017). A second game with the same needs would be a new decision |
 | Moving a mesh with what carries it (a lift, a ship) | Not planned for the engine | M37's moving platforms move characters. A link timed to a platform is a game's, by replacing the link's recipe at a rebuild |
@@ -1550,3 +1552,34 @@ found it has no links.
 **Guards verified by breaking them:** none. The step adds a measurement and a script, no guard.
 
 Bar **2,621/2,631** (ten skips), 128/128 steps, unchanged from Step 10. The full bar, all exit 0.
+
+## Resolution — Step 12: the close (2026-10-31)
+
+Every discrepancy §14 names is resolved where it was written:
+- **`playable3d.md`:** §5.4 and §13's warden lines say the chase is done.
+- **`navigation.md`:** §13's six M33 rows are done, and the Agents row answers §6 and §14's row 7. No
+  engine service carries a mesh: a game owns its `nav.Meshes`.
+- **`locate.zig` and `nav/root.zig`:** the "M33 decides" comments now say what it decided.
+- **`docs/ROADMAP.md`:** M33's row, and new clauses on M34 (a link's clip), M48 (paths, crowds, areas,
+  `Report`), M60 (tiles around an obstacle, `locate`'s index) and M100 (crowds on `core.Jobs`). The
+  header's stale "M0–M30" is M0–M33.
+
+And:
+- **`CLAUDE.md`:** ADR-0070's row says implemented, §4.3 has `nav`'s new line and `debug`'s grant, and
+  §9's row has M33.
+- **`AGENTS.md`:** M33's timing tests and `scripts/m33/windows.ps1`.
+- **`docs/modding/content-mods.md`:** a new §9, Navigation, written from `marsh`. Hot reload and the
+  sections after it move down one. Nothing in the repository links to their numbers.
+- **The design index, the README and `PROJECT_STATE.md`.**
+
+**Rule 17 and Step 11's two figures.** Neither fails a criterion, and neither had an owner, so §15
+gains both, with M60: the crate's ~5 ms request on the i3, since tiles replace that request, and a
+reload's landmark upload past 16.67 ms on the i3, since streaming is the first work that needs uploads
+inside a frame's budget. M60's line gains the second.
+
+**All ten criteria of §1 are met,** each proved in its step's Resolution and criterion 8 by the owner.
+
+**Guards verified by breaking them:** none. The close changes documents and two comments.
+
+Bar **2,621/2,631** (ten skips), 128/128 steps, unchanged. The full bar, all exit 0. `dist` was not
+rerun, since no content changed after Step 10's.

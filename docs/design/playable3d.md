@@ -235,6 +235,8 @@ share source, because each is the reference for a separate consumer.
   path-find; a chasing warden needs navigation (M32–M33) and would be game AI in a sample.
   *(2026-10-29, M32's close: the court now builds the warden's navigation mesh at load and
   tests its islands, and the warden still patrols; paths, agents and the chase are M33's.)*
+  *(2026-10-31, M33's close: the warden now sees and chases, as a `nav.Crowd` agent, as §11.2 of
+  [`agents.md`](agents.md) has it. Its sight and its numbers are the court's content.)*
 - **The exit and the pit** are a volume and a height in the `court:rules` record.
 
 ### 5.5 Everything is content
@@ -554,7 +556,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | Raw-input selection or normalised motion units in `platform` | **M45**, Input |
 | Gamepads | **M45**, Input, with its own Linux run |
 | 3D spatialised audio and a listener | **Done in M31** (2026-10-27, tag `m31`, [`mixing.md`](mixing.md), ADR-0068): spatial voices from one listener with attenuation records and occlusion; the court's main-thread audio, placing included, stays under its 0.10 ms p95 on the M5 and the Arc PC |
-| A warden that sees and chases | **M33**, navigation's second half; the court's fixed patrol is deliberate. M32 ([`navigation.md`](navigation.md), done 2026-10-29) builds the warden's mesh from the level and proves its islands; M33 ([`agents.md`](agents.md)) gives it paths, an agent and the chase |
+| A warden that sees and chases | **Done in M33** (2026-10-31): M32 ([`navigation.md`](navigation.md)) built the warden's mesh from the level, and M33 ([`agents.md`](agents.md)) gave it paths, an agent and the chase |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
 | A hierarchy authored in content | **M103**, Prefabs |
 | An animation component saved with a world | **M34**; the court saves no pose |

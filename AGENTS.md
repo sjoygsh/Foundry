@@ -471,8 +471,15 @@ tests. Run them when `nav`, either sample's navigation glue or its level changes
   in at most 50 ms on the M5 and 150 ms on the Arc PC's i3 (5.66 ms and 14.36 ms at M32), and
   `sandbox3d`'s in no more. `nav-test` also asserts the course pin in every mode.
 
+M33's costs mean something only optimized too, and the same command prints them. `nav-test` gives
+a path and `locate` over `yard`, and a 32-agent crowd step; `court-test` gives a path over the
+court and a whole chase tick. The tests assert the M5's budgets, 50 µs for a path and 1 ms for the
+crowd step, and the i3's are three times those (3.4–5.2 µs and 0.026 ms there at M33). `nav-test`
+also asserts the crowd pin in every mode.
+
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
-and `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs.
+`scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs, and
+`scripts/m33/windows.ps1` runs M33's, with the crowd, `marsh` and the warden's endings.
 
 ### Staging a release
 

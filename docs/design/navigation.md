@@ -527,12 +527,12 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 
 | Item | Owner | Note |
 | --- | --- | --- |
-| Path search over polygons and string pulling | M33 | Its line already names it; [`agents.md`](agents.md) is its design |
-| Agents moved along paths, and avoidance between them | M33 | Its line already names it; whether agents need a handle-addressed store of meshes is its decision (§6) |
-| Off-mesh links: jumps, drops, ladders | M33 | `foundry:nav_mesh` version 2. Added to its intent at the close |
-| Area types and their costs, marked by volumes | M33 | Version 2, with the links. Added to its intent at the close |
-| Obstacles that cut a running mesh (the court's gate, a moved crate) | M33 | Avoidance's other half. Added to its intent at the close |
-| A navigation panel in the overlay | M33 | Polygon counts, build times and the islands. Added to its intent at the close |
+| Path search over polygons and string pulling | M33, done 2026-10-31 | [`agents.md`](agents.md): `nav.Query` and `nav.corners` |
+| Agents moved along paths, and avoidance between them | M33, done 2026-10-31 | `nav.Crowd` with ORCA. No engine service: a game owns its `nav.Meshes` and hands a crowd the mesh (ADR-0070), which answers §6 and §14's row 7 |
+| Off-mesh links: jumps, drops, ladders | M33, done 2026-10-31 | `foundry:nav_mesh` version 2 |
+| Area types and their costs, marked by volumes | M33, done 2026-10-31 | Version 2, and `foundry:nav_area` |
+| Obstacles that cut a running mesh (the court's gate, a moved crate) | M33, done 2026-10-31 | `nav.boxSource` in a whole rebuild; M60's tiles make it local |
+| A navigation panel in the overlay | M33, done 2026-10-31 | The sixth built-in panel, over `nav.Report` |
 | Tiled meshes, a baked mesh asset, rebuilding tiles around a point | M60 | A world large enough to stream is the first whose build outgrows a load (§7). Added to its intent at the close |
 | Navigation over terrain heightfields | M63 | Terrain's collision is a heightfield, not triangles. Added to its intent at the close |
 | Navigation over voxel chunks | M66 | Chunk collision is a grid. Added to its intent at the close |

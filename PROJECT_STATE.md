@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M33 Step 11 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 12**, the close. All ten criteria are met, and the owner has played the chase. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not. The PC still holds the clone and evidence, which the close removes by exact path.
+**Current handoff: M33 is complete** (2026-10-31, tag `m33`; [`docs/design/agents.md`](docs/design/agents.md), ADR-0070). `main` and `m33` are pushed. **Stop before M34's design** (Animation logic I). The PC has no Foundry clone, so its next Windows step clones again.
+
+**M33 Step 12 is done (2026-10-31): the close.**
+- ADR-0070 is implemented, and `CLAUDE.md` §4.1, §4.3 and §9 say so. `debug` is granted `nav`.
+- `playable3d.md`, `navigation.md`, the roadmap's M34, M48, M60 and M100 lines, the design index, the README and `AGENTS.md` are brought up to date. `content-mods.md` gains a navigation section, and the later sections renumber.
+- Two figures found at Step 11 go to M60 in §15: the crate's ~5 ms request on the i3, and a reload's landmark upload.
+- Bar 2,621/2,631 (ten skips), 128/128 steps.
 
 **M33 Step 11 is done (2026-10-31): Windows/Vulkan on the Arc A750.**
 - All three pins hold on Windows, unchanged. Both samples ran from a relocated, read-only ReleaseSafe install, with `win`, `caught` and `fell` replaying exactly, `marsh` taking the drop away, and validation clean.

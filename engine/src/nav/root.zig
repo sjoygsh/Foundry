@@ -2,8 +2,9 @@
 //!
 //! Navigation meshes built from collision triangles (ADR-0069): the surface an agent may stand
 //! on, cut into convex polygons with neighbour links, built by the published voxel method —
-//! rasterise, filter, erode, partition, trace, polygonise, add detail. It finds no path; M33
-//! searches the graph this builds.
+//! rasterise, filter, erode, partition, trace, polygonise, add detail. Then what walks on them
+//! (ADR-0070): area costs, off-mesh links, path search, and `Crowd`, whose agents wish while the
+//! game moves the bodies, with ORCA avoidance and no RNG.
 //!
 //! **No assets, no collision world, no entities, no renderer, no clock.** `asset` decodes the
 //! `foundry:nav_mesh` recipe and a game hands this module the triangles it names, as values the
