@@ -1,0 +1,7 @@
+foundry:mod marsh:content {
+    name     "Marsh"
+    version  1
+    license  "Apache-2.0"
+    summary  "Bog in the gap and no drop: one navigation record overridden, no code."
+    requires [ { id sandbox3d:content } ]
+}

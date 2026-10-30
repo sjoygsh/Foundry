@@ -1207,3 +1207,96 @@ compiling, and was redone as a real mutation.
 and 9.
 
 Bar **2,599/2,608** (nine skips), 127/127 steps, up 8 tests from Step 6. The full bar, all exit 0.
+
+## Resolution — Step 8: `sandbox3d`, the crowd, proved on the Mac (2026-10-30)
+
+**What exists now:**
+- **`samples/sandbox3d/crowd.zig`:** `Settings`, read from `sandbox3d:crowd.main`, and `CrowdDemo`,
+  which owns a `nav.Crowd`, its pawns and the crate. Pawns have no bodies, so nothing calls `place`.
+- **`samples/sandbox3d/nav.zig`** now runs on `nav.Meshes`. M32's `pending` and `stale` are gone.
+  `Features` reads a recipe's areas and links, `takeAdoption` hands a mesh over at a frame boundary,
+  `service` starts what is owed each frame, and `prepareAgents` draws the paths.
+- **`samples/sandbox3d/main.zig`:** key **M** slides the crate, `m@frame` presses it, and the overlay
+  gets a `nav.Report`.
+- **Content:** `sandbox3d:nav.walker` is version 2, with `sandbox3d:nav.area.mud` at cost 4, a drop
+  and a ladder. `sandbox3d:crowd.main` is new.
+- **`samples/sandbox3d/testdata/mods/marsh`,** which restates the recipe with a bog at cost 30 over
+  the lane and the gap, and no drop.
+- **`nav`:** `Crowd.setTarget` clears `blocked`, and `Mesh.collapsed` counts simplified-away slivers.
+
+**Where the step corrected the design.** §11.1 was written without measuring the room, and most of
+this step was finding out what it holds:
+- **The table's top is not on the mesh.** Eroded, it is 0.24 m², under `region_min_area`, so §11.1's
+  ladder to the table could not land. The links join the platform to the pocket of floor west of
+  the steps.
+- **The pocket is not sealed.** A 0.2 m strip past the steep ramp joins it to the floor, so the
+  links are short cuts, and a path takes them because they are shorter.
+- **Key C is the canvas's,** so the crate is **M**.
+- **The gap beside the glass is 0.1 m of mesh.** With the mud across the whole south floor, every
+  pawn queued for it: 95 corners in two minutes. The mud now leaves a dry lane by the wall, and the
+  crate slides into the lane: 446 corners.
+- **All sixteen cannot climb.** The platform's mesh is about 0.3 m wide. Pawns are spread round each
+  corner, circulate one way, and one climbs. **Pawns are 0.15 m in radius,** not the 0.3 m the mesh
+  allows for, because this room is 6 m wide.
+- **A pawn that is `blocked` takes its next corner.** That is the policy §15 left to a game.
+
+**What the windowed runs found that the tests had not:**
+- **182 rebuilds in 900 frames.** A build takes about 2 ms, under a frame, so coalescing never acted
+  and the sliding crate rebuilt on every frame, each one sending all sixteen pawns back to search.
+  The crate now asks for a rebuild when it comes to rest. Four arrivals in the same run. §9's
+  coalescing holds when a build is slower than a frame, and a game should not assume it will be.
+- **`1 skipped` at seven of the crate's 91 positions.** The first explanation, a loop with one
+  neighbour all round, was wrong: a change built on it fixed nothing, so it was reverted. These
+  regions have no loops at all. They are strips one cell wide, narrower than `edge_max_error`, which
+  simplify to a line. That is the tolerance working, and `Mesh.collapsed` now counts them apart from
+  `skipped`, which stays a fault. The test sweeps all 91 positions and asserts `skipped` is 0.
+- **`blocked` outlived a new target,** so a pawn gave up every tick: 15,532 times in two minutes.
+- **`FOUNDRY_SANDBOX3D_NAV=off`** restarted its window every frame, so its first figure meant nothing.
+  Rebuilding on `Meshes` had broken it, and it now measures as it did.
+
+**A limit of avoidance, measured.** Step 5's bound holds on open floor. Where the mesh is narrower
+than two pawns, walls press them together. In two minutes of sixteen pawns, a pair came under the
+0.25 m bound for 10 pair-ticks, all at one place, (1.2, −0.8), the 0.3 m strip between the table and
+the crate, at closest 0.235 m. The test holds a floor of 75% of the two radii and at most 40 such
+pair-ticks. A game that needs the bound everywhere must give its agents passages wider than two.
+
+**Measured, in `sandbox3d-test`, against the compiled package:**
+- Criterion 2 and 3 in the real room, over 7,200 ticks at an acceleration of 20 m/s²: pawns reach
+  over 128 corners, the climber crosses the drop and the ladder at least three times each, and no
+  pawn leaves the mesh.
+- A path keeps off the mud, takes the drop down and the ladder up, and goes the long way once the
+  crate is in the lane. `marsh` keeps it out of the bog and takes the drop away.
+- **Criterion 5:** a run with one crate slide, its builds held 25 frames, replays exactly from its
+  recorded adoptions on every one of 900 ticks. Two rebuilds in all.
+
+**From a relocated ReleaseSafe install on the M5 with Metal,** 900 frames, the mesh shown, the crate
+at frames 200 and 600 and a reload at 450:
+
+| Run | Polygons, crate out / in | Links | Request to arrival | After the crate and the reload, worst frame |
+| --- | --- | --- | --- | --- |
+| base, three runs | 33 / 31 | 2 | 35–37 ms at load, 16–18 ms after | 2.4–3.3 ms |
+| `marsh` | 35 / 33 | 1 | 33 ms, 17–18 ms | 2.2–2.8 ms |
+| `plinth` | 37 / 35 | 2 | 33 ms, 17–18 ms | 2.2–3.0 ms |
+| `plinth`, Metal validation | 37 / 35 | 2 | 33 ms, 17–18 ms | 6.0–6.2 ms |
+
+- **Validation** ran with `MTL_DEBUG_LAYER=1` and `MTL_DEBUG_LAYER_ERROR_MODE=assert`, to exit 0, with
+  no message.
+- **The load window's worst frame** is 20.6–31.0 ms shown, and 20.2–22.5 ms with `NAV=off`, three runs
+  each. It is the sample's startup, as M32 found. The 31.0 ms is a little over the baseline's range,
+  and Step 11's i3 is the next measure of it.
+- **Main thread:** a request costs 0.02–0.04 ms.
+- **Not run:** `FOUNDRY_SANDBOX3D_PACKAGES=stout` with the crowd. `stout` restates the recipe at
+  version 1, so it has no links, and its tests still pass.
+- **Seen by eye:** no person has looked at the crowd, the view or the panel yet. No screen capture
+  was used. The owner is offered a look.
+
+**Guards verified by breaking them.** All 7 mutations fail a test: rebuilding every tick, `blocked`
+not cleared, a blocked pawn not moving on, the obstacle left out, the recipe's features dropped, the
+climber's route, and a sliver counted as a fault. Two survived at first, the blocked pawn and the
+obstacle, and each test was strengthened.
+
+**Not yet:** the court. Its warden is Steps 9 and 10.
+
+Bar **2,605/2,614** (nine skips), 128/128 steps, up 6 tests from Step 7. The full bar, all exit 0.
+`nav-test` also passes in ReleaseSafe and under x86_64, with both pins unchanged. `dist` stages no
+`sandbox3d`, as M28 recorded, so the relocated install is the staging evidence.

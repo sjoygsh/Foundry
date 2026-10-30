@@ -901,9 +901,16 @@ pub fn build(b: *std.Build) void {
                     .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
                 });
                 walk_test_options.addOptionPath("stout_package", stout.fpk);
+                // M33's content-only crowd mod (`agents.md` §11.1).
+                const marsh = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/marsh",
+                    .stem = "marsh",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("marsh_package", marsh.fpk);
                 // Optional packages in the installation, never automatically selected.
                 for ([_]struct { stem: []const u8, compiled: @TypeOf(plinth) }{
-                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers }, .{ .stem = "stout", .compiled = stout },
+                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers }, .{ .stem = "stout", .compiled = stout }, .{ .stem = "marsh", .compiled = marsh },
                 }) |fixture| {
                     b.getInstallStep().dependOn(&b.addInstallFileWithDir(fixture.compiled.fpk, .prefix, b.fmt("content/{s}.fpk", .{fixture.stem})).step);
                     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = fixture.compiled.generated, .install_dir = .prefix, .install_subdir = b.fmt("content/{s}", .{fixture.stem}) }).step);

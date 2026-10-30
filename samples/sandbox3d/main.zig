@@ -52,6 +52,7 @@
 //!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline;
 //! - `FOUNDRY_SANDBOX3D_EFFECTS=on|off` makes M29's effects corner (`effects.zig`) or leaves it
 //!   out; P faces it from the patch and B fires its sparks;
+//! - **M** slides a crate into the crowd's way (`crowd.zig`, M33), and `m@frame` presses it;
 //! - `FOUNDRY_SANDBOX3D_NAV=show` starts with M32's navigation mesh drawn (`nav.zig`), which N
 //!   shows and hides, and `off` builds none, measuring the same frames as a baseline.
 //!
@@ -116,6 +117,7 @@ const Gallery = gallery_mod.Gallery;
 const generated = @import("generated.zig");
 const effects_mod = @import("effects.zig");
 const nav_mod = @import("nav.zig");
+const crowd_mod = @import("crowd.zig");
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -306,6 +308,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             const scope = engine.beginScope("navigation.pump");
             defer scope.end();
             sample.navigation.pump(engine.frame_index, engine.os.monotonicNanos());
+            // Before this frame's ticks: a mesh reaches the crowd at a frame boundary, as an
+            // input does (ADR-0061's decision 4).
+            if (sample.navigation.takeAdoption()) |mesh| sample.crowd.adopt(mesh);
+            sample.navigation.service(engine.tasks(), &engine.store, &engine.assets, &sample.props, sample.crateObstacle(), engine.frame_index, engine.os.monotonicNanos());
         }
 
         // Drained so the window keeps answering; the engine acts on a close itself. Text is
@@ -704,6 +710,9 @@ const Sample = struct {
     effects: ?*effects_mod.Effects = null,
     /// M32's navigation mesh, built on the pool at each content refresh; N draws it.
     navigation: nav_mod.Navigation,
+    /// M33's crowd on that mesh, and the crate M slides into its way.
+    crowd: crowd_mod.CrowdDemo,
+    nav_report: @import("nav").Report = .{},
     intent: walk_mod.Intent = .{},
     tour: ?Tour = null,
     move_times: [Tour.max_ticks]i64 = undefined,
@@ -791,6 +800,7 @@ const Sample = struct {
             .overlay = overlay,
             .walk = walk_mod.Walk.init(gpa),
             .navigation = nav_mod.Navigation.init(gpa),
+            .crowd = crowd_mod.CrowdDemo.init(gpa),
             .walkers = walkers,
             .cube = cube,
             .cube_material = cube_material,
@@ -847,7 +857,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, r reload content, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, m slide the crate, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -904,9 +914,12 @@ const Sample = struct {
         if (self.content) |*content| self.props.refresh(self.gpa, &engine.store, &self.walk.world, content, &engine.assets) catch |err|
             log.warn("prop set omitted ({t})", .{err});
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
+        self.crowd.refresh(&engine.store, if (self.content) |*content| content else null);
         // After the props, whose collision it is built from too.
         const asked = engine.os.monotonicNanos(); // Measurement only.
-        self.navigation.request(engine.tasks(), &engine.store, &engine.assets, &self.props, engine.frame_index, asked);
+        // The crowd was rebuilt, so it must be given the mesh again even if none arrives new.
+        if (self.navigation.mesh()) |mesh| self.crowd.adopt(mesh);
+        self.navigation.request(engine.tasks(), &engine.store, &engine.assets, &self.props, self.crateObstacle(), engine.frame_index, asked);
         self.navigation.noteRequestCost(engine.os.monotonicNanos() - asked);
         if (self.content) |*content| for (self.walkers) |*walker| {
             walker.refresh(self.gpa, &engine.store, &self.walk.world, content, engine.step_delta.toSecondsF32()) catch |err|
@@ -970,6 +983,11 @@ const Sample = struct {
             effects.step(engine, s.tick, s.delta.toSecondsF32(), moon);
         }
         if (self.native) |native| if (self.tour != null) try native.record();
+        {
+            const crowd_scope = engine.beginScope("navigation.crowd");
+            defer crowd_scope.end();
+            if (self.crowd.step(s.delta.toSecondsF32())) self.navigation.meshes.markDirty();
+        }
         const scope = engine.beginScope("character");
         defer scope.end();
         const started = engine.os.monotonicNanos(); // Measurement only; never affects the move.
@@ -1036,7 +1054,21 @@ const Sample = struct {
             .world = &self.orrery.world,
             .renderer = &self.overlay,
             .world3d = &self.world,
+            .navigation = self.reportNavigation(),
         });
+    }
+
+    fn crateObstacle(self: *const Sample) ?nav_mod.Obstacle {
+        const s = self.crowd.settings orelse return null;
+        return .{ .half_extents = s.crate_half, .position = self.crowd.cratePosition().? };
+    }
+
+    fn reportNavigation(self: *Sample) *const @import("nav").Report {
+        self.nav_report = .{};
+        if (self.navigation.mesh()) |mesh| self.nav_report.readMesh(mesh);
+        self.nav_report.readMeshes(&self.navigation.meshes, self.navigation.current);
+        if (self.crowd.crowd) |*crowd| self.nav_report.readCrowd(crowd);
+        return &self.nav_report;
     }
 
     /// The keys, pressed by a person or by `FOUNDRY_SANDBOX3D_KEYS`. Only G is a letter a text
@@ -1091,6 +1123,10 @@ const Sample = struct {
             }
         }
         if ((in.wasPressed(.n) and !typing) or scripted.n) self.navigation.toggle();
+        if ((in.wasPressed(.m) and !typing) or scripted.m) {
+            self.crowd.moveCrate();
+            log.info("m: the crate slides", .{});
+        }
         if ((in.wasPressed(.r) and !typing) or scripted.r) {
             log.info("r: reloading every package", .{});
             engine.reloadContent();
@@ -1240,6 +1276,7 @@ const Sample = struct {
         // Particle meshes are written here, outside the window, for this frame's camera.
         if (self.effects) |effects| effects.prepare(engine, view);
         if (self.content) |*content| self.navigation.prepare(&self.world, content);
+        self.navigation.prepareAgents(&self.world, if (self.crowd.crowd) |*crowd| crowd else null);
         try self.world.begin(view);
 
         if (!self.shadow_ground.isNone()) {
@@ -1262,6 +1299,7 @@ const Sample = struct {
         if (self.content) |*content| try self.props.draw(content);
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.effects) |effects| try effects.draw();
+        if (self.content) |*content| try self.crowd.draw(content, self.crate);
         try self.navigation.draw(&self.world);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
@@ -1371,6 +1409,8 @@ const Sample = struct {
     }
 
     fn deinit(self: *Sample, engine: *app.Engine) void {
+        // Before the mesh it borrows.
+        self.crowd.deinit(if (self.content) |*c| c else null);
         // It waits for its builds on the pool, and holds a runtime mesh and a material.
         self.navigation.deinit(engine.tasks(), &self.world, if (self.content) |*c| c else null);
         // First: it waits for its work on the pool, and holds content, renderer and walk.
@@ -1466,13 +1506,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n, m };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false, m: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n m); ignoring it", .{});
             break :blk .{};
         };
     }

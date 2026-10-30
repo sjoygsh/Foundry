@@ -68,9 +68,59 @@ walker sandbox3d:walker.main {
 # M32: the walker's navigation mesh (`docs/design/navigation.md` §9.1), a recipe the sample builds
 # at load from the merged content. Its agent is the walk's capsule, in the walk's own units, and
 # every `sandbox3d:prop` with collision joins its sources in code, at the prop's place.
+# M33 adds its area and its links (`docs/design/agents.md` §11.1). The mud lies across most of the
+# south floor, leaving a dry lane by the wall that the crowd keeps to. West of the steps is a
+# pocket of floor, a long walk from the platform but for the drop and the ladder.
+foundry:nav_area sandbox3d:nav.area.mud { cost 4 }
 foundry:nav_mesh sandbox3d:nav.walker {
     sources [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
     agent_radius 0.3  agent_height 1.8  agent_climb 0.35  agent_slope 0.785398
+    volumes [
+        { area sandbox3d:nav.area.mud  min { x -1 y -0.5 z 1.6 }  max { x 1 y 0.5 z 2.1 } }
+    ]
+    links [
+        { kind "drop"  from { x -1.45 y 0.6 z -2.1 }  to { x -2.35 y 0 z -2.1 } }
+        { kind "ladder"  from { x -2.35 y 0 z -1.7 }  to { x -1.45 y 0.6 z -1.95 } }
+    ]
+}
+
+# M33's crowd (`samples/sandbox3d/crowd.zig`): pawns going one way round the room, a few by the
+# platform and the links, and a crate M slides into the dry lane, which sends them another way.
+@schema crowd {
+    model id
+    count u32
+    radius f32 height f32 speed f32 acceleration f32
+    model_half f32
+    corners [{ x f32 y f32 z f32 }]
+    climbers u32
+    climb [{ x f32 y f32 z f32 }]
+    spawn { x f32 y f32 z f32 }
+    spawn_spacing f32
+    crate_half { x f32 y f32 z f32 }
+    crate_from { x f32 y f32 z f32 }
+    crate_to { x f32 y f32 z f32 }
+    crate_seconds f32
+}
+crowd sandbox3d:crowd.main {
+    model sandbox3d:models.crate
+    count 16
+    radius 0.15 height 1.2 speed 1.4 acceleration 20
+    model_half 0.35
+    corners [
+        { x 2.2 y 0 z 2.2 } { x -2.2 y 0 z 2.2 } { x -1.6 y 0 z 0.3 } { x 0.2 y 0 z -1.1 }
+        { x 1.3 y 0 z -0.3 }
+    ]
+    climbers 1
+    climb [
+        { x -2 y 0 z 0.3 } { x -1.3 y 0.6 z -2.1 } { x -2.35 y 0 z -2.1 } { x -1.3 y 0.6 z -2.1 }
+        { x 0.9 y 0 z -2.2 } { x 2.2 y 0 z 1 }
+    ]
+    spawn { x 1.2 y 0 z 1.4 }
+    spawn_spacing 0.45
+    crate_half { x 0.3 y 0.35 z 0.25 }
+    crate_from { x 1.9 y 0.35 z 0.9 }
+    crate_to { x 0 y 0.35 z 2.4 }
+    crate_seconds 1.5
 }
 
 # How N draws it: premultiplied vertex colour through the particle model, its own light, so the

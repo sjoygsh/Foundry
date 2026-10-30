@@ -54,6 +54,8 @@ pub const Mesh = struct {
     polygons: []Polygon,
     /// Regions left out because their outline could not be made one loop or triangulated.
     skipped: u32 = 0,
+    /// Regions thinner than `edge_max_error`, simplified away. No fault: see `contour.Contours`.
+    collapsed: u32 = 0,
     /// Empty from `buildPolygons`; `build` fills it.
     detail: detail_mod.Detail = .{},
     /// Each area's cost, by index. Empty for a mesh with no areas, whose floor all costs 1.
@@ -161,6 +163,7 @@ fn run(gpa: Allocator, config: config_mod.Config, sources: []const input.Source,
     var mesh = try polygonize(gpa, &loops, config.polygon_max_vertices, hf.grid);
     errdefer mesh.deinit(gpa);
     mesh.skipped += loops.skipped;
+    mesh.collapsed = loops.collapsed;
     try setAreas(gpa, &mesh, &field, count);
     mesh.costs = try gpa.dupe(f32, features.costs);
     mesh.islands = try countIslands(gpa, &mesh);

@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 7 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 8** (`sandbox3d`: the crowd, proved on the Mac). No sample uses any of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 8 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 9** (`court`: the warden walks the mesh). The court uses none of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 8 is done (2026-10-30): the `sandbox3d` crowd, proved on the Mac.**
+- Sixteen pawns circulate on the mesh, keep off the mud by a dry lane, and go another way when **M** slides a crate into it. One climber uses the drop and the ladder. A blocked pawn takes its next corner.
+- `marsh`, a content mod, changes the route and takes the drop away, with no code. `plinth` still cuts the mesh.
+- `sandbox3d/nav.zig` now runs on `nav.Meshes`. A run replays exactly from its recorded adoptions.
+- The windowed runs found what the tests had not: 182 rebuilds in 900 frames, since a build is faster than a frame. The crate now asks for one when it comes to rest, which makes four.
+- Narrower than two pawns, walls press them together: closest 0.235 m against a 0.25 m bound, at one spot. Recorded as a limit.
+- From a relocated ReleaseSafe install on Metal: validation clean, the worst frame after a rebuild 3.3 ms. The load frame is startup: 20–31 ms shown, 20–22 ms with `NAV=off`.
+- Bar 2,605/2,614 (nine skips), 128/128 steps.
 
 **M33 Step 7 is done (2026-10-30): the view and the panel.**
 - `nav.debugView` tints areas and draws links as arcs. `nav.debugAgents` draws each agent's path and goal, red when blocked.

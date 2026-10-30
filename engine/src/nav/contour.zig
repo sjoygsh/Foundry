@@ -43,6 +43,9 @@ pub const Contours = struct {
     /// Regions whose outline could not be made one loop. Zero in every scene the suite builds;
     /// a hostile level is answered by leaving the region out, never by a panic.
     skipped: u32 = 0,
+    /// Regions thinner than `edge_max_error`, whose every loop simplified to a line. The tolerance
+    /// doing its work, and no fault: such a strip is narrower than the error allowed.
+    collapsed: u32 = 0,
 
     pub fn deinit(self: *Contours, gpa: Allocator) void {
         for (self.items) |c| gpa.free(c.vertices);
@@ -130,10 +133,16 @@ pub fn build(gpa: Allocator, f: *const OpenField, region_count: u16, settings: S
         out.deinit(gpa);
     }
     var skipped: u32 = 0;
-    for (1..@as(usize, region_count) + 1) |r| {
-        if (try joinRegion(gpa, loops.items, @intCast(r), &out) == false) skipped += 1;
+    var collapsed: u32 = 0;
+    for (1..@as(usize, region_count) + 1) |ri| {
+        const r: u16 = @intCast(ri);
+        var any = false;
+        for (loops.items) |c| any = any or c.region == r;
+        if (!any) {
+            collapsed += 1;
+        } else if (try joinRegion(gpa, loops.items, r, &out) == false) skipped += 1;
     }
-    return .{ .items = try out.toOwnedSlice(gpa), .skipped = skipped };
+    return .{ .items = try out.toOwnedSlice(gpa), .skipped = skipped, .collapsed = collapsed };
 }
 
 /// Each span's column, as `x | z << 16`, so the walk can step between columns.

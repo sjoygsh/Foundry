@@ -274,6 +274,11 @@ pub const Crowd = struct {
         a.target = point;
         a.has_target = true;
         a.target_dirty = true;
+        // A new target is a new attempt: `blocked` said the last one was stuck.
+        if (!point.eql(a.goal.point)) {
+            a.blocked_for = 0;
+            if (a.state == .blocked) a.state = .walking;
+        }
         return true;
     }
 

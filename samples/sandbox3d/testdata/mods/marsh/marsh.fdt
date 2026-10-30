@@ -1,0 +1,16 @@
+# M33's content-only crowd mod (`docs/design/agents.md` §11.1): the walker's recipe, restated whole
+# with bog, far dearer than mud, over the dry lane and the gap, so the crowd takes the mud, and
+# with the drop left out. An area record of its own, and no code.
+foundry:nav_area marsh:nav.area.bog { cost 30 }
+foundry:nav_mesh sandbox3d:nav.walker {
+    sources [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
+    agent_radius 0.3  agent_height 1.8  agent_climb 0.35  agent_slope 0.785398
+    volumes [
+        { area sandbox3d:nav.area.mud  min { x -1 y -0.5 z 1.6 }  max { x 1 y 0.5 z 2.1 } }
+        { area marsh:nav.area.bog  min { x -1 y -0.5 z 2.1 }  max { x 1 y 0.5 z 2.8 } }
+        { area marsh:nav.area.bog  min { x -0.8 y -0.5 z 0.45 }  max { x 0.8 y 0.5 z 1.3 } }
+    ]
+    links [
+        { kind "ladder"  from { x -2.35 y 0 z -1.7 }  to { x -1.45 y 0.6 z -1.95 } }
+    ]
+}
