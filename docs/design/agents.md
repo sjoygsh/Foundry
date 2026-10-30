@@ -844,3 +844,60 @@ the check then passed. `AGENTS.md` §4 records it.
 Bar **2,520/2,527** (seven skips), 127/127 steps, up 10 tests from M32's 2,510. The full bar,
 all exit 0, the Metal check after the toolchain install. No sample's content changed, so no
 `dist` staging.
+
+## Resolution — Step 2: areas and links in the build (2026-10-30)
+
+**What exists now:**
+- **`poly.buildWith(gpa, config, sources, features)`,** which refuses bad features with
+  `InvalidFeatures` before it allocates. `build` is the same call with no features.
+- **`OpenField.markAreas`,** run after erosion. A span's `area` is `walkable` plus the mesh's
+  area index, and `Polygon.area` is the index.
+- **`engine/src/nav/link.zig`:** `Link`, `none_link` and `attach`.
+- **`Mesh`** gains `costs`, `links`, `link_first`, `link_index`, `links_unattached` and
+  `islands`, with `linksFrom(p)` and `costOf(p)`.
+- **`Build.startWith`,** which copies the features too. §14 did not name it, but Steps 8 and 9
+  build on the pool. `start` is the same call with no features.
+- **`engine/src/nav/features_tests.zig`.**
+
+**Where the step sharpened the design:**
+- **Area borders are simplified like walls: a correction to §4.** §4 said contours "follow".
+  They did not. M32 keeps a border between regions straight between its change points, so a
+  patch inside a floor, one neighbour all round, kept only its two extreme corners. A 1 m²
+  volume came out as 0.5 m². The tests found it. A contour vertex now records `area_border`,
+  and Douglas–Peucker runs along an area border as it does along a wall, from the same
+  canonical direction, so both sides get the same vertices. This is what Recast does. A mesh
+  with no areas has no such border, so M32's pin does not move.
+- **A polygon's area is set after polygonising,** from a region-to-area table, rather than
+  carried through contours. A region is one area, because growth stops at a change of area and
+  merging now refuses one.
+- **A column is inside a volume by its centre,** half-open on X and Z. A floor is inside by
+  its height, inclusive, so a volume whose `max.y` equals a floor's height still marks it.
+- **A link whose ends land in one polygon** is kept, and listed once.
+- **A mesh with no links has no tables,** and `linksFrom` answers empty. `costOf` answers 1
+  for a mesh with no costs.
+
+**Measured, in the tests:**
+- A 4 m by 4 m volume on a floor gives 16 m² of its area within the staircase's error, and
+  all the polygons together keep the unmarked floor's area within 0.2 m². The floor around the
+  patch is still one island through its neighbour links.
+- A 1 m² area, under the 4 m² merge limit, keeps its own polygons.
+- A later volume wins, and a floor outside a volume's height stays unmarked.
+- Each of the three kinds attaches, a two-way link is listed at both ends, and two ends on no
+  polygon leave a link out and counted.
+- A link leaves `islands` at 2, and `islands` equals a flood's count on the course and `yard`.
+- A build with features survives every allocation failure.
+- **Pins:** M32's course stays `14865720887737603270`. The course with an area and two links
+  is `14748995640725302437`, equal in Debug, ReleaseSafe and x86_64 under Rosetta.
+
+**Guards verified by breaking them.** Each of these fails at least one test: merging across
+areas, tessellating walls only, a volume ignoring height, the first volume winning, polygons
+left unmarked, a two-way link not listed at its far end, the features check removed, and a
+fixed island count.
+
+**One rule changed no result:** marking before erosion gives the same meshes. `erode` looks at
+walkable neighbours and not at areas, so the order cannot show in it. Marking stays after
+erosion, because that is the rule §4 states, and this equivalence is why the "never where an
+agent fits" test holds whichever way round the stages run.
+
+Bar **2,533/2,540** (seven skips), 127/127 steps, up 13 tests from Step 1. The full bar, all
+exit 0. No sample's content changed, so no `dist` staging.

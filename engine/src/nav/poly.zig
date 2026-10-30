@@ -15,6 +15,8 @@ const input = @import("input.zig");
 const open_mod = @import("open.zig");
 const regions = @import("regions.zig");
 const detail_mod = @import("detail.zig");
+const features_mod = @import("features.zig");
+const link_mod = @import("link.zig");
 const locate_mod = @import("locate.zig");
 
 const Allocator = std.mem.Allocator;
@@ -34,6 +36,8 @@ pub const Polygon = struct {
     neighbours: [max_polygon_vertices]u32 = @splat(none_polygon),
     count: u8,
     region: u16,
+    /// An index into `Mesh.costs`; 0 is unmarked floor.
+    area: u8 = 0,
 
     pub fn slice(self: *const Polygon) []const u32 {
         return self.vertices[0..self.count];
@@ -52,15 +56,44 @@ pub const Mesh = struct {
     skipped: u32 = 0,
     /// Empty from `buildPolygons`; `build` fills it.
     detail: detail_mod.Detail = .{},
+    /// Each area's cost, by index. Empty for a mesh with no areas, whose floor all costs 1.
+    costs: []f32 = &.{},
+    /// Off-mesh links, in recipe order, leaving out those that landed on no polygon.
+    links: []link_mod.Link = &.{},
+    /// `link_first[p] .. link_first[p + 1]` indexes `link_index`: the links leaving polygon `p`.
+    /// Empty for a mesh with no links.
+    link_first: []u32 = &.{},
+    link_index: []u32 = &.{},
+    /// Links left out, because an end was on no polygon.
+    links_unattached: u32 = 0,
+    /// Connected sets of polygons by neighbour links alone: a link joins islands for search,
+    /// not here.
+    islands: u32 = 0,
 
     pub fn deinit(self: *Mesh, gpa: Allocator) void {
         gpa.free(self.vertices);
         gpa.free(self.polygons);
         self.detail.deinit(gpa);
+        gpa.free(self.costs);
+        gpa.free(self.links);
+        gpa.free(self.link_first);
+        gpa.free(self.link_index);
         self.* = undefined;
     }
 
     pub const locate = locate_mod.locate;
+
+    /// The links leaving polygon `p`, as indices into `links`, a two-way link at both its ends.
+    pub fn linksFrom(self: *const Mesh, p: u32) []const u32 {
+        if (self.link_first.len == 0) return &.{};
+        return self.link_index[self.link_first[p]..self.link_first[p + 1]];
+    }
+
+    /// What polygon `p`'s floor charges per metre.
+    pub fn costOf(self: *const Mesh, p: u32) f32 {
+        const index = self.polygons[p].area;
+        return if (index < self.costs.len) self.costs[index] else 1;
+    }
 
     /// A vertex in the world.
     pub fn position(self: *const Mesh, v: u32) Vec3 {
@@ -92,33 +125,81 @@ pub fn polygonArea2(m: *const Mesh, p: *const Polygon) i64 {
     return contour.area2(loop[0..p.count]);
 }
 
-pub const BuildError = input.InputError || heightfield.Error || regions.Error;
+pub const BuildError = input.InputError || heightfield.Error || regions.Error || error{
+    /// Something in `Features`; `Features.problem` says what.
+    InvalidFeatures,
+};
 
 /// The whole build: validate and measure, rasterise and filter, link and erode, partition,
 /// trace, polygonise and add detail (§5), always in this order.
 pub fn build(gpa: Allocator, config: config_mod.Config, sources: []const input.Source) BuildError!Mesh {
-    return run(gpa, config, sources, true);
+    return run(gpa, config, sources, .{}, true);
+}
+
+/// `build`, with volumes marking areas after erosion and links attached after detail
+/// (`agents.md` §4). With no features it is `build`, to the byte.
+pub fn buildWith(gpa: Allocator, config: config_mod.Config, sources: []const input.Source, features: features_mod.Features) BuildError!Mesh {
+    return run(gpa, config, sources, features, true);
 }
 
 /// `build` without the detail surface, for the tests of the stages before it.
 pub fn buildPolygons(gpa: Allocator, config: config_mod.Config, sources: []const input.Source) BuildError!Mesh {
-    return run(gpa, config, sources, false);
+    return run(gpa, config, sources, .{}, false);
 }
 
-fn run(gpa: Allocator, config: config_mod.Config, sources: []const input.Source, with_detail: bool) BuildError!Mesh {
+fn run(gpa: Allocator, config: config_mod.Config, sources: []const input.Source, features: features_mod.Features, with_detail: bool) BuildError!Mesh {
+    if (features.problem() != null) return error.InvalidFeatures;
     var hf = try heightfield.solid(gpa, config, sources);
     defer hf.deinit(gpa);
     var field = try open_mod.OpenField.init(gpa, &hf);
     defer field.deinit(gpa);
     try field.erode(gpa);
+    field.markAreas(features.volumes);
     const count = try regions.build(gpa, &field, .of(config.region_min_area, config.region_merge_area, config.cell_size));
     var loops = try contour.build(gpa, &field, count, .of(config.edge_max_error, config.edge_max_length, config.cell_size));
     defer loops.deinit(gpa);
     var mesh = try polygonize(gpa, &loops, config.polygon_max_vertices, hf.grid);
     errdefer mesh.deinit(gpa);
     mesh.skipped += loops.skipped;
+    try setAreas(gpa, &mesh, &field, count);
+    mesh.costs = try gpa.dupe(f32, features.costs);
+    mesh.islands = try countIslands(gpa, &mesh);
     if (with_detail) mesh.detail = try detail_mod.build(gpa, &mesh, &field, .of(config));
+    if (features.links.len != 0) try link_mod.attach(gpa, &mesh, features.links);
     return mesh;
+}
+
+/// Each polygon takes its region's area. A region is one area: growth stops at a change of
+/// area, and two areas never merge.
+fn setAreas(gpa: Allocator, mesh: *Mesh, field: *const open_mod.OpenField, region_count: u16) Allocator.Error!void {
+    const area_of = try gpa.alloc(u8, @as(usize, region_count) + 1);
+    defer gpa.free(area_of);
+    @memset(area_of, 0);
+    for (field.spans) |s| {
+        if (s.region != 0) area_of[s.region] = s.area - open_mod.walkable;
+    }
+    for (mesh.polygons) |*p| p.area = area_of[p.region];
+}
+
+fn countIslands(gpa: Allocator, mesh: *const Mesh) Allocator.Error!u32 {
+    const seen = try gpa.alloc(bool, mesh.polygons.len);
+    defer gpa.free(seen);
+    @memset(seen, false);
+    var stack: std.ArrayList(u32) = .empty;
+    defer stack.deinit(gpa);
+    var count: u32 = 0;
+    for (0..mesh.polygons.len) |start| {
+        if (seen[start]) continue;
+        count += 1;
+        seen[start] = true;
+        try stack.append(gpa, @intCast(start));
+        while (stack.pop()) |p| for (mesh.polygons[p].neighbours[0..mesh.polygons[p].count]) |q| {
+            if (q == none_polygon or seen[q]) continue;
+            seen[q] = true;
+            try stack.append(gpa, q);
+        };
+    }
+    return count;
 }
 
 /// Polygons from contours, at most `nvp` vertices each.

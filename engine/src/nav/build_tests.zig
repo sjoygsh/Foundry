@@ -358,6 +358,19 @@ pub fn hashMesh(m: *const Mesh) u64 {
         h.update(std.mem.asBytes(&p.count));
         h.update(std.mem.asBytes(&p.region));
     }
+    // Only a mesh that has them, so that M32's pin is untouched by the fields M33 added.
+    for (m.polygons) |p| {
+        if (p.area != 0) {
+            for (m.polygons) |q| h.update(std.mem.asBytes(&q.area));
+            break;
+        }
+    }
+    for (m.links) |l| {
+        h.update(&.{ @intFromEnum(l.kind), @intFromBool(l.two_way) });
+        h.update(std.mem.asBytes(&l.from_polygon));
+        h.update(std.mem.asBytes(&l.to_polygon));
+        for ([_]f32{ l.from.x, l.from.y, l.from.z, l.to.x, l.to.y, l.to.z, l.cost, l.arc }) |f| h.update(std.mem.asBytes(&@as(u32, @bitCast(f))));
+    }
     for (m.detail.vertices) |v| {
         for ([_]f32{ v.x, v.y, v.z }) |f| h.update(std.mem.asBytes(&@as(u32, @bitCast(f))));
     }

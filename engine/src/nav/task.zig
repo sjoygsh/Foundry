@@ -12,6 +12,7 @@ const std = @import("std");
 const core = @import("core");
 
 const config_mod = @import("config.zig");
+const features_mod = @import("features.zig");
 const input = @import("input.zig");
 const poly = @import("poly.zig");
 
@@ -29,13 +30,16 @@ pub const Build = struct {
         positions: []Vec3,
         indices: []u32,
         sources: []input.Source,
+        costs: []f32,
+        volumes: []features_mod.Volume,
+        links: []features_mod.LinkInput,
         result: poly.BuildError!poly.Mesh = error.OutOfMemory,
         done: core.tasks.Done = .{},
         taken: bool = false,
 
         fn run(context: *anyopaque) void {
             const self: *State = @ptrCast(@alignCast(context));
-            self.result = poly.build(self.gpa, self.config, self.sources);
+            self.result = poly.buildWith(self.gpa, self.config, self.sources, .{ .costs = self.costs, .volumes = self.volumes, .links = self.links });
         }
 
         fn destroy(self: *State) void {
@@ -43,6 +47,9 @@ pub const Build = struct {
             gpa.free(self.positions);
             gpa.free(self.indices);
             gpa.free(self.sources);
+            gpa.free(self.costs);
+            gpa.free(self.volumes);
+            gpa.free(self.links);
             gpa.destroy(self);
         }
     };
@@ -50,6 +57,11 @@ pub const Build = struct {
     /// Copies `sources` and starts their build on `tasks`. `gpa` must be safe to use from the
     /// executor's threads.
     pub fn start(tasks: core.Tasks, gpa: Allocator, config: config_mod.Config, sources: []const input.Source) StartError!Build {
+        return startWith(tasks, gpa, config, sources, .{});
+    }
+
+    /// `start`, with `features` copied too.
+    pub fn startWith(tasks: core.Tasks, gpa: Allocator, config: config_mod.Config, sources: []const input.Source, features: features_mod.Features) StartError!Build {
         var positions: usize = 0;
         var indices: usize = 0;
         for (sources) |s| {
@@ -73,7 +85,13 @@ pub const Build = struct {
             pn += s.positions.len;
             in += s.indices.len;
         }
-        state.* = .{ .gpa = gpa, .config = config, .positions = p, .indices = ix, .sources = copied };
+        const costs = try gpa.dupe(f32, features.costs);
+        errdefer gpa.free(costs);
+        const volumes = try gpa.dupe(features_mod.Volume, features.volumes);
+        errdefer gpa.free(volumes);
+        const links = try gpa.dupe(features_mod.LinkInput, features.links);
+        errdefer gpa.free(links);
+        state.* = .{ .gpa = gpa, .config = config, .positions = p, .indices = ix, .sources = copied, .costs = costs, .volumes = volumes, .links = links };
         try tasks.start(.{ .context = state, .call = State.run }, &state.done);
         return .{ .state = state };
     }

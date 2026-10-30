@@ -165,12 +165,17 @@ fn flood(gpa: Allocator, f: *const OpenField, region: []u16, seed_distance: []u1
 /// Drops islands of regions below `min_spans`, merges regions below `merge_spans` into the
 /// neighbour they share the longest border with, and renumbers what is left in order of first
 /// appearance. Two regions that share a column are never merged: one would lie over the other.
+/// Nor are two of different areas: a polygon has one cost.
 fn mergeAndFilter(gpa: Allocator, f: *const OpenField, region: []u16, next_region: u32, settings: Settings) Error!u16 {
     const count = next_region;
     const spans = try gpa.alloc(u32, count);
     defer gpa.free(spans);
     @memset(spans, 0);
     for (region) |r| spans[r] += 1;
+    const area_of = try gpa.alloc(u8, count);
+    defer gpa.free(area_of);
+    @memset(area_of, unwalkable);
+    for (f.spans, region) |s, r| area_of[r] = s.area;
 
     // Shared border lengths, in links, both ways; and which pairs share a column.
     var borders: std.AutoArrayHashMapUnmanaged(u32, u32) = .empty;
@@ -232,7 +237,7 @@ fn mergeAndFilter(gpa: Allocator, f: *const OpenField, region: []u16, next_regio
                 if (key >> 16 != r) continue;
                 const q = key & 0xffff;
                 if (into[q] != q or spans[q] == 0) continue;
-                if (stacked.contains(pair(r, q))) continue;
+                if (stacked.contains(pair(r, q)) or area_of[q] != area_of[r]) continue;
                 if (length > longest or (length == longest and q < target)) {
                     target = q;
                     longest = length;

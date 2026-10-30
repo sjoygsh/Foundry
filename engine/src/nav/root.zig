@@ -28,6 +28,7 @@ pub const regions = @import("regions.zig");
 pub const contour = @import("contour.zig");
 pub const poly = @import("poly.zig");
 pub const detail = @import("detail.zig");
+pub const link = @import("link.zig");
 pub const locate = @import("locate.zig");
 pub const task = @import("task.zig");
 pub const view = @import("view.zig");
@@ -36,6 +37,7 @@ pub const view = @import("view.zig");
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Config = config.Config;
 pub const Features = features.Features;
+pub const Link = link.Link;
 pub const LinkInput = features.LinkInput;
 pub const LinkKind = features.LinkKind;
 pub const Volume = features.Volume;
@@ -69,6 +71,7 @@ pub const max_volumes = features.max_volumes;
 pub const measure = input.measure;
 pub const solid = heightfield.solid;
 pub const build = poly.build;
+pub const buildWith = poly.buildWith;
 pub const buildPolygons = poly.buildPolygons;
 pub const debugView = view.debugView;
 pub const debugViewCount = view.debugViewCount;
@@ -88,4 +91,6 @@ test {
     _ = task;
     _ = view;
     _ = @import("build_tests.zig");
+    _ = link;
+    _ = @import("features_tests.zig");
 }

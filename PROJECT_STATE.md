@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 1 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070, accepted 2026-10-30). **Stop before Step 2** (`nav`: areas and links in the build). `buildWith`, `Polygon.area` and `Mesh.links` do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 2 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 3** (`nav`: search and string pulling). `Query`, `Filter` and the funnel do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 2 is done (2026-10-30): areas and links in the build.**
+- `poly.buildWith` marks areas after erosion and attaches links after detail. `Build.startWith` carries the same features to the pool. With no features both are M32's calls, to the byte.
+- `Polygon.area`, `Mesh.links` with its tables, `costs`, `islands` and `links_unattached`.
+- A correction to the design: area borders are simplified like walls, or a patch inside a floor collapses. A 1 m² volume came out as 0.5 m² until they were.
+- M32's pin holds. The course with an area and two links is pinned at `14748995640725302437`, equal in Debug, ReleaseSafe and x86_64.
+- Bar 2,533/2,540 (seven skips), 127/127 steps.
 
 **M33 Step 1 is done (2026-10-30): the version 2 record and `foundry:nav_area`.**
 - `foundry:nav_mesh` v2 adds `volumes` and `links`; a v1 package reads unchanged through the store.

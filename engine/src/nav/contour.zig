@@ -24,6 +24,8 @@ pub const Vertex = struct {
     y: i32,
     z: i32,
     neighbour: u16 = 0,
+    /// Whether that region is of another area. Such a border has a shape of its own to keep.
+    area_border: bool = false,
 
     pub fn sameXz(a: Vertex, b: Vertex) bool {
         return a.x == b.x and a.z == b.z;
@@ -171,7 +173,8 @@ fn walk(gpa: Allocator, f: *const OpenField, flags: []u4, where: []const u32, st
             }
             const j = f.spans[i].links[dir];
             const across: u16 = if (j == none) 0 else f.spans[j].region;
-            try out.append(gpa, .{ .x = px, .y = cornerHeight(f, i, dir), .z = pz, .neighbour = across });
+            const area_border = across != 0 and f.spans[j].area != f.spans[i].area;
+            try out.append(gpa, .{ .x = px, .y = cornerHeight(f, i, dir), .z = pz, .neighbour = across, .area_border = area_border });
             flags[i] &= ~bit;
             dir +%= 1;
         } else {
@@ -213,7 +216,8 @@ const Simple = struct { v: Vertex, raw: u32 };
 
 /// Recast's simplification (§5.5): keep every vertex where the region across changes, or the
 /// extreme corners of a loop with one neighbour throughout; add back the farthest raw vertex
-/// of a wall edge while it strays more than the error; split wall edges longer than the limit.
+/// of a wall or area edge while it strays more than the error; split wall edges longer than the
+/// limit.
 fn simplify(gpa: Allocator, raw: []const Vertex, out: *std.ArrayList(Simple), settings: Settings) Allocator.Error!void {
     out.clearRetainingCapacity();
     const n = raw.len;
@@ -252,9 +256,10 @@ fn simplify(gpa: Allocator, raw: []const Vertex, out: *std.ArrayList(Simple), se
         }
         var farthest: ?usize = null;
         var deviation: f32 = 0;
-        // Only walls are tessellated: a border between regions stays straight between its
-        // change points, the same line from both sides.
-        if (raw[ci].neighbour == 0) {
+        // Walls and area borders are tessellated, each in the same direction from both sides.
+        // A border between regions of one area stays straight between its change points; a
+        // patch of mud must keep its corners, or it is not the patch its volume marked.
+        if (raw[ci].neighbour == 0 or raw[ci].area_border) {
             while (ci != end) : (ci = (ci + step) % n) {
                 const d = distanceToSegment2(raw[ci], lo, hi);
                 if (d > deviation) {

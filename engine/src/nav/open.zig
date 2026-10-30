@@ -16,6 +16,7 @@ const heightfield = @import("heightfield.zig");
 
 const Allocator = std.mem.Allocator;
 const Agent = heightfield.Agent;
+const Volume = @import("features.zig").Volume;
 const Grid = @import("input.zig").Grid;
 const Heightfield = heightfield.Heightfield;
 
@@ -138,6 +139,31 @@ pub const OpenField = struct {
         const j = self.spans[i].links[k];
         if (j == none or self.spans[j].area != self.spans[i].area) return null;
         return j;
+    }
+
+    // -- areas (`agents.md` §4) ---------------------------------------------------------
+
+    /// Gives every walkable span whose floor lies inside a volume that volume's area, in list
+    /// order, so a later volume wins. After erosion: an area changes what a floor costs, never
+    /// where an agent fits. A column's centre decides whether it is inside.
+    pub fn markAreas(self: *OpenField, volumes: []const Volume) void {
+        const g = self.grid;
+        for (volumes) |v| {
+            for (0..g.depth) |zi| {
+                const z = g.origin.z + (@as(f32, @floatFromInt(zi)) + 0.5) * g.cell_size;
+                if (z < v.min.z or z >= v.max.z) continue;
+                for (0..g.width) |xi| {
+                    const x = g.origin.x + (@as(f32, @floatFromInt(xi)) + 0.5) * g.cell_size;
+                    if (x < v.min.x or x >= v.max.x) continue;
+                    const c = self.columns[xi + zi * g.width];
+                    for (self.spans[c.first..][0..c.count]) |*s| {
+                        if (s.area == unwalkable) continue;
+                        const y = g.origin.y + @as(f32, @floatFromInt(s.y)) * g.cell_height;
+                        if (y >= v.min.y and y <= v.max.y) s.area = walkable + v.area;
+                    }
+                }
+            }
+        }
     }
 
     // -- erosion (§5.3) ---------------------------------------------------------------
