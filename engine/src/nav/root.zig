@@ -27,7 +27,10 @@ pub const heightfield = @import("heightfield.zig");
 pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
 pub const search = @import("search.zig");
+pub const surface = @import("surface.zig");
 pub const contour = @import("contour.zig");
+pub const crossing = @import("crossing.zig");
+pub const crowd = @import("crowd.zig");
 pub const poly = @import("poly.zig");
 pub const detail = @import("detail.zig");
 pub const link = @import("link.zig");
@@ -37,8 +40,13 @@ pub const view = @import("view.zig");
 
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
+pub const AgentHandle = crowd.AgentHandle;
+pub const AgentParams = crowd.AgentParams;
+pub const AgentState = crowd.AgentState;
+pub const AgentView = crowd.AgentView;
 pub const Config = config.Config;
 pub const Corner = funnel.Corner;
+pub const Crowd = crowd.Crowd;
 pub const Features = features.Features;
 pub const Filter = search.Filter;
 pub const Link = link.Link;
@@ -53,6 +61,7 @@ pub const Path = search.Path;
 pub const Polygon = poly.Polygon;
 pub const Query = search.Query;
 pub const Step = search.Step;
+pub const Wish = crowd.Wish;
 pub const Build = task.Build;
 pub const BuildError = poly.BuildError;
 pub const Detail = detail.Detail;
@@ -105,4 +114,8 @@ test {
     _ = search;
     _ = funnel;
     _ = @import("search_tests.zig");
+    _ = surface;
+    _ = crossing;
+    _ = crowd;
+    _ = @import("crowd_tests.zig");
 }

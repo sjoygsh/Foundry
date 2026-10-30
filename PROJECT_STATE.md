@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 3 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 4** (`nav`: `Crowd`, the corridor and links, without avoidance). Nothing moves along a path yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 4 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 5** (`nav`: ORCA, the crowd's pin and its budget). Agents walk through each other until then. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 4 is done (2026-10-30): `nav.Crowd`, the corridor and links, without avoidance.**
+- A crowd is a value a game ticks: `step` gives each agent a wish, the game moves the body, and `place` reports it. A game with no bodies skips `place`.
+- An agent keeps a corridor, searches only when its target leaves it, and shares a budget of searches a tick. It crosses jumps, drops and ladders on curves of plain arithmetic.
+- Found by the tests: a body that lags its wish lands in the polygon just left, so `place` moves the corridor's head backward too.
+- A rebuild re-paths 33 agents at 8 searches a tick, and one mid-jump lands first.
+- Bar 2,563/2,571 (eight skips), 127/127 steps.
 
 **M33 Step 3 is done (2026-10-30): search and string pulling.**
 - `nav.Query` is A* over polygons with links as edges and allocates once, at `init`. `nav.Filter` scales or excludes areas and kinds of link. A goal it cannot reach answers a partial path.

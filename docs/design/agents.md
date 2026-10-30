@@ -966,3 +966,69 @@ and a link ignored by the funnel. Three needed work:
 Bar **2,545/2,553** (eight skips: Step 2's seven and the new timing test's Debug skip), 127/127
 steps, up 12 tests from Step 2. The full bar, all exit 0. No sample's content changed, so no
 `dist` staging.
+
+## Resolution — Step 4: `Crowd`, the corridor and links, without avoidance (2026-10-30)
+
+**What exists now:**
+- **`engine/src/nav/crowd.zig`:** `Crowd`, `AgentHandle`, `AgentParams`, `AgentState`,
+  `AgentView` and `Wish`, with `init`, `setMesh`, `add`, `remove`, `setTarget`, `clearTarget`,
+  `step`, `wish`, `place`, `agent` and `hash`.
+- **`engine/src/nav/surface.zig`:** `move`, §6.2's `moveOnSurface`, and `contains`.
+- **`engine/src/nav/crossing.zig`:** `duration` and `at`, the three curves.
+- **`engine/src/nav/crowd_tests.zig`.**
+
+**Where the step sharpened the design:**
+- **`place` can move a corridor's head backward.** §6.2 only moved it forward. A body that lags
+  its wish is placed in the polygon the agent just left, and treating that as off the corridor
+  searched again on every crossing: 8 searches where 1 was right. The test of criterion 2 found
+  it. The steps behind the head are kept for this, and `seat` checks the whole corridor.
+- **Wishes are already applied inside `step`.** `step` moves the agent's own position, and
+  `place` corrects it. That is what lets a game with no bodies skip `place`.
+- **A target's polygon is found at the next `step`,** not in `setTarget`, so that several
+  `setTarget`s in a tick cost one lookup. `target_extent` is a new `AgentParams` field, the
+  half-size of that lookup, default (0.5, 2, 0.5). A target that locates nowhere leaves the
+  agent walking to its last goal.
+- **A corridor that reaches its goal is extended by one polygon** when the target drifts into a
+  neighbour, with no search. A partial path is never extended, because its end is not the
+  target's.
+- **A partial path ends in `arrived` with `complete` false.** The warden at a gap with no link
+  needs "as near as I can get" to be a state a game can read.
+- **`arrival_radius` also starts a link.** A crossing leaves from where the agent actually is and
+  not from the link's exact end, so nothing snaps.
+- **Only the last corner slows an agent,** by `√(2·a·d)`. A link's end does not, since the
+  crossing takes over.
+- **Slots are fixed at `init`,** and each holds a 256-step corridor, so `Crowd` allocates once.
+  It uses its own slots rather than `core.HandlePool`, which grows. A freed slot is reused lowest
+  first, and the generation tells a stale handle (I1).
+- **A landing re-seats.** A crossing that ends after a rebuild finds an empty corridor, re-seats
+  at its landing and asks for a path. A landing on no polygon is `off_mesh`.
+- **`searches_last_step` and `searches_total`** are on the crowd, for the budget's test and for
+  Step 7's panel.
+
+**Measured, in the tests:**
+- Criterion 2 for single agents: across a floor in the time the distance implies; up the course's
+  steps to the platform and down its ramp, with the height following the floor; through a jump, a
+  ladder and a drop, each arriving at the far side.
+- A jump's top is its higher end plus `arc`. A ladder climbs over its lower end first.
+- A crossing's curve starts and ends at its ends and is continuous, for all three kinds, both
+  ways, at arcs of 0, 0.5 and 2.
+- A body that goes half as far as it asks arrives on one search. A body that does not move is
+  `blocked` after `blocked_ticks`, and walks on when freed.
+- A target that drifts into the next polygon costs no search. One that jumps across the yard
+  every tick costs one search per `replan_ticks`, and a moving target is caught.
+- A rebuild with 33 agents ran at most 8 searches a tick, every agent then arrived, and the one
+  mid-jump landed first.
+- A thousand seeded abuses, with NaN, infinities and huge values in targets and feet, neither
+  panicked nor hung, and every agent stayed finite.
+
+**Guards verified by breaking them.** All 14 mutations fail a test:
+- the head not moving back, the search budget, a stale generation, unvalidated params, an agent
+  never blocked, and no off-mesh state;
+- no re-seat on a new mesh, a crossing cut short by one, no arc, and a ladder climbing last;
+- **four survived at first,** and each now has a test of its own: `replan_ticks` ignored, no
+  neighbour extension, no acceleration limit, and no slide along a wall.
+
+**Not yet:** agents pass through each other. Avoidance is Step 5, with the crowd's pin and budget.
+
+Bar **2,563/2,571** (eight skips), 127/127 steps, up 18 tests from Step 3. The full bar, all exit
+0. No sample's content changed, so no `dist` staging.
