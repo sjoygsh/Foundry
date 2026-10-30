@@ -21,6 +21,7 @@
 
 pub const config = @import("config.zig");
 pub const input = @import("input.zig");
+pub const features = @import("features.zig");
 pub const heightfield = @import("heightfield.zig");
 pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
@@ -34,6 +35,10 @@ pub const view = @import("view.zig");
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Config = config.Config;
+pub const Features = features.Features;
+pub const LinkInput = features.LinkInput;
+pub const LinkKind = features.LinkKind;
+pub const Volume = features.Volume;
 pub const Grid = input.Grid;
 pub const Heightfield = heightfield.Heightfield;
 pub const OpenField = open.OpenField;
@@ -52,11 +57,14 @@ pub const Source = input.Source;
 pub const max_cells_high = input.max_cells_high;
 pub const max_columns = input.max_columns;
 pub const max_coordinate = input.max_coordinate;
+pub const max_areas = features.max_areas;
+pub const max_links = features.max_links;
 pub const max_polygon_vertices = config.max_polygon_vertices;
 pub const max_positions = input.max_positions;
 pub const max_sources = input.max_sources;
 pub const max_spans = heightfield.max_spans;
 pub const max_triangles = input.max_triangles;
+pub const max_volumes = features.max_volumes;
 
 pub const measure = input.measure;
 pub const solid = heightfield.solid;
@@ -67,6 +75,7 @@ pub const debugViewCount = view.debugViewCount;
 
 test {
     _ = config;
+    _ = features;
     _ = input;
     _ = heightfield;
     _ = open;

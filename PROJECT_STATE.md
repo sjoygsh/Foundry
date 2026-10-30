@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33's design is proposed** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070); awaiting acceptance of §16. **Stop before Step 1.** M32 is complete (2026-10-29, tag `m32`; [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069), and `main` and `m32` are pushed.
+**Current handoff: M33 Step 1 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070, accepted 2026-10-30). **Stop before Step 2** (`nav`: areas and links in the build). `buildWith`, `Polygon.area` and `Mesh.links` do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 1 is done (2026-10-30): the version 2 record and `foundry:nav_area`.**
+- `foundry:nav_mesh` v2 adds `volumes` and `links`; a v1 package reads unchanged through the store.
+- `foundry:nav_area` v1 has one field, `cost`. `resolveAreas` turns a recipe's areas into costs at load, and a mod may supply one.
+- `nav/features.zig` holds `nav`'s half of the rules, and `engine/tests/nav_mesh.zig` holds the two modules in step. Nothing builds with it yet.
+- A recipe may name eight areas, so a mesh has nine indices, with 0 as unmarked floor.
+- Bar 2,520/2,527 (seven skips), 127/127 steps.
+- The Mac now has Xcode 27.2, so `-Drhi=metal` needed `xcodebuild -downloadComponent MetalToolchain` (`AGENTS.md` §4).
 
 **M33's design in brief (2026-10-30).** Twelve steps: `nav` gains A* and the funnel, `nav.Crowd` with ORCA avoidance, and areas and off-mesh links through `foundry:nav_mesh` v2 and `foundry:nav_area`. A running obstacle is a source in a whole rebuild, and a rebuilt mesh reaches a tick only as a recorded input, per ADR-0061's decision 4. The court's warden sees and chases, which changes how the court plays, and the owner's play is an exit criterion. `sandbox3d` gains a crowd of sixteen pawns and the `marsh` mod. No ABI change.
 

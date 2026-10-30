@@ -339,6 +339,9 @@ fn checkMeanings(
         } else if (view.schema_id.eql(asset.nav_mesh.nav_mesh.id)) blk: {
             _ = asset.nav_mesh.decode(fields) catch |err| break :blk .{ "navigation mesh", asset.nav_mesh.describe(err) };
             continue;
+        } else if (view.schema_id.eql(asset.nav_mesh.nav_area.id)) blk: {
+            _ = asset.nav_mesh.decodeArea(fields) catch |err| break :blk .{ "navigation area", asset.nav_mesh.describe(err) };
+            continue;
         } else continue;
         ok = false;
         if (declarationOf(docs, view.id)) |origin| {
@@ -491,6 +494,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.mix.compressor_name,
     asset.mix.limiter_name,
     asset.nav_mesh.nav_mesh_name,
+    asset.nav_mesh.nav_area_name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
@@ -2697,6 +2701,8 @@ test "a navigation mesh recipe compiles, and one out of range is refused at its 
         .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ] agent_radius 0.3 agent_height 1.8 agent_climb 0.35 agent_slope 2 }", .says = "navigation mesh 'demo:n' has an agent_slope" },
         .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ]" ++ agent ++ " cell_size 0 }", .says = "navigation mesh 'demo:n' has a cell_size" },
         .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ]" ++ agent ++ " polygon_max_vertices 8 }", .says = "navigation mesh 'demo:n' has a polygon_max_vertices" },
+        .{ .source = "\nfoundry:nav_mesh demo:n { sources [ demo:a ]" ++ agent ++ " links [ { kind \"swim\" from { x 0 y 0 z 0 } to { x 1 y 0 z 0 } } ] }", .says = "navigation mesh 'demo:n' has a link whose kind" },
+        .{ .source = "\nfoundry:nav_area demo:n { cost 0 }", .says = "navigation area 'demo:n' has a cost" },
     };
     for (cases) |case| {
         var g = try Fixture.init();

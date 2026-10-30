@@ -1,6 +1,7 @@
 # Design: M33 — Navigation II: paths, agents and avoidance
 
-**Status:** Proposed 2026-10-30; awaiting the owner's acceptance of §16. No step has begun.
+**Status:** Accepted 2026-10-30, when the owner asked for Step 1, with §16 as written. Each
+step's Resolution follows §16.
 **Date:** 2026-10-30
 **Baseline:** `d59f5e5`, tag `m32`. M0–M32 are complete.
 **Decisions:**
@@ -785,3 +786,61 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 22 | Twelve steps, in §14's order | §14 |
 
 Once these are accepted, nothing blocks Step 1.
+
+## Resolution — Step 1: the version 2 record and `foundry:nav_area` (2026-10-30)
+
+**Accepted.** The owner asked for Step 1 with §16 as written. ADR-0070 is Accepted and in
+`CLAUDE.md` §4.1. §4.3 changes at the close (Step 12), as §14 says.
+
+**What exists now:**
+- **`engine/src/asset/nav_mesh.zig`:**
+  - `foundry:nav_mesh` is version 2, adding `volumes` and `links`, both optional and `since` 2.
+  - `foundry:nav_area` is version 1, with `cost` defaulting to 1.
+  - `Settings` holds its volumes and links in fixed arrays, read by `volumes()`, `links()` and
+    `areas()`.
+  - `decodeArea` reads an area, and `resolveAreas` turns a recipe's areas into costs at load.
+- **`engine/src/nav/features.zig`:** `Features`, `Volume`, `LinkInput`, `LinkKind` and
+  `Features.problem()`, `nav`'s half of the rules. It came forward from Step 2 because the
+  agreement test needs both halves. Nothing builds with it yet.
+- **`engine/src/author/compiler.zig`:** both records are checked as "navigation mesh" and
+  "navigation area", and `foundry:nav_area` is in the editor's New Record list.
+- **`engine/tests/nav_mesh.zig`** holds the modules' limits in step, and sweeps coordinates
+  and amounts, NaN and infinity included, so that both refuse the same volumes and links.
+
+**Where the step sharpened the design:**
+- **Eight areas means eight named.** §3.2 says a recipe may name eight, and §4 says index 0 is
+  unmarked floor. So `asset.max_areas` is 8 and `nav.max_areas` is 9, and a filter's array in
+  Step 3 takes 9. The test asserts the one difference.
+- **Area numbering.** An area's index in a mesh is one more than its place in `areas()`, the
+  order of first use among the volumes. `resolveAreas` writes costs in that order. It is an
+  index inside one mesh and is never saved, like a polygon (I2).
+- **The envelope.** §3.2 says volumes and links are "finite". They are also held to ±8,192 m,
+  `nav`'s `max_coordinate`, because nothing beyond it can be on a mesh.
+- **Refusals,** beyond one per field: `TooManyVolumes`, `TooManyLinks`, `TooManyAreas`,
+  `InvalidVolumeArea`, `InvalidLinkKind` and, at load, `NotANavArea`. That one covers a missing
+  record as well as a wrong schema, as `NotACollisionMesh` does.
+- **`InvalidVolumeArea` is refused by value only,** because `.fdt` text cannot write a `none`
+  ID. A hand-built `Settings` tests it, as M32's `InvalidSource` left unwritten.
+- **A mod may supply an area a recipe names,** and a test does: the base's recipe, one area in
+  the base and one in the mod. A bad cost in a resolved area is refused at load, with its name.
+
+**Measured, in the tests:**
+- A version 1 package, compiled against the version 1 fields, reads under version 2 through
+  the store, with no volumes and no links, and keeps its own `cell_size`.
+- Every new field defaults and refuses by name through `fpack`'s path, and the 32, 8 and 64
+  bounds hold on both sides.
+
+**Guards verified by breaking them.** Each of these fails at least one test: the link-length
+rule on the `asset` side, the snap bound on the `nav` side, a `links` field made required
+(registration fails), the area's schema check, the compiler's `foundry:nav_area` branch, the
+eight-area bound, and the distinct-area rule. Two of these first failed only by not compiling,
+which proves nothing, and were redone as real mutations.
+
+**An environment change, not this step's:** the bar's `zig build check -Drhi=metal` failed
+with "missing Metal Toolchain". The Mac now has Xcode 27.2, whose on-demand toolchain was not
+installed. `xcodebuild -downloadComponent MetalToolchain` installed build 27B47 (839 MB), and
+the check then passed. `AGENTS.md` §4 records it.
+
+Bar **2,520/2,527** (seven skips), 127/127 steps, up 10 tests from M32's 2,510. The full bar,
+all exit 0, the Metal check after the toolchain install. No sample's content changed, so no
+`dist` staging.

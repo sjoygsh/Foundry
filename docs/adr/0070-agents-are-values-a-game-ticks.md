@@ -1,6 +1,6 @@
 # ADR-0070: Agents are values a game ticks, and a rebuilt mesh reaches them as an input
 
-**Status:** Proposed 2026-10-30 (`docs/design/agents.md`)
+**Status:** Accepted 2026-10-30 (the owner asked for M33 Step 1; `docs/design/agents.md`)
 **Date:** 2026-10-30
 
 ## Context

@@ -534,6 +534,7 @@ change, not as the quoted number. Since M14 the samples carry tests too:
 
 Each of these cost real time to discover.
 
+* **An Xcode update can drop the on-demand Metal toolchain.** `zig build check -Drhi=metal` then fails with "missing Metal Toolchain". Run `xcodebuild -downloadComponent MetalToolchain` (about 840 MB) and check with `xcrun metal --version`. It happened at Xcode 27.2 (2026-10-30).
 * **`failed command:` lines appear in a *passing* build.** A Zig run step prints one for any
   stderr, and the tests that exercise warning paths write some. Read the exit code, not the
   output. `fpack` and `fstage` log at `warn` in every mode so a game's Debug build of its
