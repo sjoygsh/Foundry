@@ -527,7 +527,7 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 
 | Item | Owner | Note |
 | --- | --- | --- |
-| Path search over polygons and string pulling | M33 | Its line already names it |
+| Path search over polygons and string pulling | M33 | Its line already names it; [`agents.md`](agents.md), proposed, is its design |
 | Agents moved along paths, and avoidance between them | M33 | Its line already names it; whether agents need a handle-addressed store of meshes is its decision (§6) |
 | Off-mesh links: jumps, drops, ladders | M33 | `foundry:nav_mesh` version 2. Added to its intent at the close |
 | Area types and their costs, marked by volumes | M33 | Version 2, with the links. Added to its intent at the close |

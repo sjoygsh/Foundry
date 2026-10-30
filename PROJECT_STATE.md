@@ -1,7 +1,9 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-29
-**Current handoff: M32 is complete** (2026-10-29, tag `m32`; [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069). **Stop before M33's design** (Navigation II: paths, agents, avoidance, off-mesh links, areas, running obstacles and a navigation panel). `main` and `m32` are pushed.
+**Last updated:** 2026-10-30
+**Current handoff: M33's design is proposed** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070); awaiting acceptance of §16. **Stop before Step 1.** M32 is complete (2026-10-29, tag `m32`; [`docs/design/navigation.md`](docs/design/navigation.md), ADR-0069), and `main` and `m32` are pushed.
+
+**M33's design in brief (2026-10-30).** Twelve steps: `nav` gains A* and the funnel, `nav.Crowd` with ORCA avoidance, and areas and off-mesh links through `foundry:nav_mesh` v2 and `foundry:nav_area`. A running obstacle is a source in a whole rebuild, and a rebuilt mesh reaches a tick only as a recorded input, per ADR-0061's decision 4. The court's warden sees and chases, which changes how the court plays, and the owner's play is an exit criterion. `sandbox3d` gains a crowd of sixteen pawns and the `marsh` mod. No ABI change.
 
 **M32 Step 9 is done (2026-10-29): M32 closed.**
 - `playable3d.md`'s warden rows now give the mesh to M32 and the chase to M33.
