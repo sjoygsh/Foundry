@@ -295,6 +295,15 @@ pub const Crowd = struct {
         return true;
     }
 
+    /// Changes how fast an agent walks, as a chase does. False for a stale handle or a speed out
+    /// of its bounds.
+    pub fn setSpeed(self: *Crowd, handle: AgentHandle, speed: f32) bool {
+        const a = self.slot(handle) orelse return false;
+        if (!within(speed, 0.001, 50)) return false;
+        a.params.speed = speed;
+        return true;
+    }
+
     pub fn wish(self: *const Crowd, handle: AgentHandle) ?Wish {
         const a = self.slot(handle) orelse return null;
         return .{ .displacement = a.wish, .on_link = a.crossing != null };

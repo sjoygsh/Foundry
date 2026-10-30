@@ -463,6 +463,28 @@ test "a stale handle, a full crowd and bad numbers are refused" {
     try testing.expectEqual(before, crowd.hash());
 }
 
+test "an agent's speed can change, within its bounds" {
+    var scene: scenes.Scene = .{};
+    scene.floor(.init(0, 0, 0), .init(10, 0, 10), false);
+    var m = try built(&scene, .{});
+    defer m.deinit(gpa);
+    var crowd = try Crowd.init(gpa, .{});
+    defer crowd.deinit();
+    crowd.setMesh(&m);
+    var p = params;
+    p.acceleration = 100;
+    const a = try crowd.add(p, .init(1, 0, 5));
+    _ = crowd.setTarget(a, .init(9, 0, 5));
+    for (0..30) |_| crowd.step(dt);
+    try testing.expectApproxEqAbs(@as(f32, 2), crowd.agent(a).?.velocity.length(), 0.01);
+    try testing.expect(crowd.setSpeed(a, 3));
+    for (0..30) |_| crowd.step(dt);
+    try testing.expectApproxEqAbs(@as(f32, 3), crowd.agent(a).?.velocity.length(), 0.01);
+    try testing.expect(!crowd.setSpeed(a, 0));
+    try testing.expect(!crowd.setSpeed(a, std.math.nan(f32)));
+    try testing.expect(!crowd.setSpeed(.none, 1));
+}
+
 test "a crowd survives every allocation failure at init" {
     const S = struct {
         fn run(allocator: std.mem.Allocator) !void {

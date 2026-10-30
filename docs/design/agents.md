@@ -1370,3 +1370,87 @@ that scripted runs began only after the first mesh. It is not a mutation-proved 
 **Not yet:** the warden does not see. Sight, the chase and the jump links are Step 10.
 
 Bar **2,613/2,622** (nine skips), 128/128 steps, up 8 tests from Step 8. The full bar, all exit 0.
+
+## Resolution — Step 10: the warden sees and chases (2026-10-31)
+
+**What exists now:**
+- **`samples/court/warden.zig`:** `Mode` (`patrolling`, `chasing`, `searching`), `sees`, `eye` and
+  `think`. `WardenSettings` gains `chase_speed`, `sight_range`, `sight_angle` and `lose_seconds`, each
+  with a content default, so `noon`'s record still reads. On a link the body follows the curve with
+  `setCharacterFeet`, and the controller is left out.
+- **`samples/court/game.zig`:** `lineOfSight`, a ray against the level's layer, the gate included. The
+  hash adds the warden's mode, `unseen_ticks`, `last_seen` and `facing`.
+- **`samples/court/content/court.fdt`:** two two-way jump links on `court:nav.warden`, over the gap at
+  x 0 and the low wall at x −3, and the new `caught_detail`.
+- **`samples/court/testdata/play.zig`:** a `watch` step, and the re-laid `route_open` and `route_ledge`.
+- **`nav.Crowd.setSpeed`,** because a chase is faster than a patrol.
+
+**Where the step sharpened the design:**
+- **`facing` is a unit vector kept from the warden's last move,** so a tick reads no trig. The
+  cosine of `sight_angle` is worked out once, by `core.math.trig`, when the record is read.
+- **The ray stops 0.4 m short of the player's eye.** The player's capsule is on the level's layer, so
+  a ray all the way would always hit the player.
+- **`watch` lets a script wait for the warden, not for a clock.** A person watches before crossing
+  its view, and a slower warden in a mod needs no other script.
+- **The route is the game's real shape.** The warden sees nothing behind it, so the player crosses
+  while it walks away, and waits in the south-west corner, which no point of its line can see.
+- **`sight_angle` is 0.6,** as §11.2 corrected before acceptance. **`noon` needed no change.**
+- **A search ends at `arrived` or at `blocked`,** so a warden sent somewhere it cannot reach still
+  goes home.
+- **The warden's `last_seen` goes to the crowd as the player's feet,** and the crowd finds the polygon,
+  so a player in the air keeps the warden heading for where they were.
+- **The music is unchanged,** as §11.2 said: it still turns on `chase_distance`, not on the warden's
+  mode.
+
+**Measured, in `court-test`, against the compiled court:**
+- **Sight:** straight ahead and within the angle it sees. Outside the angle, behind it, and past its
+  range it does not. It sees over the low wall and not through the shut gate, and sees through the
+  gate when it has sunk.
+- **The chase:** seen, it runs at `chase_speed`, within 0.1 m/s, and catches a player who stands.
+- **Losing it:** with the player gone, it walks to where it last saw them, then goes back to its
+  patrol at its patrol speed.
+- **The gap:** it follows a player it can see across the gap by the jump link, rises over 0.4 m, and
+  never falls.
+- **The gate:** shut, an agent told to go beyond it stops short, with `complete` false. Open, the same
+  order reaches the exit floor.
+- **Every script replays:** `win` twice over, `caught`, `fell`, and `noon`'s `win`, `caught` and `fell`.
+- **The soundtrack's full run,** headless: five passes, 42,023 ticks, every hash matched.
+- **What moved in the tests:** the `wrong` script of the failed-script test expected `caught`, and
+  could now get it by being seen, so it expects `won`. No other assertion moved.
+
+**Criterion 7, on the M5 in ReleaseSafe:**
+
+| Measure | Result | Budget |
+| --- | --- | --- |
+| A path with its corners, over the court's mesh, p95 | 0.8 µs | 50 µs |
+| A whole tick of the game in a chase, p95 | 0.015 ms | 0.1 ms for the warden |
+
+The tick includes the player's move, so it bounds what the warden adds. The i3's figures come at
+Step 11.
+
+**From a relocated ReleaseSafe install on the M5 with Metal,** with the mesh shown:
+
+| Run | Ending ticks | Replay |
+| --- | --- | --- |
+| `win` | won at 1,219 and 2,436 | 2,443 ticks matched |
+| `caught` | caught at 90 | 92 matched |
+| `fell` | fell at 185 | 187 matched |
+| `win`, Metal validation | won at 1,219 and 2,436 | 2,444 matched |
+
+Validation ran to exit 0 with no message. `dist -Dapp=court` stages.
+
+**Not proved windowed:** the `noon` run was not `noon`. The relocated install has no such package,
+and the log said so, so it played the base game. `noon` is proved by `mod_tests`, in the bar.
+
+**Criterion 8 is open.** Nobody has played the chase. Whether it is fair is the owner's call, and the
+four numbers are content, so tuning changes `court.fdt` and the scripts' `watch` points, not code.
+**M33 cannot close without it.**
+
+**Guards verified by breaking them.** All 12 mutations fail a test: no angle, no range, no line of
+sight, a ray that ignores the gate, chasing at patrol speed, never losing the player, never going
+back, keeping the chase's speed, the body ignoring the jump, facing never turning, the mode out of
+the hash, and a reset keeping the chase. **Three survived at first** (line of sight, the speed back
+and the hash), and each gained a test. Two first failed only by not compiling, and were redone.
+
+Bar **2,621/2,631** (ten skips: Step 9's nine and the new cost test's Debug skip), 128/128 steps, up
+8 tests from Step 9. The full bar, all exit 0.

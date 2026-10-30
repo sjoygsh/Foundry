@@ -303,11 +303,11 @@ test "court: a script that reaches the wrong ending, or none, fails" {
     defer gpa.destroy(rec);
     const begin = [_]play.Step{ .{ .press = .accept }, .{ .expect = .playing } };
 
-    // The `fell` moves, expecting to be caught.
+    // The `fell` moves, expecting to win.
     const wrong: play.Script = .{ .tick_limit = 500, .steps = &(begin ++ [_]play.Step{
         .{ .walk = .{ .to = .{ 0, 0, -1.7 }, .face = .{ 0, 1.65, -5 }, .within = 0.1 } },
         .{ .jump = .{ .to = .{ 0, 0, -2.6 }, .face = .{ 0, 1.65, -5 }, .land_z = -100 } },
-        .{ .expect = .caught },
+        .{ .expect = .won },
     }) };
     // Standing at the spawn, waiting for a win that never comes.
     const idle: play.Script = .{ .tick_limit = 20, .steps = &(begin ++ [_]play.Step{ .stand, .{ .expect = .won } }) };
@@ -678,6 +678,10 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
     // A capsule shorter than its own two caps.
     for ([_]f32{ 0, -1, 0.3, 5 }) |v| try expectValueRefused(S.warden, &.{"height"}, v, S.Warden, error.InvalidWarden);
     for ([_]f32{ -1, 61 }) |v| try expectValueRefused(S.warden, &.{"pause"}, v, S.Warden, error.InvalidWarden);
+    for ([_]f32{ 0, -1, 11 }) |v| try expectValueRefused(S.warden, &.{"chase_speed"}, v, S.Warden, error.InvalidWarden);
+    for ([_]f32{ -1, 101 }) |v| try expectValueRefused(S.warden, &.{"sight_range"}, v, S.Warden, error.InvalidWarden);
+    for ([_]f32{ -1, 1.6 }) |v| try expectValueRefused(S.warden, &.{"sight_angle"}, v, S.Warden, error.InvalidWarden);
+    for ([_]f32{ -1, 61 }) |v| try expectValueRefused(S.warden, &.{"lose_seconds"}, v, S.Warden, error.InvalidWarden);
     // Two waypoints in the same place are no patrol.
     {
         const list = (try S.warden.listAt(fieldIndex(S.warden, "waypoints"))).?;

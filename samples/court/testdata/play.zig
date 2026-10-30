@@ -19,6 +19,9 @@ pub const Step = union(enum) {
     stand,
     /// Do nothing for this many frames, in any phase: a player listening (M30 Step 7).
     wait: u32,
+    /// Stand watching until the warden has passed `x`, walking east or west: what a person does
+    /// before crossing its view.
+    watch: struct { east: bool, past: f32 },
     /// Press one menu key, as a person does: the arrows, Enter or Escape.
     press: Key,
     /// Wait for a phase. An ending other than the one named here fails the script.
@@ -38,8 +41,10 @@ pub const Script = struct {
 
 const start = [_]Step{ .{ .press = .accept }, .{ .expect = .playing } };
 
-/// To the open beacon and light it.
+/// To the open beacon and light it, once the warden has walked past the angle it could see it
+/// from. M33: the warden sees 0.6 rad either side of the way it faces, and nothing behind it.
 const route_open = [_]Step{
+    .{ .watch = .{ .east = true, .past = 0.3 } },
     .{ .walk = .{ .to = .{ 2.5, 0, 4.5 }, .face = .{ 3.5, 0.5, 4.5 }, .within = 0.25 } },
     .{ .use = "court:beacon.open" },
 };
@@ -48,10 +53,13 @@ const route_open = [_]Step{
 /// and through it.
 const route_rest = route_ledge ++ route_gate;
 
-/// Around the warden by the south, over the low wall and across the gap, lighting the other
-/// two beacons.
+/// Back out of its sight along the south wall, to wait in the corner it cannot see from anywhere
+/// on its line; then, as soon as it is walking away, over the low wall and across the gap,
+/// lighting the other two beacons.
 const route_ledge = [_]Step{
-    .{ .walk = .{ .to = .{ -3.5, 0, 4.5 }, .face = .{ -3.5, 0.5, 1.4 }, .within = 0.3 } },
+    .{ .walk = .{ .to = .{ 2.5, 0, 7.2 }, .face = .{ -4, 0.5, 7.2 }, .within = 0.3 } },
+    .{ .walk = .{ .to = .{ -4, 0, 7.2 }, .face = .{ -3.5, 0.5, 1.4 }, .within = 0.3 } },
+    .{ .watch = .{ .east = true, .past = -1 } },
     .{ .walk = .{ .to = .{ -3.5, 0, 1.4 }, .face = .{ -3.5, 0.5, 0 }, .within = 0.25 } },
     .{ .jump = .{ .to = .{ -3.5, 0, 0.3 }, .face = .{ -3.5, 0.5, 0 }, .land_z = 0.8 } },
     .{ .walk = .{ .to = .{ -2.2, 0, -0.5 }, .face = .{ -3, 0.5, -0.5 }, .within = 0.25 } },

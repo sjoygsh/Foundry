@@ -13,6 +13,7 @@ const platform = @import("platform");
 const nav_mod = @import("nav.zig");
 const game_mod = @import("game.zig");
 const walk = @import("walk.zig");
+const warden = @import("warden.zig");
 const fixtures = @import("game_tests.zig");
 const options = @import("court_test_options");
 const testing = std.testing;
@@ -362,4 +363,271 @@ test "the adopted generation is part of the hash" {
     other.game.meshes = env.meshes;
     env.game.generation = same;
     try testing.expect(env.game.hashTick() != other.game.hashTick());
+}
+
+// -- M33 Step 10: the warden sees and chases (`docs/design/agents.md` §11.2) ----------------------
+
+/// A game in play with the player somewhere the warden is not looking.
+fn hunted(env: *fixtures.TestEnv) !*game_mod.Game {
+    const game = &env.game;
+    try game.restart();
+    try game.walk.teleport(.init(-4.5, 0.004, 7.5));
+    return game;
+}
+
+/// Faces the warden along `x`, `z`, as if it had walked that way.
+fn face(game: *game_mod.Game, x: f32, z: f32) void {
+    game.warden.?.facing = .init(x, 0, z);
+}
+
+fn seesPlayer(game: *game_mod.Game) bool {
+    const w = &game.warden.?;
+    return w.sees(w.eye(), game.walk.eye(), game);
+}
+
+test "the warden sees ahead, within range, and not behind it, past its range or through the gate" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    const s = w.settings.?;
+    // It stands at (−2, 2.5), and the player is put round it.
+    face(game, 1, 0);
+    try game.walk.teleport(.init(1, 0.004, 2.5));
+    try testing.expect(seesPlayer(game));
+    // Inside the angle and outside it, at a distance.
+    try game.walk.teleport(.init(1, 0.004, 4));
+    try testing.expect(seesPlayer(game));
+    try game.walk.teleport(.init(1, 0.004, 5.5));
+    try testing.expect(!seesPlayer(game));
+    // Behind it.
+    face(game, -1, 0);
+    try game.walk.teleport(.init(1, 0.004, 2.5));
+    try testing.expect(!seesPlayer(game));
+    // Beyond its range: on its own floor, straight ahead.
+    face(game, 0, 1);
+    try game.walk.teleport(.init(-2, 0.004, 2.5 + s.sight_range + 0.5));
+    try testing.expect(!seesPlayer(game));
+    // Over the low wall, which is below its eyes.
+    face(game, 0, -1);
+    try game.walk.teleport(.init(-2, 0.004, -0.5));
+    try testing.expect(seesPlayer(game));
+}
+
+test "the gate hides the player, and open it does not" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const from: core.math.Vec3 = .init(0, 1.5, -5);
+    const to: core.math.Vec3 = .init(0, 1.5, -9);
+    try testing.expect(!game.lineOfSight(from, to));
+    // And the warden reads it: straight ahead, in range, and hidden.
+    const w = &game.warden.?;
+    _ = try game.walk.world.setCharacterFeet(gpa, w.character, .init(0, 0.004, -6));
+    w.feet = .init(0, 0.004, -6);
+    face(game, 0, -1);
+    try game.walk.teleport(.init(0, 0.004, -8.6));
+    try testing.expect(!seesPlayer(game));
+    const g = &game.gate.?;
+    g.progress = 1;
+    g.current_pos = g.settings.open;
+    _ = try game.walk.world.setPose(gpa, g.body, .{ .position = g.settings.open, .rotation = .identity });
+    try testing.expect(seesPlayer(game));
+}
+
+test "seen, the warden chases at its chase speed and catches a player who stands" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(1.5, 0.004, 3));
+    try game.step(.{}, fixtures.dt);
+    try testing.expectEqual(warden.Mode.chasing, w.mode);
+    var fastest: f32 = 0;
+    var last = w.feet;
+    for (0..600) |_| {
+        try game.step(.{}, fixtures.dt);
+        fastest = @max(fastest, w.feet.sub(last).length() / fixtures.dt);
+        last = w.feet;
+        if (game.phase != .playing) break;
+    }
+    try testing.expectEqual(game_mod.Phase.caught, game.phase);
+    try testing.expectApproxEqAbs(w.settings.?.chase_speed, fastest, 0.1);
+}
+
+test "out of sight it goes to where it last saw the player, then back to its patrol" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(3.5, 0.004, 3));
+    try game.step(.{}, fixtures.dt);
+    try testing.expectEqual(warden.Mode.chasing, w.mode);
+    const seen_at = w.last_seen;
+    // The player is gone in a moment: behind the warden, far off.
+    try game.walk.teleport(.init(-5, 0.004, 7.5));
+    var saw_search = false;
+    var searched_to = false;
+    for (0..1500) |_| {
+        try game.step(.{}, fixtures.dt);
+        try testing.expectEqual(game_mod.Phase.playing, game.phase);
+        if (w.mode == .searching) {
+            saw_search = true;
+            if (w.feet.sub(seen_at).length() < 0.3) searched_to = true;
+        }
+        if (saw_search and w.mode == .patrolling) break;
+    }
+    try testing.expect(saw_search and searched_to);
+    try testing.expectEqual(warden.Mode.patrolling, w.mode);
+    // Patrolling again, at its patrol speed, between its own waypoints.
+    var fastest: f32 = 0;
+    var last = w.feet;
+    for (0..600) |_| {
+        try game.step(.{}, fixtures.dt);
+        fastest = @max(fastest, w.feet.sub(last).length() / fixtures.dt);
+        last = w.feet;
+    }
+    try testing.expectApproxEqAbs(w.settings.?.speed, fastest, 0.05);
+    try testing.expectApproxEqAbs(@as(f32, 2.5), w.feet.z, 0.1);
+}
+
+test "the warden follows a player it can see across the gap, by the jump, and does not fall" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(0.4, 0.004, -5));
+    // At the gap's edge, facing the ledge, with the player in view across it.
+    _ = try game.walk.world.setCharacterFeet(gpa, w.character, .init(0, 0.004, -1));
+    w.feet = .init(0, 0.004, -1);
+    game.crowd.?.place(w.agent, w.feet);
+    face(game, 0, -1);
+    var crossed = false;
+    var lowest: f32 = 0;
+    var top: f32 = 0;
+    for (0..600) |_| {
+        try game.step(.{}, fixtures.dt);
+        lowest = @min(lowest, w.feet.y);
+        top = @max(top, w.feet.y);
+        if (game.crowd.?.agent(w.agent).?.state == .on_link) crossed = true;
+        if (game.phase != .playing) break;
+    }
+    try testing.expect(crossed);
+    try testing.expectEqual(game_mod.Phase.caught, game.phase);
+    try testing.expect(w.feet.z < -3.2);
+    try testing.expect(lowest > -0.1);
+    try testing.expect(top > 0.4);
+}
+
+test "what the warden is doing is part of the hash" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const before = game.hashTick();
+    game.warden.?.mode = .searching;
+    try testing.expect(game.hashTick() != before);
+}
+
+test "with the gate shut it stops at the gate, and with it open it follows through" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    const start: core.math.Vec3 = .init(0, 0.004, -5);
+    const beyond: core.math.Vec3 = .init(0, 0.004, -8.6);
+
+    // Shut: told to go beyond it, it gets to the gate and no further.
+    _ = try game.walk.world.setCharacterFeet(gpa, w.character, start);
+    w.feet = start;
+    game.crowd.?.place(w.agent, start);
+    w.wait_ticks = 100_000;
+    _ = game.crowd.?.setSpeed(w.agent, 2.4);
+    _ = game.crowd.?.setTarget(w.agent, beyond);
+    for (0..300) |_| {
+        game.crowd.?.step(fixtures.dt);
+    }
+    const stopped = game.crowd.?.agent(w.agent).?;
+    try testing.expect(!stopped.complete);
+    try testing.expect(stopped.position.z > -7.7);
+    try testing.expect(stopped.position.z < -6.5);
+
+    // Open: the same order reaches it.
+    const g = &game.gate.?;
+    g.current_pos = g.settings.open;
+    const open = try env.meshes.add(try fixtures.buildMesh(gpa, &env.store, &env.assets, game));
+    try game.step(.{ .navigation = open }, fixtures.dt);
+    for (0..300) |_| game.crowd.?.step(fixtures.dt);
+    const through = game.crowd.?.agent(w.agent).?;
+    try testing.expect(through.complete);
+    try testing.expect(through.position.z < -8);
+}
+
+test "cost: a path over the court's mesh, and a tick of the chase, single-threaded, printed" {
+    if (comptime !options.available) return error.SkipZigTest;
+    if (builtin.mode == .Debug) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const m = env.meshes.get(1).?;
+
+    var query = try nav.Query.init(gpa, 1024);
+    defer query.deinit();
+    var steps: [256]nav.Step = undefined;
+    var corners: [32]nav.Corner = undefined;
+    const filter: nav.Filter = .{};
+    var path_ns: [512]u64 = undefined;
+    var prng = std.Random.DefaultPrng.init(9);
+    const r = prng.random();
+    var keep: usize = 0;
+    var n: usize = 0;
+    while (n < path_ns.len) {
+        const a = m.locate(.init(r.float(f32) * 11 - 5.5, 0, r.float(f32) * 9.5 - 1.8), .init(0.05, 0.3, 0.05)) orelse continue;
+        const b = m.locate(.init(r.float(f32) * 11 - 5.5, 0, r.float(f32) * 13 - 7.3), .init(0.05, 0.3, 0.05)) orelse continue;
+        const start = std.Io.Clock.awake.now(testing.io);
+        const path = query.find(m, &filter, a, b, &steps);
+        keep += nav.corners(m, steps[0..path.count], a.point, path.end, &corners).len;
+        path_ns[n] = @intCast(std.Io.Clock.awake.now(testing.io).nanoseconds - start.nanoseconds);
+        n += 1;
+    }
+    std.mem.sort(u64, &path_ns, {}, std.sort.asc(u64));
+
+    // A whole tick of the game during a chase is an upper bound on what the warden adds.
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(4, 0.004, 3));
+    var tick_ns: [200]u64 = undefined;
+    for (&tick_ns) |*t| {
+        // Kept ahead of it, so that it chases and never catches.
+        try game.walk.teleport(w.feet.add(.init(2.5, 0.2, 0.3)).add(.init(0, -0.196 - w.feet.y, 0)));
+        const start = std.Io.Clock.awake.now(testing.io);
+        try game.step(.{}, fixtures.dt);
+        t.* = @intCast(std.Io.Clock.awake.now(testing.io).nanoseconds - start.nanoseconds);
+    }
+    try testing.expectEqual(warden.Mode.chasing, w.mode);
+    std.mem.sort(u64, &tick_ns, {}, std.sort.asc(u64));
+    const path_p95 = @as(f64, @floatFromInt(path_ns[486])) / 1e3;
+    const tick_p95 = @as(f64, @floatFromInt(tick_ns[190])) / 1e6;
+    std.debug.print("court: {d} polygons, path p95 {d:.1} us; a chase tick p95 {d:.3} ms, worst {d:.3} ms ({d})\n", .{ m.polygons.len, path_p95, tick_p95, @as(f64, @floatFromInt(tick_ns[199])) / 1e6, keep });
+    try testing.expect(path_p95 < 50);
 }

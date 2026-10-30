@@ -122,7 +122,8 @@ gate court:gate.main {
     travel_time 1.5
 }
 
-# `pause` is the seconds the warden stands at each waypoint.
+# `pause` is the seconds the warden stands at each waypoint. What it sees and how it chases
+# (`docs/design/agents.md` §11.2) default here, so that a mod's record need not say.
 @schema warden {
     model id
     waypoints [{ x f32 y f32 z f32 }]
@@ -131,6 +132,10 @@ gate court:gate.main {
     radius f32
     height f32
     pause f32
+    chase_speed f32 (default 2.4)
+    sight_range f32 (default 7)
+    sight_angle f32 (default 0.6)
+    lose_seconds f32 (default 2)
 }
 warden court:warden.main {
     model court:models.warden
@@ -304,7 +309,7 @@ text court:text.main {
     paused "Paused"  resume "Resume"  restart "Restart"  to_title "Quit to title"
     pointer_released "Pointer released while paused."
     won "You left the court."  won_detail "All three beacons burn and the gate stands open."
-    caught "The warden caught you."  caught_detail "It walks the same patrol every time. Go around it."
+    caught "The warden caught you."  caught_detail "It saw you. Keep out of its sight, and outrun it if you cannot."
     fell "You fell into the gap."  fell_detail "The ledge is a jump away, not a step."
     beacons_lit "Beacons lit"
     objective "Light the three beacons"  objective_gate "The gate is open. Walk through it."
@@ -366,6 +371,11 @@ foundry:ui_theme court:ui.theme {
 foundry:nav_mesh court:nav.warden {
     sources [ court:models.court.collision ]
     agent_radius 0.22  agent_height 1.7  agent_climb 0.25  agent_slope 0.785398
+    # Where the warden follows a player it can see: across the gap and over the low wall.
+    links [
+        { kind "jump"  from { x 0 y 0 z -1.7 }  to { x 0 y 0 z -3.5 }  two_way true  arc 0.6 }
+        { kind "jump"  from { x -3 y 0 z 1.5 }  to { x -3 y 0 z 0.5 }  two_way true  arc 0.9 }
+    ]
 }
 
 # How FOUNDRY_COURT_NAV=show draws it: premultiplied vertex colour, its own light.

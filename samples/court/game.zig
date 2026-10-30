@@ -255,6 +255,7 @@ pub const Game = struct {
             return;
         };
         const pause_ticks: u32 = @intFromFloat(@round(settings.pause / dt));
+        const half = core.math.trig.sinCosTurns(@as(f64, settings.sight_angle) / std.math.tau);
         self.warden = .{
             .settings = settings,
             .model = acquire(content, settings.model, id),
@@ -263,6 +264,8 @@ pub const Game = struct {
             .feet = settings.waypoints[0],
             .wait_ticks = pause_ticks,
             .pause_ticks = pause_ticks,
+            .lose_ticks = @intFromFloat(@round(settings.lose_seconds / dt)),
+            .sight_cosine = @floatCast(half[1]),
         };
     }
 
@@ -359,6 +362,17 @@ pub const Game = struct {
         }
         self.events[self.event_count] = event;
         self.event_count += 1;
+    }
+
+    /// Whether nothing solid stands between two points, the gate included. The ray stops short of
+    /// the far end, so the player's own capsule, which is on the level's layer, does not count.
+    pub fn lineOfSight(self: *Game, from: Vec3, to: Vec3) bool {
+        const along = to.sub(from);
+        const length = along.length();
+        const reach = length - 0.4;
+        if (reach <= 0) return true;
+        const hit = self.walk.world.raycast(from, along.scale(1 / length), reach, .{ .mask = level_layer }) catch return false;
+        return hit == null;
     }
 
     /// The beacon a Use would light from here, or null.
@@ -459,7 +473,8 @@ pub const Game = struct {
         var caught = false;
         if (self.warden) |*w| {
             const was = w.feet;
-            try w.step(self.gpa, &self.walk.world, &self.crowd.?, rules.gravity, dt);
+            const seen = w.sees(w.eye(), self.walk.eye(), self);
+            try w.step(self.gpa, &self.walk.world, &self.crowd.?, rules.gravity, dt, seen, self.walk.result.feet);
             if (self.warden_stride > 0) {
                 var moved = w.feet.sub(was);
                 moved.y = 0;
@@ -520,6 +535,13 @@ pub const Game = struct {
             h = hashBytes(h, std.mem.asBytes(&w.yaw));
             const wp: u32 = @intCast(w.waypoint);
             h = hashBytes(h, std.mem.asBytes(&wp));
+            const mode: u8 = @intFromEnum(w.mode);
+            h = hashBytes(h, std.mem.asBytes(&mode));
+            h = hashBytes(h, std.mem.asBytes(&w.unseen_ticks));
+            h = hashBytes(h, std.mem.asBytes(&w.last_seen.x));
+            h = hashBytes(h, std.mem.asBytes(&w.last_seen.z));
+            h = hashBytes(h, std.mem.asBytes(&w.facing.x));
+            h = hashBytes(h, std.mem.asBytes(&w.facing.z));
             h = hashBytes(h, std.mem.asBytes(&w.velocity));
             h = hashBytes(h, std.mem.asBytes(&w.wait_ticks));
             h = hashBytes(h, std.mem.asBytes(&w.weight));

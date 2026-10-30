@@ -158,6 +158,11 @@ pub const ScriptDriver = struct {
                     if (g.progress >= 1.0) self.step += 1;
                 },
                 .stand => {},
+                .watch => |w| if (game.warden) |*warden| {
+                    const heading_east = warden.facing.x > 0;
+                    const past = if (w.east) warden.feet.x > w.past else warden.feet.x < w.past;
+                    if (heading_east == w.east and past) self.step += 1;
+                },
                 .press, .expect, .wait => unreachable,
             }
             return out;

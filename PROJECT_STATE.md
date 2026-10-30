@@ -1,7 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-30
-**Current handoff: M33 Step 9 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 10** (`court`: the warden sees and chases). The warden does not see yet, and its links do not exist. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Last updated:** 2026-10-31
+**Current handoff: M33 Step 10 is complete, and the owner's play is owed** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 11** (Windows/Vulkan on the Arc PC). Criterion 8 is open: nobody has played the chase, and M33 cannot close without it. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 10 is done (2026-10-31): the warden sees and chases.**
+- It sees within 7 m and 0.6 rad of the way it faces, over the low wall and not through the shut gate. Seen, it runs at 2.4 m/s against the player's 3, jumps the gap and the wall by links, and follows through the open gate. Out of sight it goes to where it last saw the player, then back to its patrol.
+- All four numbers are content. The scripts are re-laid with a `watch` step, which waits for the warden and not a clock. `caught_detail` changes.
+- `win`, `caught`, `fell` and the 42,023-tick soundtrack run all replay exactly. `noon` needed no change.
+- On the M5: a path 0.8 us, a whole chase tick 0.015 ms. Metal validation clean. `dist -Dapp=court` stages.
+- Bar 2,621/2,631 (ten skips), 128/128 steps.
 
 **M33 Step 9 is done (2026-10-30): the warden walks the mesh.**
 - The patrol is a `nav.Crowd` agent: the crowd gives a wish, the warden's controller moves with gravity, and `place` reports it. No script's route moved.
