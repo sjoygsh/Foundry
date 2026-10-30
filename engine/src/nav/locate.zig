@@ -72,6 +72,15 @@ pub fn heightOn(mesh: *const poly.Mesh, pi: u32, x: f32, z: f32) ?f32 {
     return detail_mod.surfaceHeight(pts[0..p.count], tris[0 .. p.count - 2], x, z);
 }
 
+/// The nearest point of polygon `pi` to `point`, on its surface.
+pub fn nearestOn(mesh: *const poly.Mesh, pi: u32, point: Vec3) Vec3 {
+    const p = &mesh.polygons[pi];
+    var loop: [poly.max_polygon_vertices]Vec3 = undefined;
+    for (p.slice(), 0..) |v, i| loop[i] = mesh.position(v);
+    const xz = nearestInside(loop[0..p.count], point.x, point.z);
+    return .init(xz[0], heightOn(mesh, pi, xz[0], xz[1]) orelse loop[0].y, xz[1]);
+}
+
 /// `(x, z)` itself if it is inside the convex counter-clockwise loop, otherwise the nearest
 /// point on its boundary.
 fn nearestInside(loop: []const Vec3, x: f32, z: f32) [2]f32 {

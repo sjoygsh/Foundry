@@ -901,3 +901,68 @@ agent fits" test holds whichever way round the stages run.
 
 Bar **2,533/2,540** (seven skips), 127/127 steps, up 13 tests from Step 1. The full bar, all
 exit 0. No sample's content changed, so no `dist` staging.
+
+## Resolution — Step 3: search and string pulling (2026-10-30)
+
+**What exists now:**
+- **`engine/src/nav/search.zig`:** `Filter`, `Step`, `Path` and `Query`, with `init`, `deinit`
+  and `find`. `find` takes no allocator, so it cannot allocate.
+- **`engine/src/nav/funnel.zig`:** `Corner` and `corners`.
+- **`locate.nearestOn`,** the nearest point of one polygon to a point.
+- **`engine/src/nav/search_tests.zig`.**
+
+**Where the step sharpened the design:**
+- **`Step` gains `reversed`.** §5's `Step` named only the link. A two-way link's ends can be told
+  apart from the polygons except when both lie in one polygon, so the search says which way it
+  crossed, and `Corner` carries it on.
+- **`Path` gains `end`:** the goal, or for a partial path the nearest point of its last polygon.
+  The funnel needs a point to pull to, and a caller should not have to work it out.
+- **Node storage.** A `Query` does not know a mesh's size, so nodes are a pool of `max_nodes`
+  reached through an open-addressed table, cleared by each `find`. `max_nodes` is 1 to 65,536,
+  and `InvalidNodes` refuses the rest.
+- **One entry point per polygon.** A better route to an open polygon replaces its point and its
+  cost, and a closed polygon is not reopened.
+- **A start in an excluded area may walk out of it,** at cost 1 a metre. Otherwise an agent
+  pushed into one could never leave. A goal in one is unreachable and answers a partial path.
+- **A path longer than `out` keeps its beginning** and is not complete, since an agent follows a
+  path from its start.
+- **The inset is at most 2 cm or a tenth of the portal.** A vertex counts as at a wall if either
+  polygon of the portal has a boundary edge there. A vertex inside a fan whose wall touches
+  neither polygon is not inset, and the bound below holds regardless.
+- **The funnel's last portal needs a duplicate check.** It is the stop on both sides, so the
+  textbook loop can emit the stop as a corner, and the stop was then written twice. Mononen's
+  version checks the same thing at its end.
+- **The funnel is bounded.** A deliberate mutation sent the textbook loop round forever, and
+  that run hung for an hour before anyone noticed. A path that joins can never do this, because
+  each restart moves the apex on a portal. But `corners` runs inside a tick, and a tick must end
+  whatever it is handed, so restarts are capped at `2 × portals + 8`.
+- **A collinear corner is allowed.** Where a straight line runs exactly along a polygon edge,
+  the funnel may keep an extra point on the line. It costs nothing to walk.
+
+**Measured:**
+- **Criterion 1, the property:** 2,000 seeded start and goal pairs on `yard`. Whether a path is
+  complete equals a flood's answer for every pair. Sampled every 5 cm, every straightened path
+  stays on the mesh. The worst length is **1.144** times the reference, against a bound of 1.25.
+  The reference is Dijkstra over the eroded spans, 8-way, from 20 starts.
+- **The truth table:** every pair of polygons on the course, with a ladder and a drop, and on
+  `yard`.
+- **Areas:** a band of cost 1.1 is crossed. At cost 50, or with a filter scaling it by 100, the
+  path goes round. A link is taken while it is free and left at a cost of 100 m.
+- **§7's answer, on the M5 in ReleaseSafe on `yard`, 75 polygons:** a path with its corners has a
+  p95 of **3.5 µs** and a worst of 7.0 µs, against criterion 7's 50 µs. `locate` has a p95 of
+  **0.4 µs**, far under §7's 50 µs trigger, so it stays a scan. The i3's figures come at Step 11.
+
+**Guards verified by breaking them.** Each of these fails at least one test: the area's cost
+ignored, the filter's scale ignored, an excluded area walked, an excluded link crossed, a filter
+never invalid, a partial path answering its start, the table not cleared, the heap ignoring cost,
+a link's cost dropped, the inset removed, the funnel's left side removed, the end not de-duplicated
+and a link ignored by the funnel. Three needed work:
+- the link's cost survived at first, and a new test now catches it;
+- the inset first failed only by not compiling, and is now a real mutation with its own test;
+- the left-side mutation hung, as above, and now fails three tests.
+
+**Not yet:** nothing moves along a path. `Crowd` is Step 4.
+
+Bar **2,545/2,553** (eight skips: Step 2's seven and the new timing test's Debug skip), 127/127
+steps, up 12 tests from Step 2. The full bar, all exit 0. No sample's content changed, so no
+`dist` staging.

@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 2 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 3** (`nav`: search and string pulling). `Query`, `Filter` and the funnel do not exist yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 3 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 4** (`nav`: `Crowd`, the corridor and links, without avoidance). Nothing moves along a path yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 3 is done (2026-10-30): search and string pulling.**
+- `nav.Query` is A* over polygons with links as edges and allocates once, at `init`. `nav.Filter` scales or excludes areas and kinds of link. A goal it cannot reach answers a partial path.
+- `nav.corners` is the funnel, bounded so that a tick always ends.
+- 2,000 seeded paths on `yard` stay on the mesh, with a worst of 1.144 times a voxel reference against 1.25.
+- On the M5, in ReleaseSafe, a path with its corners has a p95 of 3.5 µs, and `locate` 0.4 µs, so `locate` stays a scan.
+- Bar 2,545/2,553 (eight skips), 127/127 steps.
 
 **M33 Step 2 is done (2026-10-30): areas and links in the build.**
 - `poly.buildWith` marks areas after erosion and attaches links after detail. `Build.startWith` carries the same features to the pool. With no features both are M32's calls, to the byte.

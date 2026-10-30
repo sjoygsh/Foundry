@@ -22,9 +22,11 @@
 pub const config = @import("config.zig");
 pub const input = @import("input.zig");
 pub const features = @import("features.zig");
+pub const funnel = @import("funnel.zig");
 pub const heightfield = @import("heightfield.zig");
 pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
+pub const search = @import("search.zig");
 pub const contour = @import("contour.zig");
 pub const poly = @import("poly.zig");
 pub const detail = @import("detail.zig");
@@ -36,7 +38,9 @@ pub const view = @import("view.zig");
 // A game sees these today and a mod from M48, so renaming one is a compatibility decision
 // rather than a tidy-up (CLAUDE.md §7).
 pub const Config = config.Config;
+pub const Corner = funnel.Corner;
 pub const Features = features.Features;
+pub const Filter = search.Filter;
 pub const Link = link.Link;
 pub const LinkInput = features.LinkInput;
 pub const LinkKind = features.LinkKind;
@@ -45,12 +49,16 @@ pub const Grid = input.Grid;
 pub const Heightfield = heightfield.Heightfield;
 pub const OpenField = open.OpenField;
 pub const Mesh = poly.Mesh;
+pub const Path = search.Path;
 pub const Polygon = poly.Polygon;
+pub const Query = search.Query;
+pub const Step = search.Step;
 pub const Build = task.Build;
 pub const BuildError = poly.BuildError;
 pub const Detail = detail.Detail;
 pub const Located = locate.Located;
 pub const ViewVertex = view.ViewVertex;
+pub const none_link = link.none_link;
 pub const none_polygon = poly.none_polygon;
 pub const InputError = input.InputError;
 pub const Pose = input.Pose;
@@ -73,6 +81,7 @@ pub const solid = heightfield.solid;
 pub const build = poly.build;
 pub const buildWith = poly.buildWith;
 pub const buildPolygons = poly.buildPolygons;
+pub const corners = funnel.corners;
 pub const debugView = view.debugView;
 pub const debugViewCount = view.debugViewCount;
 
@@ -93,4 +102,7 @@ test {
     _ = @import("build_tests.zig");
     _ = link;
     _ = @import("features_tests.zig");
+    _ = search;
+    _ = funnel;
+    _ = @import("search_tests.zig");
 }
