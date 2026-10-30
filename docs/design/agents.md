@@ -1454,3 +1454,99 @@ and the hash), and each gained a test. Two first failed only by not compiling, a
 
 Bar **2,621/2,631** (ten skips: Step 9's nine and the new cost test's Debug skip), 128/128 steps, up
 8 tests from Step 9. The full bar, all exit 0.
+
+## Resolution — Step 11: Windows/Vulkan (2026-10-31)
+
+**What exists now:**
+- **`scripts/m33/windows.ps1`,** from M32's. `build` runs the native suites over SSH and stages a
+  relocated, read-only ReleaseSafe install. `desktop` runs both samples from it in the desktop session,
+  from a scheduled task.
+- **A new line in `samples/sandbox3d/gallery.zig`'s `Window`:** the worst frame's place in the window,
+  and each span in it over 1 ms. It is measurement only, and it is what settled the frames below.
+
+**Run on** the Arc A750 and the i3-10105F, from a fresh clone of `m32` with M33's commits by bundle.
+Nothing was pushed.
+
+**Suites.** Null 2,600/2,619 (19 skips), 124/124 steps. Vulkan 2,881/2,911 (30 skips), 228/228 steps.
+ReleaseSafe `nav-test`, `sandbox3d-test` and `court-test` 260/260.
+
+**Criterion 5.** All three pins hold on Windows, in Debug and ReleaseSafe, unchanged: the course
+14865720887737603270, with features 14748995640725302437, and the crowd 9298260793551547065. **There
+is no difference to record.** Every court ending replayed exactly.
+
+**Criterion 7, on the i3 in ReleaseSafe,** two runs:
+
+| Measure | i3 | M5 | i3 budget |
+| --- | --- | --- | --- |
+| A path over the court's mesh, p95 | 3.4–5.2 µs | 0.8 µs | 150 µs |
+| A crowd step of 32 agents, p95 | 0.024–0.026 ms, worst 0.122 ms | 0.011 ms | 3 ms |
+| A whole chase tick, p95 | 0.043–0.047 ms | 0.015 ms | 0.3 ms for the warden |
+| The court's mesh, built | 14.25–16.94 ms | — | 150 ms |
+
+On `yard`, a path's p95 is 21 µs and `locate`'s 2.4 µs, under §7's 50 µs trigger, so `locate` stays a
+scan. The tests assert the M5's budgets, stricter than the i3's, and they passed on the i3.
+
+**Criterion 9.** From the relocated install, read-only and unchanged by the runs:
+
+| Run | Polygons, crate out / in | Links | Request to arrival, load / after |
+| --- | --- | --- | --- |
+| base | 33 / 31 | 2 | 53–62 ms / 8–17 ms |
+| `marsh` | 35 / 33 | 1 | 61–89 ms / 2–17 ms |
+| `plinth` | 37 / 35 | 2 | 56–72 ms / 2–17 ms |
+
+The counts equal the Mac's. Both `plinth` and `marsh` ran under Khronos validation with synchronization,
+and so did `win`, `caught` and `fell`. Each log holds only the line that proves it was live.
+
+| Court run | Ending ticks | Replay |
+| --- | --- | --- |
+| `win` | 1,225 and 2,442 | 2,447 matched |
+| `caught` | 95 | 98 matched |
+| `fell` | 193 | 196 matched |
+| `win`, validation | 1,227 and 2,444 | 2,449 matched |
+| `caught`, validation | 96 | 98 matched |
+| `fell`, validation | 195 | 197 matched |
+
+Endings fall later than the Mac's 1,219, 90 and 185, and vary a little by run, because the first mesh
+arrives 95–110 ms after the request here, against 17 ms. It is a recorded input, so each run's replay
+matches. The 95 ms is the court's own first frame, 85–106 ms here with or without a mesh, as M32 found.
+
+**Frames against `navigation.md` criterion 5.** The first figures needed explaining: every run that
+built went over 16.67 ms at load, against 3 of 9 with `NAV=off`, and 2 of 9 reloads went over. That is
+why the new line exists. Eleven more runs, over the same 900 frames:
+
+| Window | Worst frame | What it spent | Navigation's share |
+| --- | --- | --- | --- |
+| Load, built | 15.5–25.5 ms | `input` 3–13, `render.prepare` 8–10 | under 1 ms, not in the list |
+| Load, `NAV=off` | 22.0–24.6 ms | `input` 11–15, `render.prepare` 8–10 | none |
+| Reload | 7.7–20.7 ms | `uploads.pump` 7–14 | at most 1.1 ms |
+| The crate, each way | 1.7–11.2 ms | below | 4.7–10.0 ms, once a run or so |
+
+- **The load frame is the request's frame, and navigation is not what it spends.** It is the sample's
+  first `input` and skinning, the same without a build. The earlier gap was run-to-run spread in `input`.
+- **The reload frame is M28's landmark regenerating.** It goes over 16.67 ms in `uploads.pump`, with
+  navigation's request at 0.3–0.6 ms. It is a frame a person asked for with **r**, and it is not a
+  rebuild's. It is left as it stands.
+- **A running rebuild never crosses:** the worst crate frame in all the runs is 11.2 ms.
+- **Not explained: the crate's `navigation.pump`.** In the frame the crate asks, the span is 4.7–5.1 ms
+  nearly every run, and 8.6 and 10.0 ms once each, against 0.2 ms on the M5. It falls in the frame
+  before arrival, so it is the request and not the mesh's arrival. The same request from a reload,
+  outside the span, costs 0.3–0.6 ms. The cause was not found. It is inside the frame, and the span's
+  p95 stays 0.002 ms against 2 ms.
+
+So criterion 7 holds: no frame goes over 16.67 ms because of a rebuild.
+
+**Not done again after the new line:** the validated runs and the court's. It changes only what a
+window logs. The suites, the install and eleven sandbox runs did rerun on the final code.
+
+**Criterion 8 is met.** The owner played the chase on the Mac on 2026-10-31, was caught twice and got
+through on the third go: "his line of sight is small so it salright but he can jump over ledges and
+gaps and is so quick scared the crap outta me ... good one lol". They asked for no tuning, so no
+number moved. Nobody has played on Windows, which no criterion asks for.
+
+**Where the step sharpened the design:** `NAV=off` keeps the reload, and a built-and-not-drawn run joins
+the set, so the view's cost can be told from the build's. `stout` leaves the set for `marsh`, as Step 8
+found it has no links.
+
+**Guards verified by breaking them:** none. The step adds a measurement and a script, no guard.
+
+Bar **2,621/2,631** (ten skips), 128/128 steps, unchanged from Step 10. The full bar, all exit 0.

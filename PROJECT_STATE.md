@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M33 Step 10 is complete, and the owner's play is owed** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 11** (Windows/Vulkan on the Arc PC). Criterion 8 is open: nobody has played the chase, and M33 cannot close without it. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 11 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 12**, the close. All ten criteria are met, and the owner has played the chase. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not. The PC still holds the clone and evidence, which the close removes by exact path.
+
+**M33 Step 11 is done (2026-10-31): Windows/Vulkan on the Arc A750.**
+- All three pins hold on Windows, unchanged. Both samples ran from a relocated, read-only ReleaseSafe install, with `win`, `caught` and `fell` replaying exactly, `marsh` taking the drop away, and validation clean.
+- On the i3: a court path 3.4–5.2 us, a 32-agent crowd step 0.026 ms, a chase tick 0.047 ms, the court's mesh 14–17 ms. All well inside budget.
+- The worst frame in any running rebuild is 11.2 ms. Load and reload frames can pass 16.67 ms, but those are the sample's first frame and M28's landmark upload, and navigation takes about 1 ms of them at most. A new log line shows this.
+- Not explained: on the frame the crate asks for a rebuild, `navigation.pump` takes about 5 ms on the i3, against 0.2 ms on the M5. It stays inside the frame.
+- The owner played the chase on the Mac, so criterion 8 is met, with no tuning.
+- Windows null 2,600/2,619 (19 skips), Vulkan 2,881/2,911 (30 skips), release 260/260. Mac bar 2,621/2,631 (ten skips), 128/128 steps.
 
 **M33 Step 10 is done (2026-10-31): the warden sees and chases.**
 - It sees within 7 m and 0.6 rad of the way it faces, over the low wall and not through the shut gate. Seen, it runs at 2.4 m/s against the player's 3, jumps the gap and the wall by links, and follows through the open gate. Out of sight it goes to where it last saw the player, then back to its patrol.

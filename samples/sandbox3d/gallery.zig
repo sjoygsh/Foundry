@@ -136,6 +136,12 @@ pub const Window = struct {
     pump: [capacity]i64 = undefined,
     len: usize = 0,
     pump_len: usize = 0,
+    // The window's worst frame: how far in it fell and what it spent over a millisecond on, so
+    // a load frame can be told from the frame a build arrived in.
+    worst_ns: i64 = 0,
+    worst_at: usize = 0,
+    worst_spans: [256]u8 = undefined,
+    worst_spans_len: usize = 0,
     reported: bool = false,
 
     pub fn start(self: *Window, frame: u64, path: Path) void {
@@ -163,8 +169,19 @@ pub const Window = struct {
             if (std.mem.eql(u8, name, "render.acquire") or std.mem.eql(u8, name, "render.present")) waiting += span.durationNs();
             if (std.mem.eql(u8, name, self.pump_span)) pump = (pump orelse 0) + span.durationNs();
         }
+        const work = frame.total_ns - waiting;
+        if (work > self.worst_ns) {
+            self.worst_ns = work;
+            self.worst_at = @intCast(frame.index - requested);
+            var text: std.Io.Writer = .fixed(&self.worst_spans);
+            for (frame.spans) |span| {
+                if (span.durationNs() < core.time.ns_per_ms) continue;
+                text.print("{s} {d:.1}, ", .{ recorder.nameOf(span.name), ms(span.durationNs()) }) catch break;
+            }
+            self.worst_spans_len = text.end;
+        }
         if (self.len < capacity) {
-            self.work[self.len] = frame.total_ns - waiting;
+            self.work[self.len] = work;
             self.len += 1;
         }
         if (pump) |p| if (self.pump_len < capacity) {
@@ -182,6 +199,9 @@ pub const Window = struct {
         const work = core.profile.summarise(self.work[0..self.len], &scratch);
         log.info("{s}: frame work (no pacing sleep, image acquire or present) over {d} frames from the request: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget 16.67ms", .{
             self.label, work.count, ms(work.median_ns), ms(work.p95_ns), ms(work.max_ns),
+        });
+        log.info("{s}: worst frame {d} after the request, ready at {d}; spans over 1ms: {s}", .{
+            self.label, self.worst_at, (self.ready orelse self.requested.?) - self.requested.?, self.worst_spans[0..self.worst_spans_len],
         });
         const pump = core.profile.summarise(self.pump[0..self.pump_len], &scratch);
         log.info("{s}: {s} over {d} frames: median {d:.3}ms p95 {d:.3}ms max {d:.3}ms; budget p95 2.0ms", .{
