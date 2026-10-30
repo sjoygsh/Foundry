@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 8 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 9** (`court`: the warden walks the mesh). The court uses none of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 9 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 10** (`court`: the warden sees and chases). The warden does not see yet, and its links do not exist. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 9 is done (2026-10-30): the warden walks the mesh.**
+- The patrol is a `nav.Crowd` agent: the crowd gives a wish, the warden's controller moves with gravity, and `place` reports it. No script's route moved.
+- A mesh reaches a tick as `Intent.navigation`, and the game and its replay share one `nav.Meshes`. Play waits for the first mesh.
+- The gate is a source. Shut, the exit is its own island (17 polygons); open, it joins (19). The second mesh is built when the gate rests, and reused at later openings. Restart goes back to generation 1 with no build.
+- Replay matches whether the open mesh lands 1 tick or 37 ticks after the gate rests.
+- From a relocated ReleaseSafe install on Metal, `win`, `caught` and `fell` end and replay exactly, validation clean. `dist -Dapp=court` stages.
+- Bar 2,613/2,622 (nine skips), 128/128 steps.
 
 **M33 Step 8 is done (2026-10-30): the `sandbox3d` crowd, proved on the Mac.**
 - Sixteen pawns circulate on the mesh, keep off the mud by a dry lane, and go another way when **M** slides a crate into it. One climber uses the drop and the ladder. A blocked pawn takes its next corner.

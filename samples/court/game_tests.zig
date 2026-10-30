@@ -10,6 +10,8 @@ const game_mod = @import("game.zig");
 const scripted = @import("scripted.zig");
 const beacon_mod = @import("beacon.zig");
 const gate_mod = @import("gate.zig");
+const nav = @import("nav");
+const nav_mod = @import("nav.zig");
 const warden_mod = @import("warden.zig");
 const options = @import("court_test_options");
 const play = @import("testdata/play.zig");
@@ -26,6 +28,8 @@ pub const TestEnv = struct {
     store: data.Store,
     assets: asset.Registry,
     game: game_mod.Game,
+    /// The game's meshes, on the heap because a `TestEnv` is moved: generation 1, the gate shut.
+    meshes: *nav.Meshes,
     core_bytes: []u8,
     court_bytes: []u8,
     noon_bytes: ?[]u8 = null,
@@ -43,6 +47,7 @@ pub const TestEnv = struct {
         var schemas: data.Registry = .init(gpa, .default);
         errdefer schemas.deinit(gpa);
         try asset.schemas.registerAll(gpa, &schemas);
+        try asset.nav_mesh.registerAll(gpa, &schemas);
         var store: data.Store = .init(gpa, .default);
         errdefer store.deinit(gpa);
 
@@ -66,6 +71,12 @@ pub const TestEnv = struct {
         var game = game_mod.Game.init(gpa);
         errdefer game.deinit(&assets, null);
         game.refresh(&store, &assets, null, dt);
+        const meshes = try gpa.create(nav.Meshes);
+        errdefer gpa.destroy(meshes);
+        meshes.* = .init(gpa, .{});
+        errdefer meshes.deinit(core.tasks.immediate);
+        _ = try meshes.add(try buildMesh(gpa, &store, &assets, &game));
+        game.meshes = meshes;
 
         return .{
             .os = os,
@@ -74,6 +85,7 @@ pub const TestEnv = struct {
             .store = store,
             .assets = assets,
             .game = game,
+            .meshes = meshes,
             .core_bytes = core_bytes,
             .court_bytes = court_bytes,
             .noon_bytes = noon_bytes,
@@ -90,6 +102,8 @@ pub const TestEnv = struct {
 
     pub fn deinit(self: *TestEnv, gpa: std.mem.Allocator) void {
         self.game.deinit(&self.assets, null);
+        self.meshes.deinit(core.tasks.immediate);
+        gpa.destroy(self.meshes);
         self.assets.deinit(gpa);
         self.store.deinit(gpa);
         self.schemas.deinit(gpa);
@@ -100,6 +114,23 @@ pub const TestEnv = struct {
         self.os.deinit();
     }
 };
+
+/// The warden's mesh, as the sample builds it, with the gate where it stands now.
+pub fn buildMesh(gpa: std.mem.Allocator, store: *const data.Store, assets: *asset.Registry, game: *const game_mod.Game) !nav.Mesh {
+    var sources: std.ArrayList(nav.Source) = .empty;
+    defer sources.deinit(gpa);
+    var held: std.ArrayList(asset.AssetHandle) = .empty;
+    defer {
+        for (held.items) |h| assets.release(h);
+        held.deinit(gpa);
+    }
+    var features: nav_mod.Features = .{};
+    const config = try nav_mod.gather(gpa, store, assets, &sources, &held, &features);
+    var box: nav.BoxGeometry = undefined;
+    const g = game.gate.?;
+    try sources.append(gpa, nav.boxSource(g.settings.half_extents, .{ .position = g.current_pos, .rotation = .identity }, &box));
+    return nav.buildWith(gpa, config, sources.items, features.view());
+}
 
 const max_ticks = 3000;
 

@@ -1300,3 +1300,73 @@ obstacle, and each test was strengthened.
 Bar **2,605/2,614** (nine skips), 128/128 steps, up 6 tests from Step 7. The full bar, all exit 0.
 `nav-test` also passes in ReleaseSafe and under x86_64, with both pins unchanged. `dist` stages no
 `sandbox3d`, as M28 recorded, so the relocated install is the staging evidence.
+
+## Resolution — Step 9: the warden walks the mesh (2026-10-30)
+
+**What exists now:**
+- **`samples/court/warden.zig`:** the patrol is an agent. The warden tells a `nav.Crowd` its waypoint,
+  gives the wish to `moveCharacter` with its own gravity, and calls `place`. With no mesh it stands.
+- **`samples/court/walk.zig`:** `Intent.navigation`, a generation to adopt, which `Pending` keeps
+  until a tick takes it.
+- **`samples/court/game.zig`:** `Game` owns the crowd and borrows `meshes`. `step` adopts first, before
+  the action switch, so a menu tick can carry one. `reset` adopts generation 1. `gate_rested` marks
+  the tick the gate stopped, for the frame. `hashTick` adds the crowd and the generation.
+- **`samples/court/nav.zig`** now runs on `nav.Meshes`, keeping all of a run's. `gateOpened`, `takeOwed`,
+  `noteAdopted`, and `ready`, which Play waits for.
+- **`samples/court/main.zig`:** the meshes outlive both games, which share them. Play and a script's
+  hands wait for `ready`. The overlay gets a `nav.Report`.
+
+**Where the step sharpened the design:**
+- **The court makes two meshes,** as §9 said, and this is now how: the second is built the first time
+  the gate rests open, and later openings owe it at once. `win` opens the gate twice and builds twice
+  in all. A build that lands after a restart joins the list and is not adopted.
+- **The gate asks when it has come to rest,** as the sandbox's crate does (Step 8).
+- **The title is not hashed for the crowd or the generation.** No world runs there and Play resets
+  both, so a title reached from a game must equal a fresh one, and a test holds that.
+- **The arrival radius of a patrol is 0.04 m,** so the warden still reaches its waypoints: it was
+  `speed × dt + 0.01` before. **The acceleration is 8 m/s²,** a value of the sample's, in `params`.
+- **The first mesh is not owed.** Play's reset adopts generation 1, so nothing goes in an `Intent`.
+- **`FOUNDRY_COURT_NAV=off` is the no-mesh case:** the warden stands, as §9 says of a failed build. It
+  remains a measure of the title's frames, and a script's patrol will not run under it.
+
+**Measured, in `court-test`, against the compiled court:**
+- Every existing ending, replay and patrol test passes with the warden on the mesh, unchanged but for
+  the gate joining the sources: **no script's route moved,** and no `game_tests` assertion changed.
+- **Criterion 4:** with the gate shut, the exit is an island of its own and no path reaches it from
+  the ledge. Open, a path does, and there is one island fewer.
+- **Criterion 5, the court's own:** the gate rests, and its mesh is adopted 1 tick or 37 ticks later.
+  Each run replays exactly, tick for tick, into a fresh game reading the same meshes. The two runs
+  differ, because a later arrival is a different input. Restart returns to generation 1 with no build.
+- A frame with no tick keeps its generation for the next, and a tick takes it once.
+- The two meshes are built once, reused, and left unadopted if a restart shut the gate.
+- A push moves the body, and the agent follows it, because the controller has the last word.
+
+**From a relocated ReleaseSafe install on the M5 with Metal,** with the mesh shown:
+
+| Run | Meshes | Ending ticks | Replay |
+| --- | --- | --- | --- |
+| `win` | 17 polygons shut, 19 open | won at 614 and 1,217 | 1,224 ticks matched |
+| `caught` | 17 | caught at 113 | 116 matched |
+| `fell` | 17 | fell at 186 | 188 matched |
+| `win`, Metal validation | 17, 19 | won at 610 and 1,213 | 1,219 matched |
+
+- **`win`** made two builds across two openings, so the second opening reused its mesh.
+- **Validation** ran to exit 0 with no message.
+- Requests reached arrival in 12–19 ms.
+- `dist -Dapp=court` stages.
+- **Seen by eye:** no person has looked at it. There is little to see yet: the warden patrols as it
+  did.
+
+**Guards verified by breaking them.** All 12 mutations fail a test: an intent not adopted, restart
+keeping the open mesh, the generation out of the hash, the title in the hash, the body not reported,
+the pause lost, `Pending` dropping or keeping a generation, the gate never resting, the gate left out
+of a build, every opening rebuilding, and a late mesh adopted anyway. **Three survived at first.** Two
+gained tests. The third, a check that the warden had a mesh before it took a target, was redundant:
+a crowd with no mesh does nothing. It was removed.
+
+**Not tested by a unit:** Play's refusal itself is one line in `main.zig`, and the evidence for it is
+that scripted runs began only after the first mesh. It is not a mutation-proved guard.
+
+**Not yet:** the warden does not see. Sight, the chase and the jump links are Step 10.
+
+Bar **2,613/2,622** (nine skips), 128/128 steps, up 8 tests from Step 8. The full bar, all exit 0.

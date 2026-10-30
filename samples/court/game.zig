@@ -11,6 +11,7 @@ const walk_mod = @import("walk.zig");
 const walk_settings = @import("walk_settings.zig");
 const beacon_mod = @import("beacon.zig");
 const gate_mod = @import("gate.zig");
+const nav = @import("nav");
 const warden_mod = @import("warden.zig");
 
 const Vec3 = core.math.Vec3;
@@ -47,6 +48,13 @@ pub const Game = struct {
     beacon_count: usize = 0,
     gate: ?gate_mod.Gate = null,
     warden: ?warden_mod.Warden = null,
+    /// The warden's agent, on the mesh this game has adopted.
+    crowd: ?nav.Crowd = null,
+    /// A run's meshes, shared with its replay, and the generation adopted. The frame owns them.
+    meshes: ?*const nav.Meshes = null,
+    generation: u32 = 0,
+    /// Set by the tick the gate came to rest open, for the frame to take.
+    gate_rested: bool = false,
     /// World ticks since the game began: only `playing` ticks count.
     tick: u64 = 0,
     /// The beacon the Use ray would light now, as of the last world tick. The HUD's prompt.
@@ -87,6 +95,8 @@ pub const Game = struct {
         self.gate = null;
         if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content);
         self.warden = null;
+        if (self.crowd) |*c| c.deinit();
+        self.crowd = null;
         self.walk.deinit(assets);
     }
 
@@ -233,11 +243,23 @@ pub const Game = struct {
             return;
         };
 
+        if (self.crowd) |*c| c.deinit();
+        self.crowd = nav.Crowd.init(self.gpa, .{ .max_agents = 1 }) catch |err| {
+            log.warn("no crowd ({t}); patrol disabled", .{err});
+            _ = self.walk.world.removeCharacter(self.gpa, character);
+            return;
+        };
+        const agent = self.crowd.?.add(warden_mod.Warden.params(&settings), settings.waypoints[0]) catch |err| {
+            log.warn("no warden agent ({t}); patrol disabled", .{err});
+            _ = self.walk.world.removeCharacter(self.gpa, character);
+            return;
+        };
         const pause_ticks: u32 = @intFromFloat(@round(settings.pause / dt));
         self.warden = .{
             .settings = settings,
             .model = acquire(content, settings.model, id),
             .character = character,
+            .agent = agent,
             .feet = settings.waypoints[0],
             .wait_ticks = pause_ticks,
             .pause_ticks = pause_ticks,
@@ -295,14 +317,25 @@ pub const Game = struct {
         if (self.gate) |*g| {
             try g.reset(self.gpa, &self.walk.world);
         }
+        // The gate is shut again, so the first mesh is right again. No build, and no wait.
+        self.adopt(1);
         if (self.warden) |*w| {
-            try w.reset(self.gpa, &self.walk.world);
+            try w.reset(self.gpa, &self.walk.world, &self.crowd.?);
         }
+        self.gate_rested = false;
         self.tick = 0;
         self.aimed = null;
         self.walked = 0;
         self.warden_walked = 0;
         self.air_ticks = 0;
+    }
+
+    /// Reads `generation` from now on. An input (`agents.md` §9): a tick calls it first.
+    fn adopt(self: *Game, generation: u32) void {
+        const meshes = self.meshes orelse return;
+        const mesh = meshes.get(generation) orelse return;
+        self.generation = generation;
+        if (self.crowd) |*c| c.setMesh(mesh);
     }
 
     pub fn restart(self: *Game) !void {
@@ -344,6 +377,8 @@ pub const Game = struct {
     /// One fixed tick. A menu's action is the whole tick: the world does not also advance.
     pub fn step(self: *Game, intent: Intent, dt: f32) !void {
         self.event_count = 0;
+        self.gate_rested = false;
+        if (intent.navigation != 0) self.adopt(intent.navigation);
         switch (intent.action) {
             .none => {},
             .play => {
@@ -414,13 +449,17 @@ pub const Game = struct {
         };
 
         // 3. Step gate.
-        if (self.gate) |*g| try g.step(self.gpa, &self.walk.world, dt);
+        if (self.gate) |*g| {
+            const was = g.progress;
+            try g.step(self.gpa, &self.walk.world, dt);
+            self.gate_rested = was < 1 and g.progress >= 1;
+        }
 
         // 4. Step warden.
         var caught = false;
         if (self.warden) |*w| {
             const was = w.feet;
-            try w.step(self.gpa, &self.walk.world, rules.gravity, dt);
+            try w.step(self.gpa, &self.walk.world, &self.crowd.?, rules.gravity, dt);
             if (self.warden_stride > 0) {
                 var moved = w.feet.sub(was);
                 moved.y = 0;
@@ -485,6 +524,15 @@ pub const Game = struct {
             h = hashBytes(h, std.mem.asBytes(&w.wait_ticks));
             h = hashBytes(h, std.mem.asBytes(&w.weight));
             h = hashBytes(h, std.mem.asBytes(&w.tick));
+        }
+        // Not at the title: no world runs there, and Play resets the warden and adopts generation 1,
+        // so a title reached from a game is the title a fresh one is.
+        if (self.phase != .title) {
+            if (self.crowd) |*c| {
+                const crowd_hash = c.hash();
+                h = hashBytes(h, std.mem.asBytes(&crowd_hash));
+            }
+            h = hashBytes(h, std.mem.asBytes(&self.generation));
         }
         return h;
     }

@@ -22,6 +22,9 @@ pub const Intent = struct {
     action: Action = .none,
     look_dx: f32 = 0,
     look_dy: f32 = 0,
+    /// A navigation mesh to adopt before this tick, or 0 (`agents.md` §9). Recorded with the rest,
+    /// which is how a mesh's arrival, a wall-clock fact, reaches simulation.
+    navigation: u32 = 0,
 };
 
 /// Edges and relative motion survive a render frame with no tick, then are consumed once.
@@ -33,6 +36,7 @@ pub const Pending = struct {
         self.intent.jump = previous.jump or input.jump;
         self.intent.use = previous.use or input.use;
         if (input.action == .none) self.intent.action = previous.action;
+        if (input.navigation == 0) self.intent.navigation = previous.navigation;
         self.intent.look_dx += previous.look_dx;
         self.intent.look_dy += previous.look_dy;
     }
@@ -41,6 +45,7 @@ pub const Pending = struct {
         self.intent.jump = false;
         self.intent.use = false;
         self.intent.action = .none;
+        self.intent.navigation = 0;
         self.intent.look_dx = 0;
         self.intent.look_dy = 0;
         return out;

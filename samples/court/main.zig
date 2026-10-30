@@ -22,6 +22,7 @@ const platform = @import("platform");
 const render2d = @import("render2d");
 const render3d = @import("render3d");
 const ui = @import("ui");
+const nav = @import("nav");
 const nav_mod = @import("nav.zig");
 const walk_mod = @import("walk.zig");
 const game_mod = @import("game.zig");
@@ -146,7 +147,7 @@ const Screens = struct {
 
     /// The debug overlay's frame, over the court's own. The renderers and the mixer are the
     /// game's, so the game hands them over.
-    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer) !void {
+    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer, navigation: *const nav.Report) !void {
         if (!self.panels_open) return;
         self.panels_ctx.style = panelStyle(self.plainFont(engine));
         self.panels_ctx.begin(.{
@@ -156,7 +157,7 @@ const Screens = struct {
             .frame = engine.frame_index,
         }, .init(0, 0, size.x, size.y));
         defer self.panels_ctx.end();
-        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer });
+        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer, .navigation = navigation });
     }
 
     /// Describes the HUD or the menu for this frame and reports what the pointer did.
@@ -377,8 +378,12 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     try engine.assets.registerLoader(gpa, asset.collisionMeshLoader());
     const level = try content.acquireModel(settings.level);
     defer content.releaseModel(level);
+    // The game and its replay read these meshes; they outlive both.
+    var navigation = nav_mod.Navigation.init(gpa);
+    defer navigation.deinit(engine.tasks(), &renderer, &content);
     var game = game_mod.Game.init(gpa);
     defer game.deinit(&engine.assets, &content);
+    game.meshes = &navigation.meshes;
     game.refresh(&engine.store, &engine.assets, &content, engine.step_delta.toSecondsF32());
     if (game.walk.character.isNone() or game.walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
     if (sounds.set) |set| {
@@ -386,8 +391,6 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         game.warden_stride = set.warden_step_distance;
     }
     // M32: the warden's navigation mesh, built on the pool from the level it just loaded.
-    var navigation = nav_mod.Navigation.init(gpa);
-    defer navigation.deinit(engine.tasks(), &renderer, &content);
     if (engine.os.envVar("FOUNDRY_COURT_NAV")) |value| {
         if (std.mem.eql(u8, value, "show")) {
             navigation.shown = true;
@@ -397,7 +400,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     }
     {
         const asked = engine.os.monotonicNanos(); // Measurement only.
-        navigation.request(engine.tasks(), &engine.store, &engine.assets, asked);
+        navigation.request(engine.tasks(), &engine.store, &engine.assets, gateBox(&game), asked);
         log.info("navigation: the request took {d:.3}ms on the main thread", .{@as(f64, @floatFromInt(engine.os.monotonicNanos() - asked)) / core.time.ns_per_ms});
     }
     const text = Text.read(&engine.store);
@@ -408,6 +411,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var replay: ?game_mod.Game = if (play_mode != null) game_mod.Game.init(gpa) else null;
     defer if (replay) |*fresh| fresh.deinit(&engine.assets, null);
     if (replay) |*fresh| {
+        fresh.meshes = &navigation.meshes;
         fresh.refresh(&engine.store, &engine.assets, null, engine.step_delta.toSecondsF32());
         fresh.stride = game.stride;
         fresh.warden_stride = game.warden_stride;
@@ -421,6 +425,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var menus: menus_mod.Menus = .{};
     var chosen = prefs.options();
     var pending: walk_mod.Pending = .{};
+    var nav_report: nav.Report = .{};
     var quit_by_menu = false;
     var captured_for: ?game_mod.Phase = null;
     var skin_dropped: u32 = 0;
@@ -440,7 +445,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         {
             const scope = engine.beginScope("navigation.pump");
             defer scope.end();
-            navigation.pump(engine.frame_index, engine.os.monotonicNanos());
+            navigation.pump(engine.frame_index, engine.os.monotonicNanos(), if (game.gate) |*g| g.progress >= 1 else false);
         }
         var lost_focus = false;
         while (engine.nextEvent()) |event| switch (event) {
@@ -456,8 +461,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         const logical: platform.Size = if (info) |i| i.logical_size else .{ .width = prefs.width.value, .height = prefs.height.value };
 
         // 1. What the hands did: a person's devices, or the script's.
+        // Play waits for the first mesh (`agents.md` §9), and so do a script's hands.
         var frame: scripted.Frame = if (script_driver) |*d|
-            d.next(&game)
+            (if (navigation.ready) d.next(&game) else scripted.Frame{})
         else
             .{ .intent = walk_mod.inputIntent(engine.input, false), .keys = menuKeys(engine.input) };
         if (script_driver == null) {
@@ -487,11 +493,16 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         // The debug overlay declares no key of its own; F1 is the court's choice for it.
         if (engine.input.wasPressed(.f1)) screens.panels_open = !screens.panels_open;
-        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer);
+        nav_report = .{};
+        if (navigation.mesh()) |mesh| nav_report.readMesh(mesh);
+        nav_report.readMeshes(&navigation.meshes, navigation.current);
+        if (game.crowd) |*crowd| nav_report.readCrowd(crowd);
+        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer, &nav_report);
 
         // 3. The menu's answer. Only a phase change travels to the tick.
         const by_hand = script_driver == null;
         var command = menus.update(game.phase, frame.keys, if (by_hand) shown.hovered else null, if (by_hand) shown.clicked else null, &chosen);
+        if (command == .play and !navigation.ready) command = .none;
         // Losing the window pauses a game in play: the capture is gone, and is asked for
         // again only when the player resumes (§4.2).
         if (lost_focus and game.phase == .playing and command == .none) command = .pause;
@@ -508,6 +519,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             sounds.applyVolumes(chosen);
         }
         frame.intent.action = command.action();
+        frame.intent.navigation = navigation.takeOwed();
         pending.feed(frame.intent);
 
         // 4. The ticks.
@@ -528,7 +540,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
                 try verifyReplay(game.hashTick(), fresh.hashTick());
                 replay_ticks += 1;
             }
+            if (game.gate_rested) if (gateBox(&game)) |gate| navigation.gateOpened(engine.tasks(), &engine.store, &engine.assets, gate, engine.os.monotonicNanos());
         }
+        navigation.noteAdopted(game.generation);
 
         // 5. Captured while playing, released in every menu (§4.4). Asked once per change.
         if (captured_for != game.phase) {
@@ -631,6 +645,12 @@ fn capture(engine: *app.Engine, want: bool) void {
         // player, and headless has no pointer to capture.
         if (want) log.info("pointer capture unavailable ({t}); the arrows still look", .{err});
     };
+}
+
+/// The gate as a box where it stands now, for a navigation build.
+fn gateBox(game: *const game_mod.Game) ?nav_mod.GateBox {
+    const g = game.gate orelse return null;
+    return .{ .half_extents = g.settings.half_extents, .position = g.current_pos };
 }
 
 fn verifyReplay(actual: u64, expected: u64) !void {

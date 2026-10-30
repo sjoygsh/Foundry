@@ -1,8 +1,10 @@
-//! Sample-owned patrol warden with CPU skinning.
+//! Sample-owned warden with CPU skinning. Its patrol is an agent on the navigation mesh
+//! (`agents.md` §11.2): the crowd says where to go, and the controller, with its gravity, goes.
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const anim = @import("anim");
+const nav = @import("nav");
 const physics = @import("physics3d");
 const render3d = @import("render3d");
 const asset = @import("asset");
@@ -64,6 +66,9 @@ pub const Warden = struct {
     settings: ?WardenSettings = null,
     model: render3d.ModelHandle = .none,
     character: physics.CharacterHandle = .none,
+    agent: nav.AgentHandle = .none,
+    /// Whether the agent has been told the waypoint it is walking to.
+    targeted: bool = false,
     feet: Vec3 = .zero,
     yaw: f32 = 0,
     velocity: f32 = 0,
@@ -89,10 +94,18 @@ pub const Warden = struct {
         self.joint_count = 0;
     }
 
-    pub fn reset(self: *Warden, gpa: std.mem.Allocator, world: *physics.World) !void {
+    /// How the warden's agent walks: its capsule, and a patrol's speed.
+    pub fn params(s: *const WardenSettings) nav.AgentParams {
+        return .{ .radius = s.radius, .height = s.height, .speed = s.speed, .acceleration = 8, .arrival_radius = 0.04 };
+    }
+
+    pub fn reset(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd) !void {
         const s = self.settings orelse return;
         self.feet = s.waypoints[0];
         self.waypoint = 1;
+        self.targeted = false;
+        _ = crowd.remove(self.agent);
+        self.agent = crowd.add(params(&s), s.waypoints[0]) catch .none;
         self.wait_ticks = self.pause_ticks;
         self.velocity = 0;
         self.yaw = 0;
@@ -103,30 +116,31 @@ pub const Warden = struct {
         }
     }
 
-    /// One fixed tick. `gravity` is the court's, from its rules.
-    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, gravity: f32, dt: f32) !void {
+    /// One fixed tick. `gravity` is the court's, from its rules. With no mesh it stands.
+    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, gravity: f32, dt: f32) !void {
         const s = self.settings orelse return;
         if (self.character.isNone()) return;
         const before = self.feet;
         var horizontal: Vec3 = .zero;
         if (self.wait_ticks != 0) {
             self.wait_ticks -= 1;
-        } else {
-            var delta = s.waypoints[self.waypoint].sub(self.feet);
-            delta.y = 0;
-            const distance = delta.length();
-            if (distance <= s.speed * dt + 0.01) {
-                self.waypoint = (self.waypoint + 1) % s.len;
-                self.wait_ticks = self.pause_ticks;
-            } else {
-                horizontal = delta.scale(@min(distance, s.speed * dt) / distance);
-            }
+        } else if (!self.targeted) {
+            self.targeted = crowd.setTarget(self.agent, s.waypoints[self.waypoint]);
         }
+        crowd.step(dt);
+        if (crowd.agent(self.agent)) |view| if (view.state == .arrived) {
+            _ = crowd.clearTarget(self.agent);
+            self.targeted = false;
+            self.waypoint = (self.waypoint + 1) % s.len;
+            self.wait_ticks = self.pause_ticks;
+        };
+        if (crowd.wish(self.agent)) |w| horizontal = .init(w.displacement.x, 0, w.displacement.z);
         self.velocity -= gravity * dt;
         // The fall is clamped so one move stays inside the controller's bound.
         const fall_limit = @sqrt(@max(0, max_move * max_move - horizontal.lengthSquared()));
         const result = (try world.moveCharacter(gpa, self.character, horizontal.add(.init(0, @max(self.velocity * dt, -fall_limit), 0)), &.{})) orelse return error.NoCharacter;
         self.feet = result.feet;
+        crowd.place(self.agent, self.feet);
         if (result.grounded) self.velocity = 0;
         const moved = self.feet.sub(before);
         const walking = moved.x * moved.x + moved.z * moved.z > 1e-10;
