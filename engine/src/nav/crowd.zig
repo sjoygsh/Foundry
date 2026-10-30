@@ -128,7 +128,7 @@ const Crossing = struct {
     rate: f32,
 };
 
-const Agent = struct {
+pub const Agent = struct {
     used: bool = false,
     generation: u32 = 0,
     params: AgentParams = undefined,
@@ -160,7 +160,7 @@ const Agent = struct {
     count: u32 = 0,
     steps: [max_corridor]Step = undefined,
 
-    fn corridor(self: *const Agent) []const Step {
+    pub fn corridor(self: *const Agent) []const Step {
         return self.steps[self.head..self.count];
     }
 };
@@ -182,8 +182,9 @@ pub const Crowd = struct {
     query: search.Query,
     mesh: ?*const Mesh = null,
     tick: u64 = 0,
-    /// Searches run by the last `step`, and in all.
+    /// Searches run by the last `step`, the most in any one, and in all.
     searches_last_step: u32 = 0,
+    searches_most: u32 = 0,
     searches_total: u64 = 0,
 
     pub const InitError = search.InitError || error{InvalidOptions};
@@ -518,6 +519,7 @@ pub const Crowd = struct {
             a.since_search = 0;
             const path = self.query.find(mesh, &a.params.filter, .{ .polygon = a.polygon, .point = a.position }, a.goal, &a.steps);
             self.searches_last_step += 1;
+            self.searches_most = @max(self.searches_most, self.searches_last_step);
             self.searches_total += 1;
             if (path.count == 0) continue;
             a.head = 0;

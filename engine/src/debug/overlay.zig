@@ -10,6 +10,7 @@ const asset = @import("asset");
 const audio = @import("audio");
 const core = @import("core");
 const data = @import("data");
+const nav = @import("nav");
 const render2d = @import("render2d");
 const render3d = @import("render3d");
 const scene = @import("scene");
@@ -19,6 +20,7 @@ const console_panel = @import("console_panel.zig");
 const content_panel = @import("content_panel.zig");
 const entity_panel = @import("entity_panel.zig");
 const memory_panel = @import("memory_panel.zig");
+const navigation_panel = @import("navigation_panel.zig");
 const profiler_panel = @import("profiler_panel.zig");
 
 const Rect = core.math.Rect;
@@ -43,7 +45,7 @@ pub const Options = struct {
     margin: f32 = 8,
     /// How wide the column of open panels is.
     panel_width: f32 = 420,
-    /// Whether the five built-in panels are registered at `init`.
+    /// Whether the built-in panels are registered at `init`.
     ///
     /// On by default and off for a test that wants to assert about one panel, which is the
     /// only reason it exists.
@@ -55,7 +57,7 @@ pub const PanelHandle = core.Handle(Panels);
 
 /// A panel is a registration, not a case in a `switch`.
 ///
-/// The five built-in panels register through the same call a game's panel uses, and a mod's
+/// The built-in panels register through the same call a game's panel uses, and a mod's
 /// will at M7. That is I3's discipline in a small place: the built-in panels are not
 /// special, so the path a third party takes is the path we are already on. A `switch` over
 /// an enum would have to be replaced by exactly this the first time somebody outside the
@@ -176,6 +178,9 @@ pub const Sources = struct {
     /// hands over both renderers; a 2D game leaves this null and the profiler says so.
     world3d: ?*const render3d.Renderer = null,
     mixer: ?*const audio.Mixer = null,
+    /// What navigation is doing, as the game fills it in each frame (`agents.md` §10). A game
+    /// with none passes nothing, and the panel says so.
+    navigation: ?*const nav.Report = null,
 };
 
 /// What a panel is handed.
@@ -278,6 +283,7 @@ pub const Overlay = struct {
     console: console_panel.State = .{},
     entities: entity_panel.State = .{},
     content: content_panel.State = .{},
+    navigation: navigation_panel.State = .{},
 
     /// Heap-allocated because the built-in panels are registered with pointers into it, the
     /// same reason `app.Engine.init` returns a pointer.
@@ -317,6 +323,12 @@ pub const Overlay = struct {
                 .title = "content",
                 .ctx = &self.content,
                 .describe = content_panel.State.describe,
+            });
+            _ = try self.addPanel(.{
+                .id = root_id.child("navigation"),
+                .title = "navigation",
+                .ctx = &self.navigation,
+                .describe = navigation_panel.State.describe,
             });
         }
         return self;
@@ -623,10 +635,10 @@ pub fn countText(ctx: *const ui.Context) usize {
 
 const testing = std.testing;
 
-test "an overlay registers the five built-in panels" {
+test "an overlay registers the six built-in panels" {
     const o = try Overlay.init(testing.allocator, .{});
     defer o.deinit();
-    try testing.expectEqual(@as(usize, 5), o.panels.items.len);
+    try testing.expectEqual(@as(usize, 6), o.panels.items.len);
     // The profiler is the one that is open to begin with: it is the panel that answers the
     // question the overlay exists for.
     try testing.expect(o.panels.items[0].open);

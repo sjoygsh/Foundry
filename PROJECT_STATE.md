@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-30
-**Current handoff: M33 Step 6 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 7** (`nav` and `debug`: the view and the panel). No sample uses any of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+**Current handoff: M33 Step 7 is complete** ([`docs/design/agents.md`](docs/design/agents.md), ADR-0070). **Stop before Step 8** (`sandbox3d`: the crowd, proved on the Mac). No sample uses any of M33 yet. M32 is complete (tag `m32`), and `main` and `m32` are pushed; M33's commits are not.
+
+**M33 Step 7 is done (2026-10-30): the view and the panel.**
+- `nav.debugView` tints areas and draws links as arcs. `nav.debugAgents` draws each agent's path and goal, red when blocked.
+- `nav.Report` is a plain value read from a mesh, its generations and a crowd. `nav` reads no clock, so a game fills in the times.
+- `debug` gains a sixth built-in panel, `navigation`, and is granted `nav`, and `Sources.navigation` carries the report. All three releases stage.
+- Bar 2,599/2,608 (nine skips), 127/127 steps.
 
 **M33 Step 6 is done (2026-10-30): running obstacles and adoption.**
 - `nav.boxSource` makes a running obstacle an ordinary source, and gives the same mesh as a static box to the byte, overhead and under the floor included.

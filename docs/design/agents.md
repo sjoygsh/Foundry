@@ -1157,3 +1157,53 @@ ADR-0069 warns of, and the new test crashes without the line that clears them.
 
 Bar **2,591/2,600** (nine skips), 127/127 steps, up 11 tests from Step 5. The full bar, all exit
 0. No sample's content changed, so no `dist` staging.
+
+## Resolution — Step 7: the view and the panel (2026-10-30)
+
+**What exists now:**
+- **`engine/src/nav/view.zig`:** `debugView` tints a marked polygon by its area and draws each link
+  as an arc of eight strips, in a colour per kind. `debugAgents` and `debugAgentsCount` draw each
+  agent's path and a ring at its goal.
+- **`engine/src/nav/report.zig`:** `Report`, with `readMesh`, `readMeshes` and `readCrowd`.
+- **`engine/src/debug/navigation_panel.zig`:** a sixth built-in panel, and `debug.Sources.navigation`.
+- **`build.zig`** grants `debug` the `nav` module. `CLAUDE.md` §4.3 records it at the close.
+- **`engine/src/nav/view_tests.zig`.**
+
+**Where the step sharpened the design:**
+- **A sixth built-in, not a panel each game registers.** Both samples would register the same
+  one, and the overlay's built-ins are registrations anyway. The panel stays closed by default,
+  and says "no navigation reported" in a game with none.
+- **"Searches this tick and their worst" is a count.** §10 meant time, but `nav` reads no clock.
+  `Report` carries `searches_this_tick`, `searches_most` and `searches_total`, and a game may fill
+  `build_ms` and `step_p95_ms` from its profiler, or leave them zero, when the panel omits them.
+- **`Meshes` counts `rebuilds` and `failed_builds`.** A mesh added directly, as a game's first
+  might be, is not a rebuild.
+- **Corners drawn per agent are capped at 16,** and `debugAgentsCount` is every agent's whole
+  allowance, so a sample's buffer is sized once. A blocked agent's path is red.
+- **`debugAgents` turns its ring by a fixed rotation,** with no trig, like everything in `nav`.
+- **A strip is not a line.** The view's arcs and paths are flat strips, so a ladder's vertical
+  part is edge-on and thin. It reads as the turn at its top and bottom. A view that matters more
+  is an owner's call when Step 8 first shows it.
+
+**Measured, in the tests:**
+- The view's count holds with links, and a jump with an arc of 1 peaks at 1 m.
+- A marked floor takes the area's colour and an unmarked mesh has none. Every vertex is finite and
+  properly premultiplied.
+- An agent's path goes round a wall's end, past z 9, with a ring, and turns red when blocked. An
+  idle crowd writes nothing.
+- A report reads back a mesh's counts, per-area square metres summing to the mesh's area,
+  generations and rebuilds, agents by state, and searches.
+- The panel prints all of it. Tested with no report, an empty one and a full one, by hand-built
+  values with no engine, as ADR-0025 wants.
+- **`dist`:** `debug` now imports `nav`, so all three releases, `court`, `sandbox` and `room`, were
+  staged on Metal in ReleaseSafe, and all exit 0.
+
+**Guards verified by breaking them.** All 10 mutations fail a test: links uncounted, a flat link,
+no area colour, blocked not red, no target ring, area totals lost, rebuilds uncounted, agents by
+state lost, the skipped warning lost, and empty states shown. One first failed only by not
+compiling, and was redone as a real mutation.
+
+**Not yet:** neither sample hands the overlay a report, or draws the agents' view. That is Steps 8
+and 9.
+
+Bar **2,599/2,608** (nine skips), 127/127 steps, up 8 tests from Step 6. The full bar, all exit 0.

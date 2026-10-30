@@ -27,6 +27,7 @@ pub const heightfield = @import("heightfield.zig");
 pub const meshes = @import("meshes.zig");
 pub const open = @import("open.zig");
 pub const regions = @import("regions.zig");
+pub const report = @import("report.zig");
 pub const search = @import("search.zig");
 pub const surface = @import("surface.zig");
 pub const avoidance = @import("avoidance.zig");
@@ -65,6 +66,7 @@ pub const Meshes = meshes.Meshes;
 pub const Path = search.Path;
 pub const Polygon = poly.Polygon;
 pub const Query = search.Query;
+pub const Report = report.Report;
 pub const Step = search.Step;
 pub const Wish = crowd.Wish;
 pub const Build = task.Build;
@@ -97,6 +99,8 @@ pub const buildWith = poly.buildWith;
 pub const buildPolygons = poly.buildPolygons;
 pub const boxSource = meshes.boxSource;
 pub const corners = funnel.corners;
+pub const debugAgents = view.debugAgents;
+pub const debugAgentsCount = view.debugAgentsCount;
 pub const debugView = view.debugView;
 pub const debugViewCount = view.debugViewCount;
 
@@ -127,5 +131,7 @@ test {
     _ = crowd;
     _ = @import("crowd_tests.zig");
     _ = meshes;
+    _ = report;
+    _ = @import("view_tests.zig");
     _ = @import("meshes_tests.zig");
 }

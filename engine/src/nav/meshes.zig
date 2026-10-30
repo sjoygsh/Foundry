@@ -75,6 +75,9 @@ pub const Meshes = struct {
     pending: ?task.Build = null,
     dirty: bool = false,
     in_use: u32 = 0,
+    /// Builds that arrived, and those that failed.
+    rebuilds: u32 = 0,
+    failed_builds: u32 = 0,
 
     pub fn init(gpa: Allocator, options: Options) Meshes {
         return .{ .gpa = gpa, .options = options };
@@ -121,8 +124,16 @@ pub const Meshes = struct {
         const answer = pending.take() orelse return null;
         pending.deinit();
         self.pending = null;
-        const fresh = answer catch |err| return .{ .failed = err };
-        return .{ .generation = self.add(fresh) catch |err| return .{ .failed = err } };
+        const fresh = answer catch |err| {
+            self.failed_builds += 1;
+            return .{ .failed = err };
+        };
+        const generation = self.add(fresh) catch |err| {
+            self.failed_builds += 1;
+            return .{ .failed = err };
+        };
+        self.rebuilds += 1;
+        return .{ .generation = generation };
     }
 
     /// Keeps `mesh`, which is now this list's, as the next generation.
