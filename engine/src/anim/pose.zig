@@ -46,19 +46,30 @@ pub fn clamp(time: f32, duration: f32) f32 {
 pub fn sample(skeleton: Skeleton, clip: Clip, time: f32, out: Pose) void {
     core.assert.always(out.local.len == skeleton.jointCount(), "pose has {d} joints, skeleton has {d}", .{ out.local.len, skeleton.jointCount() });
     @memcpy(out.local, skeleton.rest);
+    for (clip.tracks) |track| applyTrack(track, time, &out.local[track.joint]);
+}
+
+/// One joint of `sample`, for what needs a joint and not a pose: root motion reads its joint a
+/// few times a tick (`animation-logic.md` §6).
+pub fn sampleJoint(skeleton: Skeleton, clip: Clip, joint: u16, time: f32) Transform {
+    var out = skeleton.rest[joint];
     for (clip.tracks) |track| {
-        const joint = &out.local[track.joint];
-        const span = locate(track, time);
-        switch (track.path) {
-            .translation => joint.translation = Vec3.lerp(vec3At(track, span.a), vec3At(track, span.b), span.t),
-            .scale => joint.scale = Vec3.lerp(vec3At(track, span.a), vec3At(track, span.b), span.t),
-            // `slerp` takes the shorter arc and normalises, and a held key is normalised too,
-            // so a stored rotation is always unit (`core.math.Quat`).
-            .rotation => joint.rotation = if (span.a == span.b)
-                quatAt(track, span.a).normalize()
-            else
-                Quat.slerp(quatAt(track, span.a), quatAt(track, span.b), span.t),
-        }
+        if (track.joint == joint) applyTrack(track, time, &out);
+    }
+    return out;
+}
+
+fn applyTrack(track: Track, time: f32, joint: *Transform) void {
+    const span = locate(track, time);
+    switch (track.path) {
+        .translation => joint.translation = Vec3.lerp(vec3At(track, span.a), vec3At(track, span.b), span.t),
+        .scale => joint.scale = Vec3.lerp(vec3At(track, span.a), vec3At(track, span.b), span.t),
+        // `slerp` takes the shorter arc and normalises, and a held key is normalised too,
+        // so a stored rotation is always unit (`core.math.Quat`).
+        .rotation => joint.rotation = if (span.a == span.b)
+            quatAt(track, span.a).normalize()
+        else
+            Quat.slerp(quatAt(track, span.a), quatAt(track, span.b), span.t),
     }
 }
 

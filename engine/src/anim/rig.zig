@@ -7,14 +7,27 @@ const std = @import("std");
 const core = @import("core");
 
 const clip_mod = @import("clip.zig");
+const motion = @import("motion.zig");
 const player = @import("player.zig");
 const skeleton_mod = @import("skeleton.zig");
 
 const Clip = clip_mod.Clip;
+const ContentId = core.ContentId;
 const Skeleton = skeleton_mod.Skeleton;
 
 /// The most clips one rig may hold, which is what a model may list.
 pub const max_clips: usize = 1024;
+
+/// The most events one clip may carry.
+pub const max_events: usize = 64;
+
+/// A name a game listens for, at a fraction of a clip, so that a retimed clip keeps its footsteps
+/// on its feet. It carries nothing else: what it does is the game's (I5).
+pub const Event = struct {
+    /// From 0 up to but not including 1, or exactly 1 on a one-shot clip.
+    at: f32,
+    id: ContentId,
+};
 
 /// What a clip is called in a player: the hash of its name. A generated clip's ID is numbered by
 /// file order (ADR-0055), so a re-export would make a saved ID or index play the wrong clip.
@@ -29,6 +42,12 @@ pub const RigClip = struct {
     loop: bool = true,
     /// The authored rate, multiplied into a channel's.
     speed: f32 = 1,
+    /// Whether its motion joint's travel leaves the pose and is reported (`motion.zig`).
+    motion: bool = false,
+    /// Ascending by `at`.
+    events: []const Event = &.{},
+    /// What the model calls it, for a person: the panel prints it, and a hash is no use to anyone.
+    label: []const u8 = "",
 };
 
 /// Borrowed: `clips` and everything it points to belong to the caller.
@@ -38,6 +57,8 @@ pub const Rig = struct {
     clips: []const RigClip,
     /// The clip a new player begins.
     start: u64,
+    /// The root joint that carries a motion clip's travel, or `no_parent`.
+    motion_joint: u16 = skeleton_mod.no_parent,
 
     pub const ValidateError = Skeleton.ValidateError || Clip.ValidateError || error{
         NoClips,
@@ -48,6 +69,14 @@ pub const Rig = struct {
         NameCollision,
         InvalidSpeed,
         UnknownStart,
+        TooManyEvents,
+        UnnamedEvent,
+        EventOutOfRange,
+        UnsortedEvents,
+        MissingMotionJoint,
+        MotionJointNotRoot,
+        /// The skeleton's root matrix cannot be undone, so a pose cannot lose a model-space move.
+        SingularRoot,
     };
 
     /// Refuses every way an untrusted rig can be wrong. A rig that passes is safe for a player to
@@ -64,8 +93,37 @@ pub const Rig = struct {
             previous = entry.name;
             if (!std.math.isFinite(entry.speed) or entry.speed <= 0 or entry.speed > player.max_speed) return error.InvalidSpeed;
             try entry.clip.validate(rig.skeleton.jointCount());
+            try validateEvents(entry);
+            if (entry.motion and rig.motion_joint == skeleton_mod.no_parent) return error.MissingMotionJoint;
         }
         if (rig.find(rig.start) == null) return error.UnknownStart;
+        if (rig.motion_joint != skeleton_mod.no_parent) {
+            // A child's translation is in a moving frame, which a plain difference cannot read.
+            if (rig.motion_joint >= rig.skeleton.jointCount()) return error.UnknownJoint;
+            if (rig.skeleton.parents[rig.motion_joint] != skeleton_mod.no_parent) return error.MotionJointNotRoot;
+            if (motion.frameOf(rig) == null) return error.SingularRoot;
+        }
+    }
+
+    fn validateEvents(entry: RigClip) ValidateError!void {
+        if (entry.events.len > max_events) return error.TooManyEvents;
+        var previous: f32 = 0;
+        for (entry.events) |event| {
+            if (event.id.isNone()) return error.UnnamedEvent;
+            // Written so a NaN is out of range. 1 on a loop is the next lap's 0, twice.
+            const inside = event.at >= 0 and (event.at < 1 or (event.at == 1 and !entry.loop));
+            if (!inside) return error.EventOutOfRange;
+            if (event.at < previous) return error.UnsortedEvents;
+            previous = event.at;
+        }
+    }
+
+    /// A motion clip's ground speed in metres a second, at channel speed 1, or 0 for a clip with
+    /// no motion. It is what a body moved by other means divides its own speed by, so that its
+    /// feet keep up (`animation-logic.md` §6).
+    pub fn motionSpeed(rig: Rig, name: u64) f32 {
+        const entry = rig.find(name) orelse return 0;
+        return motion.groundSpeed(rig, entry);
     }
 
     /// The clip called `name`, or null: a reload or a removed mod can leave a player holding a

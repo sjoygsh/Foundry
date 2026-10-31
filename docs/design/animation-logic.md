@@ -645,3 +645,65 @@ over, and five rig refusals plus the rig's clip validation.
 
 **Exit met:** a player cross-fades through interrupted requests with no device and no asset, and
 its replay is byte-identical. Bar 2,643/2,653 (ten skips), 128/128 steps. Every command exits 0.
+
+## Resolution — Step 2: events and root motion (2026-10-31)
+
+**What exists.** `anim/motion.zig` has `Motion`, `hold`, `travel` and `groundSpeed`. `anim/report.zig`
+has `Report`. `Player` gains `seek`, and `Step` gains `events`, `dropped` and `motion`. `RigClip`
+gains `motion`, `events` and `label`, and `Rig` gains `motion_joint` and `motionSpeed`. `pose.zig`
+gains `sampleJoint`, sharing its track code with `sample`, whose bytes don't change.
+`anim/step_tests.zig` adds 30 tests. Nothing outside `anim` uses any of this yet.
+
+**What the design had not settled, and the answers:**
+- **A delta is in the body's frame at the tick's start.** §6 said model space, which is wrong for a
+  clip that turns as it walks: the body has already turned by what the clip has reached. So the
+  delta is unturned by that much, and a game adds `yaw` to its facing and moves along
+  `translation` turned by the old facing. A track straight in the clip's first frame then comes out
+  straight, whichever way the body faced. Across a lap's end inside a tick, the next lap's travel
+  is carried round by the turn so far.
+- **`motion_speed` is not a field.** It is `Rig.motionSpeed(name)`, read off the clip when asked,
+  since a stored copy could disagree with the clip. It is the net ground distance of a lap over
+  its duration, at the authored rate, and 0 for a clip with no motion.
+- **`seek` takes `dt`,** which §3 left out, because a fade carries on during a seek and the other
+  channels run on. It replaces `advance` for that tick. On a loop it stays in the lap it is in, and
+  a fraction is held to 0 to 1, with a NaN being 0. Going backward fires nothing and travels
+  nowhere.
+- **`RigClip` gains `label`,** the clip's name for a person, which §3 left out. The panel needs it,
+  and a hash is no use to read. Step 3 fills it.
+- **The yaw angle comes from `std.math.atan2`,** not `core`, which has none. It is Zig's own
+  arithmetic on every target, so the pin still depends on no libm. Quaternions do the rest.
+- **The frame is worked out on each call:** `Mat4.inverse` of the skeleton's root, in `hold` and
+  `travel`. A rig is borrowed and can't cache it, and Step 3 can add a field if Step 6's
+  measurement asks.
+- **Both searches have bounds, for what a hostile package could ask.** A tick looks through 64 laps
+  for events, then counts the rest. It works through 4,096 whole laps of travel. The event bound is
+  more than tidiness: at a huge time, a lap more stops changing an `f64`, and the search would never
+  end.
+- **`Report.add` takes a game's label, the player, the rig and the tick's `Step`.** Rows stop at
+  eight, and the rest are still counted.
+
+**Tests.** Every new `Rig.validate` refusal. Events: at 0, a boundary landing exactly on a tick, no
+loss or doubling at 30, 60 and 144 ticks a second or across speed changes, several laps in a tick,
+overflow counted exactly, a clip of 10 µs, a time so far on that laps stop adding, a fading channel
+silent, a one-shot's middle and end, and speed 0. `seek`: forward, backward, in a loop's lap, out
+of range, a NaN, during a fade, and on a broken player. Motion: hand-computed straight travel,
+loop boundaries at three tick rates, several laps in a tick, blended slowing, the joint held with its
+height kept, yaw as a twist, a swing left in the pose, a clip that turns as it walks from two
+starting facings, a rotated root for travel and for twist, and `motionSpeed`. The `Report`, and a
+replay of pose, motion and events together.
+
+**The replay** is byte-identical, and pinned at `ad558f6b1a182eac`, one value on all four builds so
+far. Its rotations don't reach the inputs on which the two `sin`s differ. `anim-test` passes 71 of
+71 in Debug and ReleaseSafe, on arm64 and under Rosetta.
+
+**Guards verified by mutation.** Forty were tried and restored, and 31 failed at once.
+- **Eight survivors were missing tests,** each now added, and each mutation now fails: a one-shot
+  landing exactly on its end, the event lap bound, overflow inside a lap, `seek` keeping its lap,
+  `seek`'s upper limit, the twist axis in `hold`, the root in `travel`, and a turn carried across a
+  lap's end. The last two were real gaps in the proof of §6. The lap bound's test needed a time
+  found by search, and with the bound gone that test hangs, which is its failure.
+- **One survivor was redundant code:** clamping a one-shot's span, when `sample` already holds. It
+  is gone.
+
+**Exit met:** a hand-computed clip's events and travel are exact at two tick rates and more, and
+every §13 mutation for them fails a test. Bar 2,673/2,683 (ten skips), 128/128 steps. Every command exits 0.

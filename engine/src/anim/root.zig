@@ -28,8 +28,10 @@
 //! Design: `docs/design/animation3d.md`
 
 pub const clip = @import("clip.zig");
+pub const motion = @import("motion.zig");
 pub const player = @import("player.zig");
 pub const pose = @import("pose.zig");
+pub const report = @import("report.zig");
 pub const rig = @import("rig.zig");
 pub const skeleton = @import("skeleton.zig");
 pub const skinning = @import("skin.zig");
@@ -56,6 +58,7 @@ pub const skinMatrices = pose.skinMatrices;
 pub const wrap = pose.wrap;
 
 pub const Channel = player.Channel;
+pub const Motion = motion.Motion;
 pub const Phase = player.Phase;
 pub const PlayError = player.PlayError;
 pub const PlayOptions = player.PlayOptions;
@@ -63,10 +66,15 @@ pub const Player = player.Player;
 pub const Step = player.Step;
 pub const max_channels = player.max_channels;
 pub const max_speed = player.max_speed;
+pub const max_step_events = player.max_step_events;
 
+pub const Report = report.Report;
+
+pub const Event = rig.Event;
 pub const Rig = rig.Rig;
 pub const RigClip = rig.RigClip;
 pub const clipName = rig.clipName;
+pub const max_clip_events = rig.max_events;
 pub const max_rig_clips = rig.max_clips;
 
 pub const SkinInput = skinning.Input;
@@ -77,11 +85,14 @@ pub const validateInfluences = skinning.validateInfluences;
 
 test {
     _ = clip;
+    _ = motion;
     _ = player;
     _ = pose;
+    _ = report;
     _ = rig;
     _ = skeleton;
     _ = skinning;
     _ = @import("player_tests.zig");
+    _ = @import("step_tests.zig");
     _ = @import("tests.zig");
 }

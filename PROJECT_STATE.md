@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 1 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071, accepted 2026-10-31). **Stop before Step 2** (`anim`: events and root motion). `Rig` has no events or motion yet, and nothing outside `anim` uses a `Player`. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 2 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 3** (`asset`: `foundry:animation_set` and `Rigs`). Nothing outside `anim` uses a `Player` yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 2 is done (2026-10-31): events and root motion.**
+- Events fire once each, at any tick rate, from the newest clip only, in time order. Overflow is counted. `seek` fires what it crosses going forward.
+- A motion clip's root joint loses its X, Z and yaw from the pose, keeps its height, and reports them as a move in the body's own frame. A clip that turns as it walks keeps to its track.
+- `Rig.motionSpeed` reads a clip's ground speed, for a body moved by other means. `anim.Report` is ready for the panel.
+- Replay byte-identical, one pin on all four builds. `anim-test` is 71/71.
+- Bar 2,673/2,683 (ten skips), 128/128 steps.
+
 
 **M34 Step 1 is done (2026-10-31): `anim.Player` and `anim.Rig`.**
 - A player holds four channels and reads no clock. It cross-fades through interrupted requests, reverses mid-fade, and holds a one-shot at its end. Nothing it holds can make it assert: bad state is emptied and counted.

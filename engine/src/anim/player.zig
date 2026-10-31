@@ -13,9 +13,14 @@
 
 const std = @import("std");
 
+const core = @import("core");
+
+const motion_mod = @import("motion.zig");
 const pose_mod = @import("pose.zig");
 const rig_mod = @import("rig.zig");
 
+const ContentId = core.ContentId;
+const Motion = motion_mod.Motion;
 const Pose = pose_mod.Pose;
 const Rig = rig_mod.Rig;
 const RigClip = rig_mod.RigClip;
@@ -26,6 +31,13 @@ pub const max_channels = 4;
 
 /// The fastest a channel, or a clip's authored rate, may run.
 pub const max_speed: f32 = 16;
+
+/// The most events a tick reports. More are counted in `Step.dropped`.
+pub const max_step_events = 16;
+
+/// The most laps of one clip a tick looks through for events. A tick is a sixtieth of a second, so
+/// this is only reached by a clip a hostile package made very short.
+const max_event_laps = 64;
 
 /// `extern`, since `foundry:animator` lays its fields over this exactly (ADR-0071).
 pub const Channel = extern struct {
@@ -57,11 +69,31 @@ pub const PlayOptions = struct {
 
 pub const PlayError = error{ UnknownClip, InvalidFade, InvalidSpeed };
 
-/// What one tick did. A fixed value, reset by `advance`.
+/// What one tick did. A fixed value, reset by `advance` and `seek`.
 pub const Step = struct {
     /// Channels emptied because they could not be used: a clip the rig no longer has, or values
     /// out of range.
     lost: u32 = 0,
+    /// In time order, `event_count` of them.
+    events: [max_step_events]ContentId = undefined,
+    event_count: u32 = 0,
+    /// Events that did not fit.
+    dropped: u32 = 0,
+    /// The body's move this tick, for the game to carry out (`motion.zig`).
+    motion: Motion = .{},
+
+    pub fn fired(step: *const Step) []const ContentId {
+        return step.events[0..step.event_count];
+    }
+
+    fn emit(step: *Step, id: ContentId) void {
+        if (step.event_count < max_step_events) {
+            step.events[step.event_count] = id;
+            step.event_count += 1;
+        } else {
+            step.dropped +|= 1;
+        }
+    }
 };
 
 pub const Player = extern struct {
@@ -112,6 +144,36 @@ pub const Player = extern struct {
 
     /// One tick. `dt` is the caller's fixed step.
     pub fn advance(self: *Player, rig: Rig, dt: f32, step: *Step) void {
+        const before = self.begin(rig, dt, step);
+        for (&self.channels) |*channel| {
+            if (channel.clip != 0) channel.ticks += 1;
+        }
+        self.finish(rig, dt, before, step);
+    }
+
+    /// One tick in which the newest channel goes to `fraction` of its clip rather than running
+    /// there, as a link's crossing does. What it crosses going forward fires and travels as if
+    /// played; going backward nothing fires, which is what a restart needs. The other channels
+    /// run on, and a fade carries on.
+    pub fn seek(self: *Player, rig: Rig, fraction: f32, dt: f32, step: *Step) void {
+        const before = self.begin(rig, dt, step);
+        const newest = self.newest;
+        for (&self.channels) |*channel| {
+            if (channel.clip != 0) channel.ticks += 1;
+        }
+        // `begin` left the newest channel usable.
+        const entry = rig.find(self.channels[newest].clip).?;
+        const duration: f64 = entry.clip.duration;
+        // Written so a NaN is 0.
+        const to: f64 = if (!(fraction > 0)) 0 else @min(fraction, 1);
+        const lap = if (entry.loop) @floor(before[newest] / duration) else 0;
+        self.channels[newest].anchor = (lap + to) * duration;
+        self.channels[newest].ticks = 0;
+        self.finish(rig, dt, before, step);
+    }
+
+    /// What a tick starts with: a player safe to use at this step, and each channel's time.
+    fn begin(self: *Player, rig: Rig, dt: f32, step: *Step) [max_channels]f64 {
         step.* = .{};
         self.repair(rig, step);
         if (self.dt != dt) {
@@ -124,10 +186,33 @@ pub const Player = extern struct {
             }
             self.dt = dt;
         }
-        for (&self.channels) |*channel| {
-            if (channel.clip != 0) channel.ticks += 1;
-        }
+        var before: [max_channels]f64 = undefined;
+        for (0..max_channels) |i| before[i] = self.time(rig, i);
+        return before;
+    }
+
+    fn finish(self: *Player, rig: Rig, dt: f32, before: [max_channels]f64, step: *Step) void {
+        // Only the newest fires: a clip fading out is on its way to being gone.
+        const entry = rig.find(self.channels[self.newest].clip).?;
+        fire(step, entry, before[self.newest], self.time(rig, self.newest));
+
         self.moveWeights(dt);
+
+        var total: f32 = 0;
+        for (self.channels) |channel| {
+            if (channel.clip != 0) total += channel.weight;
+        }
+        if (total <= 0) return;
+        for (self.channels, 0..) |channel, i| {
+            if (channel.clip == 0) continue;
+            const live = rig.find(channel.clip).?;
+            if (!live.motion) continue;
+            // A clip with no motion adds nothing but its weight, so a walk fading to idle slows.
+            const share = channel.weight / total;
+            const travel = motion_mod.travel(rig, live, before[i], self.time(rig, i));
+            step.motion.translation = step.motion.translation.add(travel.translation.scale(share));
+            step.motion.yaw += travel.yaw * share;
+        }
     }
 
     /// The blended pose. With no channel it can use, the rig's start clip at its first frame.
@@ -138,13 +223,11 @@ pub const Player = extern struct {
             const channel = self.channels[i];
             const entry = self.usable(rig, channel) orelse continue;
             if (channel.weight <= 0) continue;
-            const seconds = fold(self.time(rig, i), entry);
-            if (total == 0) {
-                pose_mod.sample(rig.skeleton, entry.clip, seconds, out);
-            } else {
-                pose_mod.sample(rig.skeleton, entry.clip, seconds, scratch);
-                pose_mod.blend(out, scratch, channel.weight / (total + channel.weight), out);
-            }
+            const at = fold(self.time(rig, i), entry);
+            const into = if (total == 0) out else scratch;
+            pose_mod.sample(rig.skeleton, entry.clip, at, into);
+            if (entry.motion) motion_mod.hold(rig, entry, into);
+            if (total != 0) pose_mod.blend(out, scratch, channel.weight / (total + channel.weight), out);
             total += channel.weight;
         }
         // `validate` guarantees the start clip.
@@ -161,6 +244,12 @@ pub const Player = extern struct {
     /// Whether `name` is the newest clip.
     pub fn playing(self: *const Player, name: u64) bool {
         return self.newest < max_channels and self.channels[self.newest].clip == name;
+    }
+
+    /// A channel's time within its clip, in seconds, as the pose shows it.
+    pub fn seconds(self: *const Player, rig: Rig, index: usize) f32 {
+        const entry = self.usable(rig, self.channels[index]) orelse return 0;
+        return fold(self.time(rig, index), entry);
     }
 
     /// A channel's unfolded time, in seconds.
@@ -256,6 +345,40 @@ pub const Player = extern struct {
         }
     }
 };
+
+/// Fires what lies on `[from, to)`, by unfolded time, so that one tick's end is exactly the next
+/// one's start and nothing fires twice or not at all. A one-shot's end closes the span.
+fn fire(step: *Step, entry: *const RigClip, from: f64, to: f64) void {
+    if (!(to > from) or entry.events.len == 0) return;
+    const duration: f64 = entry.clip.duration;
+    if (!entry.loop) {
+        if (from >= duration) return;
+        for (entry.events) |event| {
+            const at = @as(f64, event.at) * duration;
+            if (at < from) continue;
+            if (at < to or (event.at == 1 and to >= duration)) step.emit(event.id);
+        }
+        return;
+    }
+    var lap = @floor(from / duration);
+    var laps: u32 = 0;
+    while (lap * duration < to) : (laps += 1) {
+        if (laps == max_event_laps or step.event_count == max_step_events) {
+            // Nothing can come of looking further, so count what is left and stop. The count is
+            // of whole laps, since it is a warning and not a measure.
+            const left = @min((to - lap * duration) / duration * @as(f64, @floatFromInt(entry.events.len)), std.math.maxInt(u32));
+            step.dropped +|= @intFromFloat(left);
+            return;
+        }
+        for (entry.events) |event| {
+            const at = (lap + event.at) * duration;
+            if (at < from) continue;
+            if (at >= to) return;
+            step.emit(event.id);
+        }
+        lap += 1;
+    }
+}
 
 /// A channel's time within its clip: wrapped if it loops, held at the end if not.
 fn fold(time: f64, entry: *const RigClip) f32 {
