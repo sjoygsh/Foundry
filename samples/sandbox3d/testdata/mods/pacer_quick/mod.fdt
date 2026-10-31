@@ -1,0 +1,7 @@
+foundry:mod pacer_quick:content {
+    name     "Pacer Quick"
+    version  1
+    license  "Apache-2.0"
+    summary  "A pacer twice as quick: one animation set overridden, no code."
+    requires [ { id sandbox3d:content } ]
+}

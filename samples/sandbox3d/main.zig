@@ -110,6 +110,7 @@ const ui = @import("ui");
 const walk_mod = @import("walk.zig");
 const Tour = @import("tour.zig").Tour;
 const Walker = @import("walker.zig").Walker;
+const pacer_mod = @import("pacer.zig");
 const Props = @import("props.zig").Props;
 const native_mod = @import("native.zig");
 const gallery_mod = @import("gallery.zig");
@@ -135,6 +136,62 @@ pub const std_options = app.std_options;
 const app_name = "foundry-sandbox3d";
 const config_id = "sandbox3d:config.main";
 const default_headless_frames: u64 = 120;
+/// M34's tour stage (`animation-logic.md` §10): the pacer is saved in mid-stride, the run goes on,
+/// and a fresh world loaded from that save has to do the same thing to the bit.
+const PacerProof = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    /// The figure's hash when the run was `ticks` past the save.
+    expected: ?u64 = null,
+
+    const save_tick = 100;
+    const ticks = 600;
+    /// By then it has walked its square, and on past the corner it began at.
+    const corners = 4;
+
+    fn deinit(self: *PacerProof, gpa: std.mem.Allocator) void {
+        self.bytes.deinit(gpa);
+    }
+
+    /// Once a tick, after the orrery's step.
+    fn note(self: *PacerProof, gpa: std.mem.Allocator, figure: *pacer_mod.Figure, orrery: *Orrery) !void {
+        figure.record(&orrery.world);
+        if (figure.ticks == save_tick) {
+            _ = gpa;
+            _ = try orrery.save(&self.bytes);
+            figure.hash = pacer_mod.Figure.hash_seed;
+        } else if (figure.ticks == save_tick + ticks) {
+            self.expected = figure.hash;
+        }
+    }
+
+    fn prove(self: *PacerProof, gpa: std.mem.Allocator, orrery: *const Orrery, store: *const data.Store, jobs: core.Jobs, walk: *@import("physics3d").World, content: *render3d.Content, rigs: *asset.Rigs, delta: core.time.Duration) !void {
+        const expected = self.expected orelse return error.PacerTourFailed;
+        const fresh = try gpa.create(Orrery);
+        defer gpa.destroy(fresh);
+        try fresh.init(gpa, jobs);
+        defer fresh.deinit();
+        fresh.roles = orrery.roles;
+        _ = fresh.load(self.bytes.items, store) orelse return error.PacerTourFailed;
+        const figure = try gpa.create(pacer_mod.Figure);
+        defer gpa.destroy(figure);
+        figure.* = .{};
+        defer figure.deinit(gpa, walk, content, rigs);
+        try figure.refresh(gpa, &fresh.world, fresh.role(.pacer), walk, content, rigs);
+        for (0..ticks) |i| {
+            try figure.step(gpa, &fresh.world, walk, rigs, delta.toSecondsF32());
+            fresh.step(.{ .tick = i, .delta = delta });
+            try figure.evaluate(&fresh.world, rigs);
+            figure.record(&fresh.world);
+        }
+        const pace = pacer_mod.paceIn(&fresh.world, fresh.role(.pacer).?).?;
+        if (figure.hash != expected or pace.corners < corners) {
+            log.warn("tour: FAIL pacer ({x:0>16} after the load, {x:0>16} without it, {d} corners)", .{ figure.hash, expected, pace.corners });
+            return error.PacerTourFailed;
+        }
+        log.info("tour: pacer pass ({d} ticks across a save and a load, {d} corners, {d} footfalls, {d} bytes, replay {x:0>16})", .{ ticks, pace.corners, figure.footfalls, self.bytes.items.len, figure.hash });
+    }
+};
+
 /// The save F5 writes and F9 reads, in the user data directory.
 const save_name = "world.fsav";
 
@@ -415,6 +472,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (!replay_walker.proofPassed() or replay_walker.hash != walker.hash) return error.WalkerReplayFailed;
         log.info("tour: walker pass ({d} ticks, {d} waypoints, idle/walk/cross-fade, replay {x:0>16}); player hash {x:0>16}", .{ walker.tick, walker.reached, walker.hash, tour.hash });
+        try sample.pacer_proof.prove(gpa, sample.orrery, &engine.store, engine.jobs(), &replay.world, &sample.content.?, &sample.rigs, engine.step_delta);
     }
 
     sample.gallery.window.report();
@@ -703,6 +761,9 @@ const Sample = struct {
     native: ?*Native = null,
     walkers: []Walker,
     rigs: asset.Rigs,
+    pacer: pacer_mod.Figure = .{},
+    /// The tour's save, and what the run went on to do after it.
+    pacer_proof: PacerProof = .{},
     course: render3d.ModelHandle = .none,
     /// M27's gallery: held only once asked for, on its tick or by G.
     gallery: Gallery = .{},
@@ -851,6 +912,7 @@ const Sample = struct {
         }
 
         self.orrery.populate(&engine.store);
+        self.refreshPacer(engine);
         self.save_dir = saveDir(self.gpa, engine);
         // The entity tree and the log, which says what each key did, with the sheared child
         // selected, so opening the overlay shows 3d.md §7.1's distinction without a click.
@@ -932,6 +994,7 @@ const Sample = struct {
             walker.refresh(self.gpa, &engine.store, &self.walk.world, content, &self.rigs) catch |err|
                 log.warn("walker disabled ({t})", .{err});
         };
+        if (self.pacer.entity != null) self.refreshPacer(engine);
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -982,9 +1045,19 @@ const Sample = struct {
             corner.step(engine, &self.world, s.tick, look);
         }
         self.orbit_angle = wrap(self.orbit_angle + self.settings.orbit_radians_per_second * dt);
+        // Before the propagation in the orrery's step, so what it draws is this tick's.
+        {
+            const pacer_scope = engine.beginScope("animation.advance");
+            defer pacer_scope.end();
+            try self.pacer.step(self.gpa, &self.orrery.world, &self.walk.world, &self.rigs, s.delta.toSecondsF32());
+        }
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
+        if (self.pacer.entity != null) {
+            try self.pacer.evaluate(&self.orrery.world, &self.rigs);
+            if (self.tour != null) try self.pacer_proof.note(self.gpa, &self.pacer, self.orrery);
+        }
         if (self.effects) |effects| {
             const moon = if (self.orrery.role(.moon)) |m| scene.hierarchy.worldTransform(&self.orrery.world, m) else null;
             effects.step(engine, s.tick, s.delta.toSecondsF32(), moon);
@@ -1062,6 +1135,7 @@ const Sample = struct {
             .renderer = &self.overlay,
             .world3d = &self.world,
             .navigation = self.reportNavigation(),
+            .animation = if (self.pacer.entity != null) &self.pacer.report else null,
         });
     }
 
@@ -1175,6 +1249,7 @@ const Sample = struct {
         };
         self.saved_hash = hash;
         // The path is the user's home directory, and a log is something people paste.
+        log.info("f5: the pacer stands at {d:.4},{d:.4},{d:.4}", .{ self.pacer.feet.x, self.pacer.feet.y, self.pacer.feet.z });
         log.info("f5: saved {d} entities ({d} bytes) to the user data directory; poses {x:0>16}", .{
             self.orrery.world.entityCount(), bytes.items.len, hash,
         });
@@ -1191,11 +1266,26 @@ const Sample = struct {
             return;
         };
         defer self.gpa.free(read.bytes);
-        const hash = self.orrery.load(read.bytes, &engine.store) orelse return;
+        const hash = self.orrery.load(read.bytes, &engine.store) orelse {
+            self.refreshPacer(engine);
+            return;
+        };
+        // Its character is in the walk world, which no save holds.
+        self.refreshPacer(engine);
+        log.info("f9: the pacer stands at {d:.4},{d:.4},{d:.4}", .{ self.pacer.feet.x, self.pacer.feet.y, self.pacer.feet.z });
         // The selection was the old world's handle; the save carried the same one.
         self.panels.entities.selected = self.orrery.role(.sheared);
         const same = if (self.saved_hash) |saved| (if (saved == hash) ", the same as this run's save" else ", not this run's save") else "";
         log.info("f9: poses {x:0>16}{s}", .{ hash, same });
+    }
+
+    fn refreshPacer(self: *Sample, engine: *app.Engine) void {
+        _ = engine;
+        const content = if (self.content) |*c| c else null;
+        self.pacer.refresh(self.gpa, &self.orrery.world, self.orrery.role(.pacer), &self.walk.world, content, &self.rigs) catch |err| {
+            log.warn("the pacer is disabled ({t})", .{err});
+            self.pacer.entity = null;
+        };
     }
 
     fn uiFont(self: *Sample, engine: *app.Engine) app.UiFont {
@@ -1344,6 +1434,9 @@ const Sample = struct {
             }
         }
 
+        self.pacer.draw(&self.orrery.world, &self.content.?) catch |err|
+            log.warn("the pacer could not be drawn ({t})", .{err});
+
         if (self.native) |native| {
             const scope = engine.beginScope("abi.instances");
             defer scope.end();
@@ -1432,6 +1525,8 @@ const Sample = struct {
         }
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
+        self.pacer.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null, &self.rigs);
+        self.pacer_proof.deinit(self.gpa);
         self.gpa.free(self.walkers);
         // After what holds a rig, and before the registry it borrows from.
         self.rigs.deinit();
@@ -1663,6 +1758,7 @@ test {
     _ = walk_mod;
     _ = @import("walk_tests.zig");
     _ = @import("walker_tests.zig");
+    _ = @import("pacer_tests.zig");
     _ = @import("props_tests.zig");
     _ = @import("nav_tests.zig");
     _ = @import("native_tests.zig");

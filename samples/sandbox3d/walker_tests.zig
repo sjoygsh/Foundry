@@ -298,7 +298,7 @@ test "walker: a stride covers its 0.6 m a second, and a turn is a quarter to the
     defer rigs.release(handle);
     const rig = rigs.get(handle).?;
     try testing.expectEqual(@as(usize, 7), rig.clips.len);
-    // The set means nothing by them yet, so this says what Step 7's will.
+    // Every clip as if it moved, to read what each carries.
     var clips: [7]anim.RigClip = undefined;
     @memcpy(&clips, rig.clips);
     for (&clips) |*entry| entry.motion = true;

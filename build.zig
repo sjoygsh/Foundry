@@ -909,9 +909,16 @@ pub fn build(b: *std.Build) void {
                     .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
                 });
                 walk_test_options.addOptionPath("marsh_package", marsh.fpk);
+                // M34's content-only animation mod (`animation-logic.md` §10).
+                const pacer_quick = release.compilePackage(b, fpack, .{
+                    .dir = "samples/sandbox3d/testdata/mods/pacer_quick",
+                    .stem = "pacer_quick",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                walk_test_options.addOptionPath("pacer_quick_package", pacer_quick.fpk);
                 // Optional packages in the installation, never automatically selected.
                 for ([_]struct { stem: []const u8, compiled: @TypeOf(plinth) }{
-                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers }, .{ .stem = "stout", .compiled = stout }, .{ .stem = "marsh", .compiled = marsh },
+                    .{ .stem = "plinth", .compiled = plinth }, .{ .stem = "orbiter", .compiled = orbiter }, .{ .stem = "embers", .compiled = embers }, .{ .stem = "stout", .compiled = stout }, .{ .stem = "marsh", .compiled = marsh }, .{ .stem = "pacer_quick", .compiled = pacer_quick },
                 }) |fixture| {
                     b.getInstallStep().dependOn(&b.addInstallFileWithDir(fixture.compiled.fpk, .prefix, b.fmt("content/{s}.fpk", .{fixture.stem})).step);
                     b.getInstallStep().dependOn(&b.addInstallDirectory(.{ .source_dir = fixture.compiled.generated, .install_dir = .prefix, .install_subdir = b.fmt("content/{s}", .{fixture.stem}) }).step);

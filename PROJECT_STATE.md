@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 6 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 7** (`sandbox3d`: the pacer, the first skinned entity and the first user of root motion and `foundry:animator`). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 7 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 8** (the court: the warden's `stride`, and footfalls as events). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 7 is done (2026-10-31): the pacer.**
+- `sandbox3d`'s first skinned entity walks a 0.9 m square whose speed and corners come from its clips, through a controller, and it closes within 1 mm. The panel reports it.
+- A side is timed against the clip as authored, because a lap covers the same ground at any speed. So `pacer_quick`, which only restates `sandbox3d:walker.set`, doubles the square with no code.
+- The tour saves in mid-stride and a fresh world matches the run to the bit for 600 ticks. It passes from a relocated ReleaseSafe install on Metal, with and without the mod. A save is 3,675 bytes.
+- The walker's `655e865f98779129` holds on windowed Metal too, which closes Step 6's open item. The player's pin did not move.
+- Bar 2,720/2,730 (ten skips), 131/131 steps. `court` and `room` stage on macOS.
+
 
 **M34 Step 6 is done (2026-10-31): the clips, and the walker on `Player`.**
 - `scripts/m34/clips.py` adds `stride`, `turn`, `jump`, `drop` and `climb` to the walker and the warden. What `idle`, `walk`, the mesh and the skeleton compile to is byte-identical, and pins keep it so.

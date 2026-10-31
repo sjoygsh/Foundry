@@ -1,0 +1,17 @@
+# M34's content-only animation mod (`docs/design/animation-logic.md` §10): the character's set,
+# restated whole with `stride` at twice its speed and a footfall moved. A side lasts the same time,
+# so the pacer's square is twice as wide, and nothing in it says how wide.
+foundry:animation_set sandbox3d:walker.set {
+    model sandbox3d:models.walker
+    start "idle"
+    motion_joint "pelvis"
+    clips [
+        { name "stride" speed 2 motion true events [
+            { at 0.0 event sandbox3d:event.footfall }
+            { at 0.6 event sandbox3d:event.footfall }
+        ] }
+        { name "turn" loop false motion true }
+        { name "jump" loop false }
+        { name "drop" loop false }
+    ]
+}

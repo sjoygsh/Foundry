@@ -903,3 +903,67 @@ gone.
 pins moved once with the reason recorded, and the player's pin did not move. Bar 2,714/2,724 (ten skips),
 130/130 steps. Every command exits 0. `court` and `room` stage on macOS. Windows staging is
 Step 10's.
+
+## Resolution — Step 7: `sandbox3d`: the pacer (2026-10-31)
+
+**What exists.** `samples/sandbox3d/pacer.zig` has `Pace`, the component `sandbox3d:pacer`, and
+`Figure`, which holds what a load can make again: handles, a pose and the character. The orrery's
+world has animation, and `sandbox3d:entity.pacer` is its eighth entity. It walks a 0.9 m square on
+the southeast floor, drawn skinned, and the overlay's panel reports it. `sandbox3d:walker.set` now
+says what `stride`, `turn`, `jump` and `drop` mean. `pacer_quick` is in the sample's testdata and its
+installation.
+
+**What the design had not settled, and the answers:**
+- **§10's wider square can't come from counting laps.** A lap covers 0.6 m at any speed, so doubling
+  `stride`'s speed would do nothing to a square counted in laps. A side is timed instead, against the
+  clip as authored: `strides × duration`. So twice the speed is twice the ground, and §10's result
+  holds. The record still says no distance.
+- **`strides` is 1.5, a real number.** The clear floor there is about 2.08 m deep, so 1.8 m is the
+  widest side that `pacer_quick` can have. A half lap is as good a place to stop as a whole one,
+  because both feet are passing.
+- **A corner is a cut.** A fade into `turn` shares its yaw with `stride`, and the turn comes up short.
+  The pose barely pops, since `stride` is at a passing position and `turn` starts from rest. A side
+  starts with a 0.1 s fade across a turn that has finished, which costs each side the same.
+- **A figure starts on a corner,** so that every side starts the same way and the square closes. The
+  first corner turns it to face west, and it goes round west, south, east and north.
+- **`Pace` is saved beside the animator:** its side's ticks, corners, heading and fall. `foundry:
+  transform` holds its feet. A save's values are refused by name before they reach the arithmetic.
+- **`Figure.refresh` serves a reload and a load alike,** since what it remakes is the same. It keeps
+  no state, so a reload keeps the figure's place.
+- **The tour's load runs on a separate walk world,** with no player or walker in it. So the pacer's
+  square has to stay clear of the player, which it does. Its mask is 1, as the walker's is, so a
+  person standing in its way does block it.
+- **`setCharacterFeet` forgets the ground, and here that changes nothing.** I expected a loaded figure
+  to need a settling move, and added one. The mutation showed it made no difference on a flat floor,
+  so it is gone. A figure saved on a step or a ramp has no such proof, and none is in this sample.
+
+**Proof.** The tour saves at tick 100, in mid-stride, runs 600 ticks, loads into a fresh world and
+walk world, runs the same 600, and requires the same hash of pose, matrices, feet, motion, heading
+and events.
+- The relocated ReleaseSafe install on Metal passes: 5 corners, 18 footfalls, a 3,675-byte save,
+  replay `47f67027ff3a12b0`.
+- With `pacer_quick` selected and no other change it passes too, at 31 footfalls, replay
+  `ef5c24337f5f2925`.
+- Those two runs keep the player's `cb99ccfcf2b6d6c3` and the walker's `655e865f98779129`. **That
+  closes Step 6's open item:** windowed ReleaseSafe on Metal gives the same pin as the rest.
+
+**Tests.** `pacer_tests.zig`: the square, each side between 0.85 and 0.9 m on its line, closing within
+1 mm, with its heading wrapped and drawn; `pacer_quick` at twice the ground, within 1e-3; saves at
+ticks 100, 150 and 30, each byte-identical for 600 ticks, in a save no bigger after walking; an event
+counting in the hash by what it is; a fall at the limit and a stop; and a reload keeping its place,
+with every refusal by name.
+
+**Guards verified by mutation.** Twenty-nine were tried against a checked baseline, and 20 failed at
+once. Of the nine survivors, six were test gaps, each now caught: the heading's wrap, the drawn
+rotation, gravity, landing, the fall limit and events in the hash. The settling move was redundant
+and is gone. Two can't fail here: no clip both turns and travels, so the order of yaw and move
+changes nothing, and the Zig default for `turning` is overridden by the record. A first attempt at
+the rerun failed its baseline on a wrong sign in a new test, which was fixed.
+
+**`main.zig`'s F5 and F9 have no automated test.** A headless run proved them: F5 in mid-side at
+x 2.265, F9 back to the same feet and the same pose hash, and a reload after it. They now log the
+pacer's feet, which is what that read.
+
+**Exit met:** from a relocated ReleaseSafe install on Metal, the tour passes across a save and a load,
+and `pacer_quick` changes the square with no code. Bar 2,720/2,730 (ten skips), 131/131 steps. Every
+command exits 0. `court` and `room` stage on macOS.

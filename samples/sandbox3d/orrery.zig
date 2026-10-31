@@ -27,6 +27,8 @@ const Vec3 = core.math.Vec3;
 
 const log = core.log.scoped(.sandbox3d);
 
+const Pace = @import("pacer.zig").Pace;
+
 /// Names a model by content ID: the "whatever component a game uses" of `3d.md` §3.
 pub const Model = struct {
     pub const component = "sandbox3d:model";
@@ -43,7 +45,7 @@ pub const Spin = struct {
 pub const spin_system_name = "sandbox3d:systems.spin";
 
 /// What each object is to the sample. The keys act on roles, not on handles a person typed.
-pub const Role = enum { turntable, platter, rider, moon, frame, sheared, cube };
+pub const Role = enum { turntable, platter, rider, moon, frame, sheared, cube, pacer };
 
 /// The templates, in spawn order, and the parent each is given. The platter and the rider
 /// are both the turntable's children rather than one the other's, because the platter is
@@ -56,6 +58,7 @@ const layout = [_]struct { role: Role, template: []const u8, parent: ?Role }{
     .{ .role = .frame, .template = "sandbox3d:entity.frame", .parent = null },
     .{ .role = .sheared, .template = "sandbox3d:entity.sheared", .parent = .frame },
     .{ .role = .cube, .template = "sandbox3d:entity.cube", .parent = null },
+    .{ .role = .pacer, .template = "sandbox3d:entity.pacer", .parent = null },
 };
 
 const role_count = @typeInfo(Role).@"enum".fields.len;
@@ -92,8 +95,10 @@ pub const Orrery = struct {
         self.world.setJobs(self.jobs);
         // First, while the world is empty, as `enableHierarchy` insists.
         self.types = try self.world.enableHierarchy();
+        _ = try self.world.enableAnimation();
         _ = try self.world.registerComponent(scene.componentType(Model));
         _ = try self.world.registerComponent(scene.componentType(Spin));
+        _ = try self.world.registerComponent(scene.componentType(Pace));
         // The writer, then the propagation: registration order is run order (§4.1).
         _ = try self.world.registerSystem(.{
             .id = core.ContentId.fromString(spin_system_name),
