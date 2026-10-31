@@ -11,7 +11,7 @@ foundry:animation_set sandbox3d:walker.set {
             { at 0.6 event sandbox3d:event.footfall }
         ] }
         { name "turn" loop false motion true }
-        { name "jump" loop false }
-        { name "drop" loop false }
+        { name "jump" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+        { name "drop" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
     ]
 }

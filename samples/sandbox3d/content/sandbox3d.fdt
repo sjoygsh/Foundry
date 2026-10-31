@@ -41,8 +41,8 @@ foundry:animation_set sandbox3d:walker.set {
             { at 0.5 event sandbox3d:event.footfall }
         ] }
         { name "turn" loop false motion true }
-        { name "jump" loop false }
-        { name "drop" loop false }
+        { name "jump" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+        { name "drop" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
     ]
 }
 @schema walker {
@@ -118,9 +118,17 @@ foundry:nav_mesh sandbox3d:nav.walker {
     crate_from { x f32 y f32 z f32 }
     crate_to { x f32 y f32 z f32 }
     crate_seconds f32
+    climber_model id
+    climber_set id
+    climber_height f32
+    link_clips { jump string drop string ladder string }
 }
 crowd sandbox3d:crowd.main {
     model sandbox3d:models.crate
+    climber_model sandbox3d:models.walker
+    climber_set sandbox3d:walker.set
+    climber_height 1.7
+    link_clips { jump "jump" drop "drop" ladder "climb" }
     count 16
     radius 0.15 height 1.2 speed 1.4 acceleration 20
     model_half 0.35

@@ -11,6 +11,7 @@
 //! not built at all as a measured baseline; `nav.zig`) and `FOUNDRY_COURT_MUSIC_LOG=on|off` (`music.zig`'s
 //! evidence: every scheduled start, and the counters every ten seconds).
 const std = @import("std");
+const anim = @import("anim");
 const app = @import("app");
 const asset = @import("asset");
 const audio = @import("audio");
@@ -147,7 +148,7 @@ const Screens = struct {
 
     /// The debug overlay's frame, over the court's own. The renderers and the mixer are the
     /// game's, so the game hands them over.
-    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer, navigation: *const nav.Report) !void {
+    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer, navigation: *const nav.Report, animation: ?*const anim.Report) !void {
         if (!self.panels_open) return;
         self.panels_ctx.style = panelStyle(self.plainFont(engine));
         self.panels_ctx.begin(.{
@@ -157,7 +158,7 @@ const Screens = struct {
             .frame = engine.frame_index,
         }, .init(0, 0, size.x, size.y));
         defer self.panels_ctx.end();
-        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer, .navigation = navigation });
+        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer, .navigation = navigation, .animation = animation });
     }
 
     /// Describes the HUD or the menu for this frame and reports what the pointer did.
@@ -502,7 +503,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (navigation.mesh()) |mesh| nav_report.readMesh(mesh);
         nav_report.readMeshes(&navigation.meshes, navigation.current);
         if (game.crowd) |*crowd| nav_report.readCrowd(crowd);
-        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer, &nav_report);
+        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer, &nav_report, if (game.warden) |*w| &w.report else null);
 
         // 3. The menu's answer. Only a phase change travels to the tick.
         const by_hand = script_driver == null;

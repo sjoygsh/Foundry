@@ -534,6 +534,135 @@ test "the warden follows a player it can see across the gap, by the jump, and do
     try testing.expect(top > 0.4);
 }
 
+/// The warden at the gap with the player across it, for a run over the jump.
+fn atTheGap(game: *game_mod.Game, gpa: std.mem.Allocator) !void {
+    const w = &game.warden.?;
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(0.4, 0.004, -5));
+    _ = try game.walk.world.setCharacterFeet(gpa, w.character, .init(0, 0.004, -1));
+    w.feet = .init(0, 0.004, -1);
+    game.crowd.?.place(w.agent, w.feet);
+    face(game, 0, -1);
+}
+
+/// One run over the jump, at `speed` if given, with a replay beside it. Answers its ticks on the link.
+fn overTheJump(gpa: std.mem.Allocator, speed: ?f32) !u32 {
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    var fresh = try fixtures.TestEnv.init(gpa);
+    defer fresh.deinit(gpa);
+    const game = try hunted(&env);
+    const again = try hunted(&fresh);
+    try atTheGap(game, gpa);
+    try atTheGap(again, gpa);
+    const w = &game.warden.?;
+    if (speed) |v| {
+        w.settings.?.chase_speed = v;
+        again.warden.?.settings.?.chase_speed = v;
+    }
+    const jump = @import("anim").clipName("jump");
+    const rig = game.rigs.?.get(w.rig).?;
+    const duration = rig.find(jump).?.clip.duration;
+    var ticks: u32 = 0;
+    var landed: u32 = 0;
+    var landed_tick: ?u32 = null;
+    var n: u32 = 0;
+    var was_crossing = false;
+    var left_at: u32 = 0;
+    while (n < 1800 and game.phase == .playing) : (n += 1) {
+        try game.step(.{}, fixtures.dt);
+        try again.step(.{}, fixtures.dt);
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.player), std.mem.asBytes(&again.warden.?.player));
+        const view = game.crowd.?.agent(w.agent).?;
+        const crossing = view.state == .on_link;
+        if (crossing) {
+            // The first tick fades in, so a clip never snaps on at the edge.
+            if (ticks == 0) try testing.expect(w.player.channels[w.player.newest].weight < 1);
+            ticks += 1;
+            try testing.expect(w.player.playing(jump));
+            try testing.expectApproxEqAbs(view.link_t * duration, w.player.seconds(rig.*, w.player.newest), 1e-3);
+            try testing.expectEqual(@as(u32, 0), w.footfalls);
+        } else if (was_crossing) {
+            left_at = n;
+        }
+        was_crossing = crossing;
+        for (game.tickEvents()) |event| {
+            if (event.kind != .warden_land) continue;
+            landed += 1;
+            landed_tick = n;
+            try testing.expectEqual(w.feet, event.position);
+        }
+    }
+    try testing.expect(ticks > 5);
+    // One landing, on the tick the crowd let go of the crossing.
+    try testing.expectEqual(@as(u32, 1), landed);
+    try testing.expectEqual(left_at, landed_tick.?);
+    try testing.expectEqual(@as(u64, 0), w.link_clip);
+    // After it, it walks again.
+    try testing.expect(!w.player.playing(jump));
+    return ticks;
+}
+
+test "a crossing plays its clip at link_t, with no footfall, and lands once at its end, at any speed" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const usual = try overTheJump(gpa, null);
+    const slow = try overTheJump(gpa, 0.5);
+    try testing.expect(slow > usual * 2);
+    // Far quicker than the clip: only finishing it by hand reaches its last moment.
+    const quick = try overTheJump(gpa, 6);
+    try testing.expect(quick * 2 < usual);
+}
+
+test "a link gone from under a crossing asks for no clip" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    try atTheGap(game, gpa);
+    const w = &game.warden.?;
+    const crowd = &game.crowd.?;
+    while (crowd.agent(w.agent).?.state != .on_link) try game.step(.{}, fixtures.dt);
+    try testing.expect(w.crossing(crowd) != null);
+    var empty = crowd.mesh.?.*;
+    empty.links = &.{};
+    const real = crowd.mesh;
+    crowd.mesh = &empty;
+    defer crowd.mesh = real;
+    try testing.expect(w.crossing(crowd) == null);
+}
+
+test "a set with no clip for a link crosses it in its walk, in silence; a restart forgets a crossing" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    try atTheGap(game, gpa);
+    const w = &game.warden.?;
+    const stride = @import("anim").clipName("stride");
+    // As `bind` leaves it for a record naming a clip the set doesn't have.
+    w.settings.?.link_clips[@intFromEnum(nav.LinkKind.jump)] = @import("anim").clipName("no such clip");
+    w.bind(&game.rigs.?);
+    try testing.expectEqual(@as(u64, 0), w.link_clips[@intFromEnum(nav.LinkKind.jump)]);
+    var crossed = false;
+    for (0..600) |_| {
+        try game.step(.{}, fixtures.dt);
+        if (game.crowd.?.agent(w.agent).?.state == .on_link) {
+            crossed = true;
+            try testing.expect(w.player.playing(stride));
+        }
+        for (game.tickEvents()) |event| try testing.expect(event.kind != .warden_land);
+        if (game.phase != .playing) break;
+    }
+    try testing.expect(crossed);
+
+    w.link_clip = 1;
+    try game.restart();
+    try testing.expectEqual(@as(u64, 0), w.link_clip);
+}
+
 test "how far it has faded into a stride is part of the hash" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -718,6 +847,8 @@ test "a replay plays the same player on the same ticks, and only events make a w
             try testing.expectEqual(w.feet, event.position);
         }
         try testing.expectEqual(w.footfalls, heard);
+        try testing.expectEqual(@as(u32, 1), w.report.players);
+        try testing.expectEqualStrings("warden", w.report.rows[0].label());
         steps += heard;
     }
     // Two a lap, at the 1.67 laps a second its 1 m/s asks for, in the time it spends walking.

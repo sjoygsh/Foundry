@@ -984,6 +984,7 @@ const Sample = struct {
             log.warn("prop set omitted ({t})", .{err});
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
         self.crowd.refresh(&engine.store, if (self.content) |*content| content else null);
+        self.crowd.bindFigure(&self.rigs, if (self.content) |*content| content else null);
         // After the props, whose collision it is built from too.
         const asked = engine.os.monotonicNanos(); // Measurement only.
         // The crowd was rebuilt, so it must be given the mesh again even if none arrives new.

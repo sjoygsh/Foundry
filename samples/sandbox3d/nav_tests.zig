@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const app = @import("app");
 const core = @import("core");
 const data = @import("data");
+const anim = @import("anim");
 const asset = @import("asset");
 const nav = @import("nav");
 const render3d = @import("render3d");
@@ -410,17 +411,46 @@ test "crowd: sixteen pawns go round, one by the drop and the ladder, keeping apa
     const gpa = testing.allocator;
     var m = try f.build();
     defer m.deinit(gpa);
+    var rigs = asset.Rigs.init(gpa, &f.engine.assets);
+    defer rigs.deinit();
     var demo = crowd_mod.CrowdDemo.init(gpa);
     defer demo.deinit(null);
     demo.refresh(&f.engine.store, null);
+    demo.bindFigure(&rigs, null);
     const s = demo.settings.?;
     try testing.expectEqual(@as(u32, 16), s.count);
+    // It stands where the crowd put it, on `idle`, before the first tick.
+    try testing.expect(demo.figure.player.playing(anim.clipName("idle")));
+    try testing.expectEqual(demo.crowd.?.agent(demo.pawns[0].handle).?.position, demo.figure.last);
     demo.adopt(&m);
     const crowd = &demo.crowd.?;
     var closest = std.math.inf(f32);
     var pressed: u32 = 0;
+    const figure = &demo.figure;
+    const rig = rigs.get(figure.rig).?;
+    var figure_links: u32 = 0;
+    var strode: u32 = 0;
     for (0..7200) |_| {
+        const was = crowd.agent(demo.pawns[0].handle).?.position;
         _ = demo.step(crowd_dt);
+        const climber = crowd.agent(demo.pawns[0].handle).?;
+        // Its feet keep up with where the crowd takes it.
+        if (climber.state == .walking and figure.player.playing(anim.clipName("stride"))) {
+            const moved = climber.position.sub(was);
+            const rate = @sqrt(moved.x * moved.x + moved.z * moved.z) / crowd_dt;
+            if (rate > 0.1) {
+                strode += 1;
+                try testing.expectApproxEqAbs(rate, figure.player.channels[figure.player.newest].speed * figure.stride_speed, 1e-3);
+            }
+        }
+        if (climber.state == .on_link) {
+            figure_links += 1;
+            const kind = m.links[climber.link].kind;
+            const clip = anim.clipName(if (kind == .drop) "drop" else "climb");
+            try testing.expect(figure.player.playing(clip));
+            const duration = rig.find(clip).?.clip.duration;
+            try testing.expectApproxEqAbs(climber.link_t * duration, figure.player.seconds(rig.*, figure.player.newest), 2e-3);
+        }
         for (demo.pawns[0..s.count], 0..) |a, i| {
             const va = crowd.agent(a.handle).?;
             try testing.expect(va.state != .off_mesh);
@@ -442,9 +472,108 @@ test "crowd: sixteen pawns go round, one by the drop and the ladder, keeping apa
     try testing.expect(demo.corners_reached >= 16 * 8);
     try testing.expect(demo.crossed[@intFromEnum(nav.LinkKind.drop)] >= 3);
     try testing.expect(demo.crossed[@intFromEnum(nav.LinkKind.ladder)] >= 3);
+    // The climber's own crossings, each in its clip, and it landed from every drop but a last
+    // that may still be under way.
+    const drops = figure.played[@intFromEnum(nav.LinkKind.drop)];
+    try testing.expect(drops >= 3 and figure.played[@intFromEnum(nav.LinkKind.ladder)] >= 3);
+    try testing.expect(figure.landed == drops or figure.landed + 1 == drops);
+    try testing.expect(figure_links > 60 and strode > 1000);
+    try testing.expectEqual(@as(usize, 19), figure.joint_count);
     // Open floor keeps Step 5's bound. The 0.3 m strip between the table and the crate is narrower
     // than two pawns, so walls press a pair together there, for a few ticks in two minutes.
     try testing.expect(closest >= 0.75 * 2 * s.radius);
+}
+
+test "crowd: the climber's figure replays to the bit, and without a rig it is a crate" {
+    if (comptime !options.available) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const gpa = testing.allocator;
+    var m = try f.build();
+    defer m.deinit(gpa);
+    var rigs = asset.Rigs.init(gpa, &f.engine.assets);
+    defer rigs.deinit();
+    const a = try gpa.create(crowd_mod.CrowdDemo);
+    defer gpa.destroy(a);
+    a.* = crowd_mod.CrowdDemo.init(gpa);
+    defer a.deinit(null);
+    const b = try gpa.create(crowd_mod.CrowdDemo);
+    defer gpa.destroy(b);
+    b.* = crowd_mod.CrowdDemo.init(gpa);
+    defer b.deinit(null);
+    const plain = try gpa.create(crowd_mod.CrowdDemo);
+    defer gpa.destroy(plain);
+    plain.* = crowd_mod.CrowdDemo.init(gpa);
+    defer plain.deinit(null);
+    for ([_]*crowd_mod.CrowdDemo{ a, b, plain }) |demo| {
+        demo.refresh(&f.engine.store, null);
+        demo.adopt(&m);
+    }
+    a.bindFigure(&rigs, null);
+    b.bindFigure(&rigs, null);
+    for (0..900) |_| {
+        _ = a.step(crowd_dt);
+        _ = b.step(crowd_dt);
+        _ = plain.step(crowd_dt);
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&a.figure.player), std.mem.asBytes(&b.figure.player));
+        try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(a.figure.pose[0..19]), std.mem.sliceAsBytes(b.figure.pose[0..19]));
+        // A figure changes nothing about where a pawn goes.
+        try testing.expectEqual(plain.crowd.?.agent(plain.pawns[0].handle).?.position, a.crowd.?.agent(a.pawns[0].handle).?.position);
+    }
+    try testing.expectEqual(@as(usize, 0), plain.figure.joint_count);
+
+    // Told to stop, it stands on `idle`.
+    _ = a.crowd.?.clearTarget(a.pawns[0].handle);
+    for (0..120) |_| _ = a.step(crowd_dt);
+    try testing.expect(a.figure.player.playing(anim.clipName("idle")));
+    // A rig held by nobody is gone: each figure gave its handle back.
+    a.deinit(null);
+    b.deinit(null);
+    try testing.expect(rigs.lookup(core.ContentId.fromString("sandbox3d:walker.set")) == null);
+}
+
+test "crowd: the climber lands from a quick drop, and a clip its set lacks is crossed in its walk" {
+    if (comptime !options.available) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const gpa = testing.allocator;
+    var m = try f.build();
+    defer m.deinit(gpa);
+    var rigs = asset.Rigs.init(gpa, &f.engine.assets);
+    defer rigs.deinit();
+    const stride = anim.clipName("stride");
+    for ([_]bool{ true, false }) |has_clip| {
+        const demo = try gpa.create(crowd_mod.CrowdDemo);
+        defer gpa.destroy(demo);
+        demo.* = crowd_mod.CrowdDemo.init(gpa);
+        defer demo.deinit(null);
+        demo.refresh(&f.engine.store, null);
+        if (!has_clip) demo.settings.?.link_clips[@intFromEnum(nav.LinkKind.drop)] = anim.clipName("no such clip");
+        demo.bindFigure(&rigs, null);
+        demo.adopt(&m);
+        const crowd = &demo.crowd.?;
+        var crossed = false;
+        const edge: core.math.Vec3 = .init(-1.45, 0.6, -2.1);
+        for (0..7200) |_| {
+            _ = demo.step(crowd_dt);
+            const v = crowd.agent(demo.pawns[0].handle).?;
+            // Nearing the drop, far quicker than the clip: only finishing it by hand reaches its
+            // last moment.
+            if (v.position.sub(edge).length() < 0.5) _ = crowd.setSpeed(demo.pawns[0].handle, 40);
+            if (v.state == .on_link and m.links[v.link].kind == .drop) {
+                crossed = true;
+                // It walks off the edge, and stands through the fall, with no clip for it.
+                if (!has_clip) try testing.expect(demo.figure.player.playing(stride) or demo.figure.player.playing(anim.clipName("idle")));
+            }
+            if (crossed and v.state != .on_link) break;
+        }
+        try testing.expect(crossed);
+        try testing.expectEqual(@as(u32, if (has_clip) 1 else 0), demo.figure.landed);
+        try testing.expectEqual(@as(u32, 0), demo.figure.refused);
+        if (!has_clip) try testing.expectEqual(@as(u64, 0), demo.figure.link_clips[@intFromEnum(nav.LinkKind.drop)]);
+    }
 }
 
 test "crowd: a run replays exactly from its recorded adoptions, however late a build arrived" {

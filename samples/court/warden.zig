@@ -6,6 +6,10 @@
 //! Its body stays on the crowd's wish, so a clip never moves it: `stride`'s travel is read for the
 //! rate that keeps its feet on the floor, and its footfalls are events.
 //!
+//! **A crossing plays a clip,** named by the record for the link's kind and put at `link_t` on each
+//! tick, so a jump of any length fits its arc. The crowd's last tick of a crossing no longer says
+//! it is on a link, so the warden finishes the clip itself, and an event at its end still fires.
+//!
 //! **Its senses and its states are the court's,** not the engine's: it patrols, chases what it
 //! sees, and searches where it last saw the player before going back. Every number is content.
 const std = @import("std");
@@ -27,6 +31,12 @@ pub const idle = anim.clipName("idle");
 const stride_clip = anim.clipName("stride");
 /// What a foot landing is called in `foundry:animation_set`, and what `warden_step` is made from.
 pub const footfall = core.ContentId.fromString("court:event.footfall");
+/// What landing from a crossing is called there.
+pub const land = core.ContentId.fromString("court:event.land");
+/// Seconds into a crossing's clip. A crossing is short, and it should read at once.
+const link_fade: f32 = 0.1;
+
+const link_kinds = @typeInfo(nav.LinkKind).@"enum".fields.len;
 
 /// The longest single move the warden's controller is asked for, metres.
 pub const max_move: f32 = 1;
@@ -34,6 +44,9 @@ pub const max_move: f32 = 1;
 pub const WardenSettings = struct {
     model: core.ContentId,
     set: core.ContentId,
+    /// The clip for each `nav.LinkKind`, by name. An agent names these and not a link, since a
+    /// link is a place, and two bodies crossing it may not move alike.
+    link_clips: [link_kinds]u64 = @splat(0),
     waypoints: [max_points]Vec3 = @splat(.zero),
     len: usize = 0,
     speed: f32,
@@ -69,9 +82,11 @@ pub const WardenSettings = struct {
         const lose_seconds = try bounded(fields, "lose_seconds", 0, 60);
         const list = (try fields.listAt(try index(fields, "waypoints"))) orelse return error.InvalidWarden;
         if (list.len < 2 or list.len > max_points) return error.InvalidWarden;
+        const clips = (try fields.nestedAt(try index(fields, "link_clips"))) orelse return error.InvalidWarden;
         var out: WardenSettings = .{
             .model = model,
             .set = set,
+            .link_clips = .{ try clipNamed(clips, "jump"), try clipNamed(clips, "drop"), try clipNamed(clips, "ladder") },
             .speed = speed,
             .cross_fade = cross_fade,
             .radius = radius,
@@ -98,6 +113,8 @@ pub const WardenSettings = struct {
 
 pub const Mode = enum { patrolling, chasing, searching };
 
+pub const Crossing = struct { clip: u64, t: f32 };
+
 pub const Warden = struct {
     settings: ?WardenSettings = null,
     model: render3d.ModelHandle = .none,
@@ -109,6 +126,13 @@ pub const Warden = struct {
     player: anim.Player = .{},
     /// This tick's, for the game to turn into `warden_step`.
     footfalls: u32 = 0,
+    /// This tick's, for the game to turn into `warden_land`.
+    landings: u32 = 0,
+    /// This tick's, for the overlay.
+    report: anim.Report = .{},
+    /// The crossing's clip while one is playing. Which of them a rig has is decided by `bind`.
+    link_clip: u64 = 0,
+    link_clips: [link_kinds]u64 = @splat(0),
     character: physics.CharacterHandle = .none,
     agent: nav.AgentHandle = .none,
     /// Whether the agent has been told the waypoint it is walking to.
@@ -159,6 +183,11 @@ pub const Warden = struct {
             return;
         }
         self.stride_speed = rig.motionSpeed(stride_clip);
+        const s = self.settings orelse return;
+        for (s.link_clips, &self.link_clips) |name, *usable| {
+            usable.* = if (rig.find(name) != null) name else 0;
+            if (usable.* == 0) log.warn("the warden's set has no clip for one kind of link; it crosses those in its walk", .{});
+        }
     }
 
     /// How the warden's agent walks: its capsule, and a patrol's speed.
@@ -181,6 +210,7 @@ pub const Warden = struct {
         self.velocity = 0;
         self.yaw = 0;
         self.tick = 0;
+        self.link_clip = 0;
         // A cut to the start of `idle`, which is all a new game's player holds.
         if (self.rigOf(rigs)) |rig| try self.player.play(rig.*, idle, .{});
         if (!self.character.isNone()) {
@@ -260,7 +290,7 @@ pub const Warden = struct {
             self.feet = self.feet.add(w.displacement);
             _ = try world.setCharacterFeet(gpa, self.character, self.feet);
             self.velocity = 0;
-            try self.finishTick(before, s, rigs, dt);
+            try self.finishTick(before, s, rigs, dt, self.crossing(crowd));
             return;
         };
         if (wish) |w| horizontal = .init(w.displacement.x, 0, w.displacement.z);
@@ -271,7 +301,16 @@ pub const Warden = struct {
         self.feet = result.feet;
         crowd.place(self.agent, self.feet);
         if (result.grounded) self.velocity = 0;
-        try self.finishTick(before, s, rigs, dt);
+        try self.finishTick(before, s, rigs, dt, null);
+    }
+
+    /// The clip for the link being crossed, and how far across it is.
+    pub fn crossing(self: *const Warden, crowd: *const nav.Crowd) ?Crossing {
+        const view = crowd.agent(self.agent) orelse return null;
+        const mesh = crowd.mesh orelse return null;
+        if (view.link >= mesh.links.len) return null;
+        const clip = self.link_clips[@intFromEnum(mesh.links[view.link].kind)];
+        return if (clip == 0) null else .{ .clip = clip, .t = view.link_t };
     }
 
     fn rigOf(self: *const Warden, rigs: ?*const asset.Rigs) ?*const anim.Rig {
@@ -287,7 +326,7 @@ pub const Warden = struct {
         return 0;
     }
 
-    fn finishTick(self: *Warden, before: Vec3, s: WardenSettings, rigs: ?*const asset.Rigs, dt: f32) !void {
+    fn finishTick(self: *Warden, before: Vec3, s: WardenSettings, rigs: ?*const asset.Rigs, dt: f32, across: ?Crossing) !void {
         const moved = self.feet.sub(before);
         const walking = moved.x * moved.x + moved.z * moved.z > 1e-10;
         const length = @sqrt(moved.x * moved.x + moved.z * moved.z);
@@ -297,18 +336,32 @@ pub const Warden = struct {
         }
         self.tick += 1;
         self.footfalls = 0;
+        self.landings = 0;
         const rig = self.rigOf(rigs) orelse return;
-        // The rate that keeps its feet on the floor, whichever speed it is going at.
-        const speed = if (walking) @min(length / dt / self.stride_speed, anim.max_speed) else 1;
-        const wanted = if (walking) stride_clip else idle;
-        if (!self.player.playing(wanted)) {
-            try self.player.play(rig.*, wanted, .{ .fade = s.cross_fade, .phase = .keep, .speed = speed });
-        }
-        if (walking) try self.player.setSpeed(rig.*, speed);
         var step_out: anim.Step = undefined;
-        self.player.advance(rig.*, dt, &step_out);
+        if (across) |link| {
+            if (!self.player.playing(link.clip)) try self.player.play(rig.*, link.clip, .{ .fade = link_fade });
+            self.link_clip = link.clip;
+            self.player.seek(rig.*, link.t, dt, &step_out);
+        } else if (self.link_clip != 0) {
+            // The tick it lands. What the clip says at its end happens here.
+            self.link_clip = 0;
+            self.player.seek(rig.*, 1, dt, &step_out);
+        } else {
+            // The rate that keeps its feet on the floor, whichever speed it is going at.
+            const speed = if (walking) @min(length / dt / self.stride_speed, anim.max_speed) else 1;
+            const wanted = if (walking) stride_clip else idle;
+            if (!self.player.playing(wanted)) {
+                try self.player.play(rig.*, wanted, .{ .fade = s.cross_fade, .phase = .keep, .speed = speed });
+            }
+            if (walking) try self.player.setSpeed(rig.*, speed);
+            self.player.advance(rig.*, dt, &step_out);
+        }
+        self.report = .{};
+        self.report.add(&self.player, rig.*, "warden", &step_out);
         for (step_out.fired()) |event| {
             if (event.eql(footfall)) self.footfalls += 1;
+            if (event.eql(land)) self.landings += 1;
         }
     }
 
@@ -338,6 +391,11 @@ pub const Warden = struct {
 fn index(fields: Fields, name: []const u8) !u32 {
     for (fields.fields, 0..) |field, i| if (std.mem.eql(u8, field.name, name)) return @intCast(i);
     return error.InvalidWarden;
+}
+
+fn clipNamed(fields: Fields, name: []const u8) !u64 {
+    const text = (fields.stringAt(try index(fields, name)) catch return error.InvalidWarden) orelse return error.InvalidWarden;
+    return anim.clipName(text);
 }
 
 fn number(fields: Fields, name: []const u8) !f32 {

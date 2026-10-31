@@ -273,6 +273,10 @@ pub const Sounds = struct {
                 const at = wardenBody(game) orelse event.position;
                 self.place(set.warden_step, .warden, at, occluded(&game.walk.world, ears, at, null));
             },
+            .warden_land => {
+                const at = wardenBody(game) orelse event.position;
+                self.place(set.land, .warden, at, occluded(&game.walk.world, ears, at, null));
+            },
             .won => _ = self.start(set.won, .{}),
             .caught => _ = self.start(set.caught, .{}),
             .fell => _ = self.start(set.fell, .{}),

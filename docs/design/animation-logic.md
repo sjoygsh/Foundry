@@ -1036,3 +1036,55 @@ fired.
 **Exit met:** `win`, `caught`, `fell` and the soundtrack replay on the ticks they did, with
 `warden_step` now from events. Bar 2,726/2,736 (ten skips), 131/131 steps. Every command exits 0.
 `court` and `room` stage on macOS.
+
+## Resolution — Step 9: a clip on a link (2026-10-31)
+
+**What exists.** `court:warden` gains `link_clips`, and the warden plays that clip on a crossing, put
+at `link_t` on each tick, so a jump of any length fits its arc. A `court:event.land` at the clip's end
+makes `warden_land`, which plays the land sound where the warden is. In `sandbox3d`, the first climber
+is a walker figure, with `CrowdDemo.bindFigure`, and it plays `drop` and `climb` by the same rule.
+The court's two links are jumps, and the sandbox's are a drop and a ladder, so all three kinds run in
+a sample. `nav` and `foundry:nav_mesh` did not change.
+
+**What the design had not settled, and the answers:**
+- **The crowd's last tick of a crossing is already off the link.** `Crowd.cross` clears the crossing
+  when `t` reaches 1, so `seek` never sees 1, and an event there would not fire. So the figure
+  remembers its link clip, and on the next tick seeks to 1 itself. That is the tick it lands.
+- **That only matters on a crossing faster than the clip.** A slower one is so near the end that a
+  plain tick runs past it anyway. Tests at a slow speed could not see the difference, and the test
+  that does runs quicker than the clip.
+- **`link_clips` is a nested record of three strings,** one for each `nav.LinkKind`, and required.
+  `noon` restates it. A name the rig lacks reads as no clip, so the warden crosses in its walk, and
+  that is said once. `bind` decides it, so a tick asks nothing of it.
+- **A ladder is one lap of `climb`, however long the ladder.** `seek` stays in its lap, by Step 2's
+  rule, and the sandbox's is short. So `link_t` covers one lap, and a long ladder would look slow.
+- **A crossing fades in over 0.1 s,** and so does the climber's over 0.15 s, so a clip never snaps on
+  at the edge. It takes the clip from its start, not `.keep`, so a jump always begins as a jump.
+- **The climber has no controller.** The crowd still places it, so a figure adds a pose and nothing
+  else, and a test holds its path identical to a pawn's with no rig. It falls with no horizontal
+  motion, so with no clip for a drop it stands through the fall.
+- **Warden and climber repeat about thirty lines.** They are in two samples, which share no module.
+  M35's state machines are where a shared rule belongs, if one does.
+
+**Replays held.** `win`, `caught` and `fell` keep the digests of Step 8's table, tick for tick.
+A crossing's player is byte-identical in a run and its replay, and the climber's pose in two runs.
+Scripted runs replay and drop no sound. The sample takes 32 reloads with 16 walkers and the climber.
+A relocated ReleaseSafe install on Metal passes the tour with and without `pacer_quick`, and every
+pin holds: the player's `cb99ccfcf2b6d6c3`, the walker's `655e865f98779129`, and the pacer's two.
+
+**Tests.** The clip at `link_t` to 1e-3 on all three speeds; a fade on the first tick; one landing on
+the tick the crowd lets go; no footfall on a crossing. A link gone from under a crossing, a set with
+no clip for it, and a restart forgetting one. The climber's clips, its feet keeping up, `idle` when
+it stops, a quick drop, a missing clip, a handle given back, and a replay to the bit.
+
+**Guards verified by mutation.** Twenty-five were tried against a checked baseline, and 13 failed at
+once. Of the 12 survivors, 11 were test gaps, each now caught, and the landing tick needed three
+tries to find a speed that shows it. One was redundant: clearing the link clips when a rig goes, since
+the rig's own guard stops first. It is gone.
+
+**The court's panel.** The warden fills an `anim.Report` each tick, and the court hands it to the
+overlay. It had not, so F1 there would have said no animation was reported.
+
+**Exit, in part.** All three link kinds play a clip in a sample, and replays hold. **The owner has
+not played it yet,** which is the rest of this exit and criterion 8. Bar 2,731/2,741 (ten skips),
+131/131 steps. Every command exits 0. `court` and `room` stage on macOS.

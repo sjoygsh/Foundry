@@ -127,6 +127,8 @@ gate court:gate.main {
 @schema warden {
     model id
     set id
+    # The clip for each kind of link. The agent names it, since a link is only a place.
+    link_clips { jump string drop string ladder string }
     waypoints [{ x f32 y f32 z f32 }]
     speed f32
     cross_fade f32
@@ -151,13 +153,14 @@ foundry:animation_set court:warden.set {
             { at 0.5 event court:event.footfall }
         ] }
         { name "turn" loop false motion true }
-        { name "jump" loop false }
-        { name "drop" loop false }
+        { name "jump" loop false events [ { at 1.0 event court:event.land } ] }
+        { name "drop" loop false events [ { at 1.0 event court:event.land } ] }
     ]
 }
 warden court:warden.main {
     model court:models.warden
     set court:warden.set
+    link_clips { jump "jump" drop "drop" ladder "climb" }
     waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
     speed 1.0
     cross_fade 0.25

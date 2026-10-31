@@ -36,7 +36,7 @@ pub const Event = struct {
     /// The beacon's slot, for `.beacon`.
     beacon: u8 = 0,
 
-    pub const Kind = enum { step, jump, land, beacon, gate, warden_step, won, caught, fell };
+    pub const Kind = enum { step, jump, land, beacon, gate, warden_step, won, caught, fell, warden_land };
 };
 
 pub const Game = struct {
@@ -496,6 +496,7 @@ pub const Game = struct {
             const seen = w.sees(w.eye(), self.walk.eye(), self);
             try w.step(self.gpa, &self.walk.world, &self.crowd.?, if (self.rigs) |*r| r else null, rules.gravity, dt, seen, self.walk.result.feet);
             for (0..w.footfalls) |_| self.emit(.{ .kind = .warden_step, .position = w.feet });
+            for (0..w.landings) |_| self.emit(.{ .kind = .warden_land, .position = w.feet });
             caught = w.feet.sub(self.walk.result.feet).length() < rules.catch_distance;
         }
 
