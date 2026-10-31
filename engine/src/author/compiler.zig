@@ -342,6 +342,9 @@ fn checkMeanings(
         } else if (view.schema_id.eql(asset.nav_mesh.nav_area.id)) blk: {
             _ = asset.nav_mesh.decodeArea(fields) catch |err| break :blk .{ "navigation area", asset.nav_mesh.describe(err) };
             continue;
+        } else if (view.schema_id.eql(asset.animation_set.schema.id)) blk: {
+            asset.animation_set.check(fields) catch |err| break :blk .{ "animation set", asset.animation_set.describe(err) };
+            continue;
         } else continue;
         ok = false;
         if (declarationOf(docs, view.id)) |origin| {
@@ -449,6 +452,14 @@ pub fn registerAvailableSchemas(
         },
     };
 
+    asset.animation_set.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's animation set schema did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
+
     scene.schemas.registerAll(gpa, registry) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
@@ -495,6 +506,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.mix.limiter_name,
     asset.nav_mesh.nav_mesh_name,
     asset.nav_mesh.nav_area_name,
+    asset.animation_set.name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,

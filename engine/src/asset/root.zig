@@ -1,9 +1,9 @@
 //! Foundry `asset` — layer L2. Bytes on disk become things the engine can use.
 //!
-//! Depends on `core`, `data` and `platform` — the module with both a filesystem and the
-//! content model, which is what makes it the seam between them. **`data` cannot open a file
-//! and `render2d` should not, so opening files on content's behalf is this module's job and
-//! nobody else's.**
+//! Depends on `core`, `data`, `platform` and `anim`, the last for `Rigs` alone (ADR-0071) — the
+//! module with both a filesystem and the content model, which is what makes it the seam between
+//! them. **`data` cannot open a file and `render2d` should not, so opening files on content's
+//! behalf is this module's job and nobody else's.**
 //!
 //! Everything is addressed by `ContentId` and nothing by path (ADR-0021). `Registry.acquire`
 //! is the only entry point, and there is no way to ask what is at a path — a record found by
@@ -30,6 +30,12 @@ pub const Skeleton = skeleton.Skeleton;
 pub const Animation = animation.Animation;
 pub const skeletonLoader = skeleton.skeletonLoader;
 pub const animationLoader = animation.animationLoader;
+/// `foundry:animation_set`, what a clip means (ADR-0071). Here for `tilemap`'s reason.
+pub const animation_set = @import("animation_set.zig");
+/// Rigs built from those sets, below any renderer, so that a tick can use one.
+pub const rigs = @import("rigs.zig");
+pub const RigHandle = rigs.RigHandle;
+pub const Rigs = rigs.Rigs;
 pub const collision_mesh = @import("collision_mesh.zig");
 pub const CollisionMesh = collision_mesh.CollisionMesh;
 pub const collisionMeshLoader = collision_mesh.collisionMeshLoader;
@@ -146,6 +152,8 @@ pub const RecordList = data.fpk.List;
 test {
     _ = skeleton;
     _ = animation;
+    _ = animation_set;
+    _ = rigs;
     _ = @import("animation_asset_tests.zig");
     _ = collision_mesh;
     _ = image;

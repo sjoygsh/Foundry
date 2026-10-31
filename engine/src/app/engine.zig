@@ -719,6 +719,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                     return error.ContentUnavailable;
                 },
             };
+            // `foundry:animation_set` (ADR-0071): what a clip means is content too.
+            asset.animation_set.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own animation set schema was refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
 
             var diags: data.Diagnostics = .init(gpa, .default);
             defer diags.deinit(gpa);

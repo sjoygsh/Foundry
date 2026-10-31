@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 2 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 3** (`asset`: `foundry:animation_set` and `Rigs`). Nothing outside `anim` uses a `Player` yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 3 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 4** (`scene`: `foundry:animator`, saved with a world). No sample uses a `Rig` yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 3 is done (2026-10-31): `foundry:animation_set` and `asset.Rigs`.**
+- A hand-written record says what each clip means. `fpack` refuses what one record can show, and `Rigs` what depends on other records, each by name.
+- `asset` is granted `anim`, so a rig is built with no renderer. `rigs-test` has none in its imports.
+- A reload keeps handles. A rig that stops building answers null and mends under the same handle. A later package's override wins with no asset restated.
+- Bar 2,688/2,698 (ten skips), 130/130 steps.
+
 
 **M34 Step 2 is done (2026-10-31): events and root motion.**
 - Events fire once each, at any tick rate, from the newest clip only, in time order. Overflow is counted. `seek` fires what it crosses going forward.

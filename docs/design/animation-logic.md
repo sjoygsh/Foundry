@@ -707,3 +707,51 @@ far. Its rotations don't reach the inputs on which the two `sin`s differ. `anim-
 
 **Exit met:** a hand-computed clip's events and travel are exact at two tick rates and more, and
 every §13 mutation for them fails a test. Bar 2,673/2,683 (ten skips), 128/128 steps. Every command exits 0.
+
+## Resolution — Step 3: `foundry:animation_set` and `Rigs` (2026-10-31)
+
+**What exists.** `asset/animation_set.zig` has the schema, `check`, and readers for its fields.
+`asset/rigs.zig` has `Rigs`, `RigHandle` and `BuildError`. `asset` is granted `anim`. `fpack` checks a
+set where it compiles it, and `app` registers the schema as it does `foundry:nav_mesh`.
+`zig build rigs-test` is a new target inside `test` and `check`, and its import list holds no
+renderer, which is what it proves. No sample uses any of this yet.
+
+**What the design had not settled, and the answers:**
+- **A `*const anim.Rig` lasts until the next `acquire` as well as the next `contentChanged`,** since
+  the pool can move. So a game keeps the handle and asks, as §4 already says of `RigHandle`.
+- **A rig that stops building answers null, and can't keep what it had.** §4 mentioned "the
+  established reload policy", but a rig borrows its keys from the registry, and a reload may have
+  freed them. It is said once, and tried again at the next `contentChanged`. The handle lives on,
+  and an `acquire` of a broken set returns why it is broken, holding nothing new.
+- **Events in the wrong order are refused,** `UnsortedEvents`, rather than sorted. It is one code
+  path fewer, and a person reading the record sees what a player does.
+- **`Rigs.lookup(set)` answers by content ID,** for `foundry:animator` in Step 4. It reads only
+  sets someone has acquired, through a map, and acquires nothing.
+- **`acquire` is synchronous** (ADR-0062 keeps it so). There is no `request`, because a skeleton and
+  a few clips are small. `render3d.Content` already holds the same assets where a model is drawn.
+- **`check` runs again when a rig is built,** not only at `fpack`. A mod's package is untrusted
+  whatever made it, and a package no compiler checked has its own test.
+- **A rig's clip labels are copied.** The store is replaced at a reload, and a label would dangle.
+- **`MissingMotionJoint` is `check`'s,** since one record shows it, and `motion_joint` being a root
+  is `anim.Rig.validate`'s, reached by name. `DuplicateClip` joins §4's list, and `InvalidSpeed`,
+  `TooManyEvents` and `EventOutOfRange` are refused by both, so a rig stays safe however it was made.
+
+**No `dist` staging was needed.** No sample's content and no file kind changed: a set is a record,
+with no bytes of its own.
+
+**Tests.** `animation_set.zig` has 4: reading with defaults, a set that is only a model, every
+refusal at its boundary, and both limits one past. `animation_rigs.zig` has 11, over the real
+compiler, store and registry: a set compiled from text builds a rig that plays and reports the
+right events and travel; a model's unlisted clips; one rig counted; every refusal needing another
+record, each leaving no rig and no asset held; a clip for another skeleton, and a file that won't
+load; a compile's diagnostic naming the record; a package no compiler checked; a reload that follows
+the set and the clips; a later package's override winning with no asset restated; a broken reload
+mended under the same handle; and out of memory at every allocation.
+
+**Guards verified by mutation.** Thirty-one were tried and restored, and 27 failed at once. All four
+survivors were missing tests, now added, and each mutation now fails: `check` at build, a model with
+an empty clip list, a set's `loop` reaching the rig, and acquiring a set again after its last
+release.
+
+**Exit met:** a set compiled from text builds a rig with no renderer, every refusal is named, and a
+reload keeps handles. Bar 2,688/2,698 (ten skips), 130/130 steps. Every command exits 0.

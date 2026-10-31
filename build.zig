@@ -90,7 +90,7 @@ const layering = [_]Module{
     // L2 — assets. The module with both a filesystem and the content model, which makes
     // it the seam between them: `data` cannot open a file and `render2d` should not, so
     // opening files on content's behalf is this module's job (docs/design/assets.md).
-    .{ .name = "asset", .deps = &.{ "core", "data", "platform" } },
+    .{ .name = "asset", .deps = &.{ "core", "data", "platform", "anim" } },
 
     // L2 — what is installed, and in what order it loads (ADR-0027,
     // docs/design/public-abi.md §12). `data` to read a manifest out of a compiled package,
@@ -1596,6 +1596,15 @@ pub fn build(b: *std.Build) void {
     const skin_jobs_run = b.addRunArtifact(skin_jobs_tests);
     test_step.dependOn(&skin_jobs_run.step);
     b.step("render3d-jobs-test", "Compare renderer skin output under serial, reversed and real jobs").dependOn(&skin_jobs_run.step);
+
+    // A rig from a compiled package, with no renderer in the import list: that is its point.
+    const rigs_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/animation_rigs.zig"), .target = target, .optimize = optimize });
+    for ([_][]const u8{ "core", "data", "platform", "asset", "author", "anim" }) |name| rigs_mod.addImport(name, modules.get(name).?);
+    const rigs_tests = b.addTest(.{ .root_module = rigs_mod });
+    check_step.dependOn(&rigs_tests.step);
+    const rigs_run = b.addRunArtifact(rigs_tests);
+    test_step.dependOn(&rigs_run.step);
+    b.step("rigs-test", "Build animation rigs from compiled content with no renderer").dependOn(&rigs_run.step);
 
     const model_content_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/model_content.zig"), .target = target, .optimize = optimize });
     for ([_][]const u8{ "core", "data", "platform", "rhi", "asset", "author", "render3d", "render2d", "ui", "app" }) |name| model_content_mod.addImport(name, modules.get(name).?);
