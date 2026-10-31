@@ -131,7 +131,7 @@ const layering = [_]Module{
     // can read neither a clock nor an input device, and no filesystem to save a world
     // through. Both fall out of the layering, and both are what I9 would have asked for
     // anyway.
-    .{ .name = "scene", .deps = &.{ "core", "data" } },
+    .{ .name = "scene", .deps = &.{ "core", "data", "anim" } },
 
     // L3 — the mixer, its voices, and sounds as content (ADR-0023, docs/design/audio.md).
     // `platform` because the device is down there and the mixer is what opens it; `asset`
@@ -1570,7 +1570,7 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "abi")) {
             b.step("abi-test", "Run the public ABI agreement, refusal and caller-context tests").dependOn(&run.step);
         }
-        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav")) {
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav") or std.mem.eql(u8, spec.name, "scene")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
     }

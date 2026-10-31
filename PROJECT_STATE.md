@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 3 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 4** (`scene`: `foundry:animator`, saved with a world). No sample uses a `Rig` yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 4 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 5** (`debug`: the animation panel). No sample uses an animator yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 4 is done (2026-10-31): `foundry:animator`, saved with a world.**
+- `foundry:animator` is `anim.Player` under an engine name, and `foundry:root_motion` is this tick's move, derived and unsaved. A world opts in with `enableAnimation`, and `scene` is granted `anim`, not `asset`.
+- A world saved mid-stride and loaded continues byte-identical in pose, motion and events to the world that was not saved. A save holds no pose and needed no format change.
+- An animator whose set is gone stays, unadvanced and counted, and resumes if it returns. A save with a bad value is refused whole, and a raw write is repaired.
+- Bar 2,702/2,712 (ten skips), 130/130 steps.
+
 
 **M34 Step 3 is done (2026-10-31): `foundry:animation_set` and `asset.Rigs`.**
 - A hand-written record says what each clip means. `fpack` refuses what one record can show, and `Rigs` what depends on other records, each by name.

@@ -19,6 +19,7 @@ const data = @import("data");
 
 const component = @import("component.zig");
 const entity_mod = @import("entity.zig");
+const animation_mod = @import("animation.zig");
 const hierarchy_mod = @import("hierarchy.zig");
 const limits_mod = @import("limits.zig");
 const query_mod = @import("query.zig");
@@ -168,6 +169,8 @@ pub const World = struct {
     /// rather than beside the world, because a rule such as the despawn cascade has to hold
     /// for every caller of the world, not only for callers that know a helper exists.
     hierarchy: ?hierarchy_mod.State = null,
+    /// Set by `enableAnimation`.
+    animation: ?animation_mod.Types = null,
 
     pub fn init(gpa: Allocator, schemas: *data.Registry, limits: Limits) World {
         return .{
@@ -332,6 +335,24 @@ pub const World = struct {
             .world_transform = try self.registerComponent(infos[2]),
         };
         self.hierarchy = .{ .types = types };
+        return types;
+    }
+
+    /// Registers `foundry:animator` and `foundry:root_motion`, and makes this a world with
+    /// animation (`animation-logic.md` §7). A second call returns the same types. Both or neither,
+    /// and before the first entity, which `registerComponent` refuses.
+    pub fn enableAnimation(self: *World) RegisterError!animation_mod.Types {
+        if (self.animation) |types| return types;
+        if (self.types.count() + 2 > self.limits.max_component_types) return error.ComponentTypeLimit;
+        const infos = [_]ComponentTypeInfo{ animation_mod.animatorInfo(), animation_mod.rootMotionInfo() };
+        for (infos) |info| {
+            if (self.by_schema.contains(info.schema.id.hash)) return error.ComponentTypeExists;
+        }
+        const types: animation_mod.Types = .{
+            .animator = try self.registerComponent(infos[0]),
+            .root_motion = try self.registerComponent(infos[1]),
+        };
+        self.animation = types;
         return types;
     }
 

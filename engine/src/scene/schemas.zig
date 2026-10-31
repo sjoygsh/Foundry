@@ -63,11 +63,12 @@ pub const scene: Schema = .{
     },
 };
 
-/// What content may author. `foundry:transform` is here, and `foundry:parent` and
-/// `foundry:world_transform` deliberately are not: a package naming either fails to compile
-/// with the ordinary unknown-schema diagnostic (`hierarchy.md` §3.3).
-pub const all = [_]Schema{ entity, scene, hierarchy.transform_schema };
+/// What content may author. `foundry:transform` and `foundry:animator` are here, and
+/// `foundry:parent` and `foundry:world_transform` deliberately are not: a package naming either
+/// fails to compile with the ordinary unknown-schema diagnostic (`hierarchy.md` §3.3).
+pub const all = [_]Schema{ entity, scene, hierarchy.transform_schema, animation.animator_schema };
 
+const animation = @import("animation.zig");
 const hierarchy = @import("hierarchy.zig");
 
 /// Registers them into a registry, so content can use them without declaring them.
@@ -89,11 +90,11 @@ test "the engine's entity schemas register, and are what content will be checked
     defer registry.deinit(gpa);
 
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, 3), registry.count());
+    try testing.expectEqual(@as(u32, 4), registry.count());
 
     // Idempotent, because two packages that both use one each carry a copy of it.
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, 3), registry.count());
+    try testing.expectEqual(@as(u32, 4), registry.count());
 
     // The transform content can author, and nothing a parent could be read from.
     try testing.expect(registry.lookup(data.SchemaId.fromStringUnchecked("foundry:transform")) != null);

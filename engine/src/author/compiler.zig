@@ -510,6 +510,7 @@ pub const engine_schema_names = [_][]const u8{
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
+    scene.animation.animator_name,
 };
 
 /// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.

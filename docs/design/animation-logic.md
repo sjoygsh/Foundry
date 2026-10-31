@@ -755,3 +755,52 @@ release.
 
 **Exit met:** a set compiled from text builds a rig with no renderer, every refusal is named, and a
 reload keeps handles. Bar 2,688/2,698 (ten skips), 130/130 steps. Every command exits 0.
+
+## Resolution — Step 4: `foundry:animator`, saved with a world (2026-10-31)
+
+**What exists.** `scene/animation.zig` has `Animator`, `RootMotion`, `Types`, `RigSource`, `rigSource`,
+`Events`, `Options`, `Summary`, `advance`, `evaluate`, `player`, `animatorOf` and `motionOf`.
+`World.enableAnimation` opts a world in. `scene` is granted `anim`, `foundry:animator` joins the
+schemas content may author, and `anim.Player.sane` says whether a player's values are in range.
+`.fsav` did not change. `zig build scene-test` is a new focused target. No sample uses any of this
+yet.
+
+**What the design had not settled, and the answers:**
+- **`advance` takes `Options` and returns a `Summary`.** §7 gave it an events list. A game may want
+  none, and Step 5's panel needs a `Report` filled per animator, so both are optional. `Summary`
+  counts animators, unresolved animators, lost channels, events, and events dropped.
+- **Root motion is added in a pass of its own,** before the tick, since adding a component during a
+  query is a structural change. So `advance` can allocate, on the tick an entity first needs one,
+  and a load comes back through the same pass. An allocation failure leaves the whole tick undone.
+- **"Carries motion" is `rig.motion_joint` being set,** not a walk of its clips, so the question is
+  one comparison on every tick. An entity whose set names a motion joint gets the component even
+  while it plays a clip with no motion.
+- **Entity order is imposed on the list.** The dense store's order is its history, which a query says
+  not to rely on. So `advance` walks it and then sorts this tick's part of the list by slot,
+  stably, which keeps each entity's events in time order and leaves anything already in the list
+  alone. What overflows is still decided in store order, which a save preserves.
+- **A save with a bad value is refused whole, as `SaveCorrupt`.** That is what `save.zig` does with
+  any deserializer's refusal, and `foundry:transform` is the same. The repair in §3 is for what no
+  deserializer saw, a raw write. A template with a bad value fails to spawn, `ValueOutOfRange`.
+- **`rigSource` is generic,** over anything with `lookup(set)`, because `scene` can't name
+  `asset.Rigs`. A rig has to have been acquired for `lookup` to find it, so a game acquires what its
+  world uses. Until then an animator is unresolved, which is the same state as a removed mod.
+- **One buffer serves every rig:** `evaluate` takes two slices of at least the joint count and answers
+  the count, so a game keeps one pair of 256.
+- **`scene-test`** joins `asset-test` and the others in `build.zig`, for a focused run.
+
+**Tests.** Fourteen in `animation.zig`, all hermetic, on hand-built rigs: both types registered once;
+a world without animation; a body's move each tick and a game reaching the player; no root motion
+without a motion joint; `evaluate`'s refusals; entity order, time order and overflow; a list that
+already holds events; **a world saved mid-stride, whose first pose and next 240 ticks of pose, motion
+and events are byte-identical to the unsaved world's, in a save no bigger after play**; seven bad
+values each refused in a save; a set gone and returning; a raw write repaired; a report; out of
+memory leaving the tick undone; and authoring by naming a set.
+
+**Guards verified by mutation.** Twenty-three were tried and restored, and 22 failed at once. The
+survivor was redundant code: `enableAnimation`'s own check for a late call, which `registerComponent`
+already makes. It is gone. The layout check is `comptime`, so its proof is that swapping two fields
+of `Animator` stops the build on that assertion.
+
+**Exit met:** a world saved mid-stride and loaded continues byte-identical to the one that was not,
+in `scene`'s hermetic tests. Bar 2,702/2,712 (ten skips), 130/130 steps. Every command exits 0.

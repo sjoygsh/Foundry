@@ -1,8 +1,8 @@
 //! Foundry `scene` — layer L3. Entities, components, systems and world state.
 //!
-//! ADR-0007 grants this module `core`, `data` and `asset`. It takes **`core` and `data`**,
-//! and will take `asset` when something here needs to acquire one — which is not yet, and
-//! may never be: a `sprite` component holds a texture's content ID and stays a content ID,
+//! ADR-0007 grants this module `core`, `data` and `asset`. It takes **`core`, `data` and
+//! `anim`**, the last for `foundry:animator` (ADR-0071), and will take `asset` when something
+//! here needs to acquire one — which is not yet, and may never be: a `sprite` component holds a texture's content ID and stays a content ID,
 //! and turning that into a handle belongs to the rendering system above (`entity-storage.md`
 //! §8). A dependency a module does not use is a claim about the architecture the build
 //! cannot check.
@@ -22,6 +22,7 @@
 //!
 //! Design: `docs/design/entity-storage.md`
 
+pub const animation = @import("animation.zig");
 pub const component = @import("component.zig");
 pub const derive = @import("derive.zig");
 pub const entity = @import("entity.zig");
@@ -64,6 +65,7 @@ pub const SaveReadError = save.ReadError;
 pub const SaveWriteError = save.WriteError;
 
 test {
+    _ = animation;
     _ = component;
     _ = derive;
     _ = entity;

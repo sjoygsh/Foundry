@@ -246,6 +246,17 @@ pub const Player = extern struct {
         return self.newest < max_channels and self.channels[self.newest].clip == name;
     }
 
+    /// Whether every value is in range. What a deserializer refuses a save for, since `advance`
+    /// would only repair it a tick later. It says nothing of clips, which belong to a rig.
+    pub fn sane(self: *const Player) bool {
+        if (!std.math.isFinite(self.fade) or self.fade < 0) return false;
+        if (self.newest >= max_channels or !validStep(self.dt)) return false;
+        for (self.channels) |channel| {
+            if (channel.clip != 0 and !saneChannel(channel)) return false;
+        }
+        return true;
+    }
+
     /// A channel's time within its clip, in seconds, as the pose shows it.
     pub fn seconds(self: *const Player, rig: Rig, index: usize) f32 {
         const entry = self.usable(rig, self.channels[index]) orelse return 0;
