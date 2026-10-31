@@ -839,3 +839,67 @@ with no yaw and two unbounded names, and tests were added that catch them.
 
 **Exit met:** seven panels, the panel prints a report and says so when there is none, and `debug` has
 no write path. Bar 2,711/2,721 (ten skips), 130/130 steps. Every command exits 0.
+
+## Resolution — Step 6: the clips, and the walker on `Player` (2026-10-31)
+
+**What exists.** `scripts/m34/clips.py` gives both generators `stride`, `turn`, `jump`, `drop` and
+`climb`, appended after `idle` and `walk`. The walker plays through `anim.Player` and `asset.Rigs`,
+its record names `sandbox3d:walker.set`, and the sample owns one `Rigs`. Its copied poses, weight
+and clip conversion are gone. The warden has the clips and doesn't use them until Step 8.
+
+**What the design had not settled, and the answers:**
+- **§9 says four clips and lists five.** The list is right: Steps 8 and 9 need all five.
+- **The walker's record gains `set`,** after `model`. The model is still its own field, since a
+  `Content` draws it, and `Rigs` is what follows the set.
+- **`evaluate` and `refresh` lose `dt`.** A player keeps it, so a pose needs only a player and a
+  rig.
+- **A rig borrows keys, so a tick must never run between a reload and `Rigs.contentChanged`.** M24's
+  walker re-read its clips on every evaluate and couldn't see this. The sandbox had the gap: **R**
+  reloads in `keys()`, after that frame's seam and before its ticks. So the sample checks the
+  generation again after `keys()`. Step 8 must do the same for the court if a reload can land
+  between its seam and its ticks.
+- **One walker hides this, and 16 don't.** A lone walker's release frees the rig and its `acquire`
+  rebuilds it, so a missing `contentChanged` does no harm. Walkers sharing a rig keep a stale one.
+- **The per-evaluate refusals are gone.** The old test corrupted live clips to reach them, and
+  `rigs-test` now covers that when a rig is built, which is §3's rule. `refresh` still refuses a rig
+  with no `idle` or `walk`, and a rig gone at a reload is `error.MissingRig` from `move` and
+  `evaluate`.
+- **A package keeps one copy of a string,** so the test's rename of `idle` renames the set's `start`
+  too, and the rig still builds. `MissingIdle` is what reaches it.
+
+**Two pins moved, and they became one.** The walker's replay is now **`655e865f98779129`**, for this
+reason alone: time went from `f32` to `f64` (§3). `M24` in `walker_tests.zig` keeps the old formula
+and checks every joint's translation, rotation and scale and the weight on all 2,100 ticks, against
+a tolerance of 1e-4. The worst difference is 2.4e-6. The player's `cb99ccfcf2b6d6c3` didn't move.
+
+The second pin, `fa431d9440d4cb2e`, was already stale. The code before this step gives
+`62ed8c026c20482c` in the headless tour and in the test binary, Debug and ReleaseSafe alike, and the
+new code gives one value in the same four. So the test now takes only the new pin. A windowed
+ReleaseSafe run on Metal hasn't been measured, and Step 9's build is the first.
+
+**Bytes.** `clip0`, `clip1`, `mesh0` and `skeleton0` compile to exactly what they did, compared
+against a snapshot of the previous build for both models. The two models' four files are also
+identical to each other. Pins in `walker_tests.zig` and the court's `walk_tests.zig` keep that
+checked. Both generators reproduced the committed files before they changed. `stride`'s rotations
+equal `walk`'s in both models.
+
+**Tests.** The tolerance run; both byte pins; and on the real assets, `stride` at 0.6 m/s, `turn` a
+yaw of pi/2 to the left, and `jump` and `drop` with no travel. The reload, refusal and settings
+tests carry over to rigs, and a missing `set` is refused.
+
+**Guards verified by mutation.** Sixteen were tried against a checked baseline, and 13 failed at once.
+Three survived:
+- **The cleared rig handle** was a test gap. It now has a test, which fails.
+- **`self.player = .{}` was redundant,** since a zero-fade restart already resets, and it is gone.
+- **The rig seam in `Sample.refresh` has no automated test.** It was proved by hand, in Debug, headless with 16
+  walkers: 32 scripted reloads pass, and removing either the second check or `contentChanged`
+  panics reading poisoned memory, at joint index 43690. One reload missed the window in the first
+  case, because a headless frame doesn't always tick.
+
+Separately, a `TooManyJoints` check was dead code, since `Rig.validate` already refuses that. It is
+gone.
+
+**Exit met:** existing clip and mesh bytes are unchanged, the tolerance test passes, the walker's
+pins moved once with the reason recorded, and the player's pin did not move. Bar 2,714/2,724 (ten skips),
+130/130 steps. Every command exits 0. `court` and `room` stage on macOS. Windows staging is
+Step 10's.

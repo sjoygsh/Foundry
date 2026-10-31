@@ -2,14 +2,20 @@
 """Foundry's plain 1.7 m, 19-joint walker. No downloads; deterministic glTF 2.0.
 
 Run from any directory. The 1-second walk cycle's ~0.6 m stride agrees with
-walker.main's 0.6 m/s; feet stay in model space (no root motion).
+walker.main's 0.6 m/s; feet stay in model space (no root motion). M34's clips,
+`stride` among them, come from scripts/m34/clips.py.
 """
 import json
 import math
 from pathlib import Path
 import struct
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT/"scripts/m34"))
+sys.dont_write_bytecode = True
+import clips  # noqa: E402
+
 OUT = ROOT / "samples/sandbox3d/content/models"
 
 
@@ -116,6 +122,8 @@ def generate():
             samplers.append({"input": times,"output": output,"interpolation":"LINEAR"})
             channels.append({"sampler":len(samplers)-1,"target":{"node":j,"path":"rotation"}})
         animations.append({"name":name,"samplers":samplers,"channels":channels})
+    # After `idle` and `walk`, so those two and the mesh keep their bytes.
+    animations.extend(clips.animations(accessor))
     document = {"asset":{"version":"2.0","generator":"Foundry M24"},
                 "scene":0,"scenes":[{"nodes":[0,19]}],"nodes":nodes,
                 "skins":[{"joints":list(range(19)),"skeleton":0,"inverseBindMatrices":bind}],
@@ -126,7 +134,7 @@ def generate():
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT/"walker.bin").write_bytes(binary)
     (OUT/"walker.gltf").write_text(json.dumps(document, indent=2)+"\n")
-    print(f"walker: {len(joints)} joints, {len(positions)} vertices, idle/walk; {len(binary)} bytes")
+    print(f"walker: {len(joints)} joints, {len(positions)} vertices, {len(animations)} clips; {len(binary)} bytes")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
-//! M24's sample-owned patrol/playback. Retain a model handle, never asset payload pointers.
+//! M24's sample-owned patrol, played by an `anim.Player` through `asset.Rigs` since M34. Retain
+//! handles, never a rig or an asset's payload.
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
@@ -13,6 +14,7 @@ const Quat = core.math.Quat;
 
 pub const Settings = struct {
     model: core.ContentId,
+    set: core.ContentId,
     waypoints: [max_points]Vec3 = @splat(.zero),
     len: usize = 0,
     speed: f32,
@@ -21,10 +23,11 @@ pub const Settings = struct {
     pub fn read(fields: data.fpk.Fields) !Settings {
         var out: Settings = .{
             .model = (try fields.idAt(try index(fields, "model"))) orelse return error.InvalidWalker,
+            .set = (try fields.idAt(try index(fields, "set"))) orelse return error.InvalidWalker,
             .speed = @floatCast((try fields.floatAt(try index(fields, "speed"))) orelse return error.InvalidWalker),
             .cross_fade = @floatCast((try fields.floatAt(try index(fields, "cross_fade"))) orelse return error.InvalidWalker),
         };
-        if (out.model.isNone() or !std.math.isFinite(out.speed) or out.speed <= 0 or out.speed > 6 or
+        if (out.model.isNone() or out.set.isNone() or !std.math.isFinite(out.speed) or out.speed <= 0 or out.speed > 6 or
             !std.math.isFinite(out.cross_fade) or out.cross_fade < 1.0 / 60.0 or out.cross_fade > 10) return error.InvalidWalker;
         const list = (try fields.listAt(try index(fields, "waypoints"))) orelse return error.InvalidWalker;
         if (list.len < 2 or list.len > max_points) return error.InvalidWalker;
@@ -44,9 +47,13 @@ fn index(fields: data.fpk.Fields, name: []const u8) !u32 {
     return error.InvalidWalker;
 }
 
+const idle_clip = anim.clipName("idle");
+const walk_clip = anim.clipName("walk");
+
 pub const Walker = struct {
     settings: ?Settings = null,
     model: render3d.ModelHandle = .none,
+    rig: asset.RigHandle = .none,
     character: physics.CharacterHandle = .none,
     feet: Vec3 = .zero,
     yaw: f32 = 0,
@@ -54,12 +61,11 @@ pub const Walker = struct {
     tick: u64 = 0,
     waypoint: usize = 1,
     wait_ticks: u32 = 60,
-    weight: f32 = 0,
+    player: anim.Player = .{},
     joint_count: usize = 0,
-    idle_pose: [256]Transform = undefined,
-    walk_pose: [256]Transform = undefined,
-    pose: [256]Transform = undefined,
-    matrices: [256]Mat4 = undefined,
+    scratch: [anim.max_joints]Transform = undefined,
+    pose: [anim.max_joints]Transform = undefined,
+    matrices: [anim.max_joints]Mat4 = undefined,
     reached: u32 = 0,
     used_idle: bool = false,
     used_walk: bool = false,
@@ -67,37 +73,44 @@ pub const Walker = struct {
     hash: u64 = 0xcbf29ce484222325,
     pub const proof_ticks = 2100;
 
-    pub fn deinit(self: *Walker, gpa: std.mem.Allocator, world: *physics.World, content: *render3d.Content) void {
+    pub fn deinit(self: *Walker, gpa: std.mem.Allocator, world: *physics.World, content: *render3d.Content, rigs: *asset.Rigs) void {
         if (!self.character.isNone()) _ = world.removeCharacter(gpa, self.character);
         if (!self.model.isNone()) content.releaseModel(self.model);
+        if (!self.rig.isNone()) rigs.release(self.rig);
         self.character = .none;
         self.model = .none;
+        self.rig = .none;
         self.joint_count = 0;
     }
-    /// At the generation seam: borrow new values, validate, and rebuild the pose. Preserve
-    /// playback/feet when the record is unchanged. Any refusal disables, never uses old arrays.
-    pub fn refresh(self: *Walker, gpa: std.mem.Allocator, store: *const data.Store, world: *physics.World, content: *render3d.Content, dt: f32) !void {
+    /// At the generation seam, after `rigs.contentChanged`: take the rig again and rebuild the
+    /// pose. Preserve playback/feet when the record is unchanged. Any refusal disables, and a
+    /// rig is never kept past the seam.
+    pub fn refresh(self: *Walker, gpa: std.mem.Allocator, store: *const data.Store, world: *physics.World, content: *render3d.Content, rigs: *asset.Rigs) !void {
         const entry = store.lookup(core.ContentId.fromString("sandbox3d:walker.main")) orelse {
-            self.deinit(gpa, world, content);
+            self.deinit(gpa, world, content, rigs);
             self.settings = null;
             return error.MissingWalker;
         };
         const fresh = Settings.read(entry.fields) catch |err| {
-            self.deinit(gpa, world, content);
+            self.deinit(gpa, world, content, rigs);
             self.settings = null;
             return err;
         };
         const changed = !std.meta.eql(self.settings, @as(?Settings, fresh));
-        self.deinit(gpa, world, content);
-        errdefer self.deinit(gpa, world, content);
+        self.deinit(gpa, world, content, rigs);
+        errdefer self.deinit(gpa, world, content, rigs);
         self.settings = fresh;
         self.model = try content.acquireModel(fresh.model);
+        self.rig = try rigs.acquire(fresh.set);
+        const rig = rigs.get(self.rig) orelse return error.MissingRig;
+        if (rig.find(idle_clip) == null) return error.MissingIdle;
+        if (rig.find(walk_clip) == null) return error.MissingWalk;
         if (changed) {
             self.feet = fresh.waypoints[0];
             self.waypoint = 1;
             self.wait_ticks = 60;
             self.tick = 0;
-            self.weight = 0;
+            try self.player.play(rig.*, idle_clip, .{});
             self.velocity = 0;
             self.yaw = 0;
             self.reached = 0;
@@ -116,11 +129,12 @@ pub const Walker = struct {
             .layer = 2,
             .mask = 1,
         }, self.feet, 0);
-        try self.evaluate(content, dt);
+        try self.evaluate(rigs);
     }
-    pub fn move(self: *Walker, gpa: std.mem.Allocator, world: *physics.World, dt: f32) !void {
+    pub fn move(self: *Walker, gpa: std.mem.Allocator, world: *physics.World, rigs: *const asset.Rigs, dt: f32) !void {
         const s = self.settings orelse return;
         if (self.character.isNone()) return;
+        const rig = rigs.get(self.rig) orelse return error.MissingRig;
         const before = self.feet;
         var horizontal: Vec3 = .zero;
         if (self.wait_ticks != 0) {
@@ -143,36 +157,35 @@ pub const Walker = struct {
         const moved = self.feet.sub(before);
         const walking = moved.x * moved.x + moved.z * moved.z > 1e-10;
         if (walking) self.yaw = std.math.atan2(-moved.x, -moved.z);
-        const by = dt / s.cross_fade;
-        self.weight = std.math.clamp(self.weight + (if (walking) by else -by), 0, 1);
+        const wanted = if (walking) walk_clip else idle_clip;
+        if (!self.player.playing(wanted)) try self.player.play(rig.*, wanted, .{ .fade = s.cross_fade, .phase = .keep });
+        // Its clips carry no events and no motion, and a refresh made sure of both of them.
+        var step: anim.Step = undefined;
+        self.player.advance(rig.*, dt, &step);
         self.tick += 1;
     }
-    /// All payload borrows last only through this call, including converted track slices.
-    pub fn evaluate(self: *Walker, content: *render3d.Content, dt: f32) !void {
-        if (self.model.isNone()) return;
+    /// The pose, a function of the player and the rig alone.
+    pub fn evaluate(self: *Walker, rigs: *const asset.Rigs) !void {
+        if (self.rig.isNone()) return;
         errdefer self.joint_count = 0;
-        const source = content.skeletonOf(self.model) orelse return error.MissingSkeleton;
-        const skeleton: anim.Skeleton = .{ .parents = source.parents, .rest = source.rest, .inverse_bind = source.inverse_bind, .root = source.root };
-        try skeleton.validate();
-        const n = skeleton.jointCount();
-        const idle = content.clipOf(self.model, "idle") orelse return error.MissingIdle;
-        const walk = content.clipOf(self.model, "walk") orelse return error.MissingWalk;
-        var idle_tracks: [anim.clip.max_tracks]anim.Track = undefined;
-        var walk_tracks: [anim.clip.max_tracks]anim.Track = undefined;
-        const a = try clip(idle, n, &idle_tracks);
-        const b = try clip(walk, n, &walk_tracks);
-        const time = @as(f32, @floatFromInt(self.tick)) * dt;
-        const pose_a: anim.Pose = .{ .local = self.idle_pose[0..n] };
-        const pose_b: anim.Pose = .{ .local = self.walk_pose[0..n] };
+        const rig = rigs.get(self.rig) orelse return error.MissingRig;
+        const n = rig.skeleton.jointCount();
+        const scratch: anim.Pose = .{ .local = self.scratch[0..n] };
         const pose: anim.Pose = .{ .local = self.pose[0..n] };
-        anim.sample(skeleton, a, anim.wrap(time, a.duration), pose_a);
-        anim.sample(skeleton, b, anim.wrap(time, b.duration), pose_b);
-        anim.blend(pose_a, pose_b, self.weight, pose);
-        anim.skinMatrices(skeleton, pose, self.matrices[0..n]);
+        self.player.evaluate(rig.*, scratch, pose);
+        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
         self.joint_count = n;
-        self.used_idle = self.used_idle or self.weight == 0;
-        self.used_walk = self.used_walk or self.weight == 1;
-        self.used_fade = self.used_fade or (self.weight > 0 and self.weight < 1);
+        const weight = self.walkWeight();
+        self.used_idle = self.used_idle or weight == 0;
+        self.used_walk = self.used_walk or weight == 1;
+        self.used_fade = self.used_fade or (weight > 0 and weight < 1);
+    }
+    /// How far between idle and walk the figure is.
+    pub fn walkWeight(self: *const Walker) f32 {
+        for (self.player.channels) |channel| {
+            if (channel.clip == walk_clip) return channel.weight;
+        }
+        return 0;
     }
     pub fn record(self: *Walker) void {
         // Hash fields, not struct padding. Every local TRS and matrix at every tick.
@@ -183,7 +196,8 @@ pub const Walker = struct {
         }
         self.bytes(std.mem.sliceAsBytes(self.matrices[0..self.joint_count]));
         self.bytes(std.mem.asBytes(&self.feet));
-        self.bytes(std.mem.asBytes(&self.weight));
+        const weight = self.walkWeight();
+        self.bytes(std.mem.asBytes(&weight));
     }
     fn bytes(self: *Walker, b: []const u8) void {
         for (b) |byte| self.hash = (self.hash ^ byte) *% 0x100000001b3;
@@ -196,17 +210,3 @@ pub const Walker = struct {
         try content.drawModel(.{ .model = self.model, .world = Mat4.trs(self.feet.add(offset), Quat.fromAxisAngle(.up, self.yaw), .one), .skin = self.matrices[0..self.joint_count] });
     }
 };
-fn clip(source: *const asset.animation.Animation, count: usize, tracks: []anim.Track) !anim.Clip {
-    try source.checkJointCount(count);
-    if (source.tracks.len > tracks.len) return error.TooManyTracks;
-    for (source.tracks, tracks[0..source.tracks.len]) |from, *to| to.* = .{
-        .joint = from.joint,
-        .path = @enumFromInt(@intFromEnum(from.path)),
-        .interpolation = @enumFromInt(@intFromEnum(from.interpolation)),
-        .times = from.times,
-        .values = from.values,
-    };
-    const result: anim.Clip = .{ .duration = source.duration, .tracks = tracks[0..source.tracks.len] };
-    try result.validate(count);
-    return result;
-}

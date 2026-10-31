@@ -9,9 +9,15 @@ import json
 import math
 from pathlib import Path
 import struct
+import sys
 import zlib
 
-OUT = Path(__file__).resolve().parents[2] / "samples/court/content/models"
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts/m34"))
+sys.dont_write_bytecode = True
+import clips  # noqa: E402
+
+OUT = ROOT / "samples/court/content/models"
 
 
 def png(colors):
@@ -235,6 +241,8 @@ def generate_warden():
             samplers.append({"input": times,"output": output,"interpolation":"LINEAR"})
             channels.append({"sampler":len(samplers)-1,"target":{"node":j,"path":"rotation"}})
         animations.append({"name":name,"samplers":samplers,"channels":channels})
+    # After `idle` and `walk`, so those two and the mesh keep their bytes.
+    animations.extend(clips.animations(accessor))
     document = {"asset":{"version":"2.0","generator":"Foundry M26"},
                 "scene":0,"scenes":[{"nodes":[0,19]}],"nodes":nodes,
                 "skins":[{"joints":list(range(19)),"skeleton":0,"inverseBindMatrices":bind}],

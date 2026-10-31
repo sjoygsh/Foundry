@@ -323,6 +323,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         try sample.describeUi(engine);
         if (engine.input.wasPressed(.escape)) engine.requestQuit();
         sample.keys(engine, script.pressed(engine.frame_index));
+        // R reloads here, and a rig must not reach a tick holding what that replaced.
+        if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
         while (engine.nextStep()) |step| try sample.step(engine, step);
 
         var skipped = false;
@@ -404,11 +406,11 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         const walker = &sample.walkers[0];
         if (!walker.proofPassed()) return error.WalkerTourFailed;
         var replay_walker: Walker = .{};
-        defer replay_walker.deinit(gpa, &replay.world, &sample.content.?);
-        try replay_walker.refresh(gpa, &engine.store, &replay.world, &sample.content.?, engine.step_delta.toSecondsF32());
+        defer replay_walker.deinit(gpa, &replay.world, &sample.content.?, &sample.rigs);
+        try replay_walker.refresh(gpa, &engine.store, &replay.world, &sample.content.?, &sample.rigs);
         while (replay_walker.tick < Walker.proof_ticks) {
-            try replay_walker.move(gpa, &replay.world, engine.step_delta.toSecondsF32());
-            try replay_walker.evaluate(&sample.content.?, engine.step_delta.toSecondsF32());
+            try replay_walker.move(gpa, &replay.world, &sample.rigs, engine.step_delta.toSecondsF32());
+            try replay_walker.evaluate(&sample.rigs);
             replay_walker.record();
         }
         if (!replay_walker.proofPassed() or replay_walker.hash != walker.hash) return error.WalkerReplayFailed;
@@ -700,6 +702,7 @@ const Sample = struct {
     props_proved: bool = false,
     native: ?*Native = null,
     walkers: []Walker,
+    rigs: asset.Rigs,
     course: render3d.ModelHandle = .none,
     /// M27's gallery: held only once asked for, on its tick or by G.
     gallery: Gallery = .{},
@@ -802,6 +805,7 @@ const Sample = struct {
             .navigation = nav_mod.Navigation.init(gpa),
             .crowd = crowd_mod.CrowdDemo.init(gpa),
             .walkers = walkers,
+            .rigs = asset.Rigs.init(gpa, &engine.assets),
             .cube = cube,
             .cube_material = cube_material,
             .shadow_ground = shadow_ground,
@@ -901,6 +905,9 @@ const Sample = struct {
         if (!first) {
             if (self.content) |*content| content.contentChanged() catch |err|
                 log.warn("the scene could not follow a content change ({t}); drawing what it had", .{err});
+            // A rig borrows what a reload may have replaced, so this comes before any tick.
+            self.rigs.contentChanged() catch |err|
+                log.warn("the rigs could not follow a content change ({t})", .{err});
             if (self.corner) |corner| corner.noteReload(&self.world);
             if (self.effects) |effects| effects.contentChanged();
             if (self.content) |*content| self.navigation.contentChanged(content);
@@ -922,7 +929,7 @@ const Sample = struct {
         self.navigation.request(engine.tasks(), &engine.store, &engine.assets, &self.props, self.crateObstacle(), engine.frame_index, asked);
         self.navigation.noteRequestCost(engine.os.monotonicNanos() - asked);
         if (self.content) |*content| for (self.walkers) |*walker| {
-            walker.refresh(self.gpa, &engine.store, &self.walk.world, content, engine.step_delta.toSecondsF32()) catch |err|
+            walker.refresh(self.gpa, &engine.store, &self.walk.world, content, &self.rigs) catch |err|
                 log.warn("walker disabled ({t})", .{err});
         };
 
@@ -1006,17 +1013,17 @@ const Sample = struct {
             self.move_times[self.move_count] = elapsed;
             self.move_count += 1;
         }
-        if (self.content) |*content| {
+        if (self.content != null) {
             if (self.tour != null and self.walkers[0].tick >= Walker.proof_ticks) return;
             for (self.walkers) |*walker| {
                 if (self.tour != null and walker.tick >= Walker.proof_ticks) continue;
-                try walker.move(self.gpa, &self.walk.world, dt);
+                try walker.move(self.gpa, &self.walk.world, &self.rigs, dt);
             }
             const animation = engine.beginScope("animation");
             defer animation.end();
             for (self.walkers) |*walker| {
                 if (self.tour != null and walker.tick > Walker.proof_ticks) continue;
-                try walker.evaluate(content, dt);
+                try walker.evaluate(&self.rigs);
                 if (self.tour != null and walker.tick <= Walker.proof_ticks) walker.record();
             }
         }
@@ -1424,8 +1431,10 @@ const Sample = struct {
             self.gpa.destroy(effects);
         }
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
-        if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content);
+        if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
         self.gpa.free(self.walkers);
+        // After what holds a rig, and before the registry it borrows from.
+        self.rigs.deinit();
         self.walk.deinit(&engine.assets);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_mesh.id);
         if (!self.course.isNone()) if (self.content) |*content| content.releaseModel(self.course);

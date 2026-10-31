@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const app = @import("app");
+const anim = @import("anim");
 const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
@@ -28,51 +29,33 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     defer renderer.deinit();
     var content = render3d.Content.init(gpa, &renderer, &engine.assets, .default);
     defer content.deinit();
+    var rigs = asset.Rigs.init(gpa, &engine.assets);
+    defer rigs.deinit();
     var first = Walk.init(gpa);
     defer first.deinit(&engine.assets);
     first.refresh(&engine.store, &engine.assets, dt);
     var walker: Walker = .{};
-    defer walker.deinit(gpa, &first.world, &content);
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    defer walker.deinit(gpa, &first.world, &content, &rigs);
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expectEqual(@as(usize, 19), walker.joint_count);
-    // Refuse changed borrowed values before entering anim's programmer-only assertions.
-    const live_clip = @constCast(content.clipOf(walker.model, "idle").?);
-    const saved_count = live_clip.joint_count;
-    live_clip.joint_count = 1;
-    try testing.expectError(error.SkeletonMismatch, walker.evaluate(&content, dt));
-    try testing.expectEqual(@as(usize, 0), walker.joint_count);
-    live_clip.joint_count = saved_count;
-    const saved_tracks = live_clip.tracks;
-    var too_many: [769]asset.animation.Track = undefined;
-    live_clip.tracks = &too_many;
-    const too_many_result = walker.evaluate(&content, dt);
-    live_clip.tracks = saved_tracks;
-    try testing.expectError(error.TooManyTracks, too_many_result);
-    const saved_duration = live_clip.duration;
-    live_clip.duration = 0;
-    const bad_duration_result = walker.evaluate(&content, dt);
-    live_clip.duration = saved_duration;
-    try testing.expectError(error.InvalidDuration, bad_duration_result);
-    const live_rig = @constCast(content.skeletonOf(walker.model).?);
-    live_rig.root.cols[0][3] = 1;
-    try testing.expectError(error.InvalidRoot, walker.evaluate(&content, dt));
-    live_rig.root.cols[0][3] = 0;
-    try walker.evaluate(&content, dt);
+    try testing.expect(walker.player.playing(anim.clipName("idle")));
     var tour: Tour = .{ .emit = false };
     var second = Walk.init(gpa);
     defer second.deinit(&engine.assets);
     second.refresh(&engine.store, &engine.assets, dt);
     var replay: Walker = .{};
-    defer replay.deinit(gpa, &second.world, &content);
-    try replay.refresh(gpa, &engine.store, &second.world, &content, dt);
+    defer replay.deinit(gpa, &second.world, &content, &rigs);
+    try replay.refresh(gpa, &engine.store, &second.world, &content, &rigs);
+    var m24: M24 = try .init(&content, walker.model);
     for (0..Walker.proof_ticks) |_| {
         if (!tour.done()) try tour.advance(&first, dt);
-        try walker.move(gpa, &first.world, dt);
-        try walker.evaluate(&content, dt);
+        try walker.move(gpa, &first.world, &rigs, dt);
+        try walker.evaluate(&rigs);
         walker.record();
-        try replay.move(gpa, &second.world, dt);
-        try replay.evaluate(&content, dt);
+        try replay.move(gpa, &second.world, &rigs, dt);
+        try replay.evaluate(&rigs);
         replay.record();
+        try m24.check(&walker);
         try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(walker.pose[0..walker.joint_count]), std.mem.sliceAsBytes(replay.pose[0..replay.joint_count]));
         try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(walker.matrices[0..walker.joint_count]), std.mem.sliceAsBytes(replay.matrices[0..replay.joint_count]));
         try testing.expectEqual(walker.hash, replay.hash);
@@ -80,15 +63,16 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     try testing.expect(walker.proofPassed() and replay.proofPassed());
     try testing.expect(tour.failed == null and tour.done());
     try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
-    // Same-binary replay above is exact. These are the two already-recorded math-provider
-    // pins (animation3d.md Step 6). Linking v6 also pulls compiler-runtime sin into an
-    // optimized host, so optimization mode alone no longer identifies its provider.
+    // Same-binary replay above is exact. These are the two math-provider pins (animation3d.md
+    // Step 6), moved once by M34, when time went from `f32` to `f64` within the tolerance `M24`
+    // proves. Linking v6 also pulls compiler-runtime sin into an optimized host, so optimization
+    // mode alone no longer identifies its provider.
     if (builtin.cpu.arch == .aarch64 and builtin.os.tag == .macos)
-        try testing.expect(walker.hash == 0x62ed8c026c20482c or walker.hash == 0xfa431d9440d4cb2e);
+        try testing.expect(walker.hash == 0x655e865f98779129);
     const feet = walker.feet;
     const tick = walker.tick;
     const old_character = walker.character;
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expectEqualDeep(feet, walker.feet);
     try testing.expectEqual(tick, walker.tick);
     try testing.expect(first.world.character(old_character) == null);
@@ -98,13 +82,14 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     const speed_offset = editable.len - 8;
     const saved_speed: [4]u8 = editable[speed_offset..][0..4].*;
     std.mem.writeInt(u32, editable[speed_offset..][0..4], @bitCast(@as(f32, 0.7)), .little);
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expectEqual(@as(u64, 0), walker.tick);
     try testing.expectEqual(@as(u32, 0), walker.reached);
     try testing.expect(!walker.used_walk and !walker.used_fade);
     try testing.expectEqual(@as(u64, 0xcbf29ce484222325), walker.hash);
+    try testing.expectEqual(@as(f32, 0), walker.player.seconds(rigs.get(walker.rig).?.*, walker.player.newest));
     @memcpy(editable[speed_offset..][0..4], &saved_speed);
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     // Ordinary submissions copy the freshly evaluated palette, including after refresh.
     try renderer.begin(.{ .camera = .{}, .target_size = .{ .width = 64, .height = 64 } });
     try walker.draw(&content, .zero);
@@ -133,13 +118,15 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     defer gpa.free(rig_bytes);
     const before_matrix = walker.matrices[0];
     try replace(&engine.assets, &engine.store, engine.os, root, names[1], rig_bytes);
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try rigs.contentChanged();
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expect(!std.meta.eql(before_matrix, walker.matrices[0]));
     const clip_bytes = try asset.animation.write(gpa, .{ .duration = 1, .joint_count = @intCast(walker.joint_count), .tracks = &.{.{ .joint = 1, .path = .rotation, .times = &.{ 0, 1 }, .values = &.{ 0.09983342, 0, 0, 0.9950042, 0.09983342, 0, 0, 0.9950042 } }} });
     defer gpa.free(clip_bytes);
     const before_pose = walker.pose[1];
     try replace(&engine.assets, &engine.store, engine.os, root, names[2], clip_bytes);
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try rigs.contentChanged();
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expect(!std.meta.eql(before_pose, walker.pose[1]));
     // A source mesh reload retires its old resident handle. The ordinary Content seam
     // reconnects parts, and a refreshed walker submits the new residency successfully.
@@ -150,14 +137,15 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     defer gpa.free(mesh_bytes.bytes);
     try replace(&engine.assets, &engine.store, engine.os, root, names[0], mesh_bytes.bytes);
     try content.contentChanged();
-    try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+    try rigs.contentChanged();
+    try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     try testing.expect(renderer.meshJointCount(old_mesh) == null);
     try renderer.begin(.{ .camera = .{}, .target_size = .{ .width = 64, .height = 64 } });
     try walker.draw(&content, .zero);
     // Malformed reload preserves the healthy candidate; a valid but incompatible clip
     // refuses pairing and disables this walker without retaining any dangling borrow.
     try testing.expectError(error.InvalidAsset, replace(&engine.assets, &engine.store, engine.os, root, names[2], "broken"));
-    try walker.evaluate(&content, dt);
+    try walker.evaluate(&rigs);
     const model_record = engine.store.lookup(core.ContentId.fromString("sandbox3d:models.walker")).?;
     const named = (try model_record.fields.listAt(model_record.schema.fieldIndex("clips").?)).?;
     for (0..2) |i| {
@@ -166,22 +154,102 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
         const original_letter = name[0];
         name[0] = 'x';
         try content.contentChanged();
-        const refused = walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+        try rigs.contentChanged();
+        const refused = walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
         name[0] = original_letter;
+        // A package keeps one copy of a string, so this renames the set's `start` too, and the rig
+        // still builds: what's missing is the clip the walker asks for.
         try testing.expectError(if (i == 0) error.MissingIdle else error.MissingWalk, refused);
         try testing.expect(walker.character.isNone() and walker.joint_count == 0);
         try content.contentChanged();
-        try walker.refresh(gpa, &engine.store, &first.world, &content, dt);
+        try rigs.contentChanged();
+        try walker.refresh(gpa, &engine.store, &first.world, &content, &rigs);
     }
     const mismatch = try asset.animation.write(gpa, .{ .duration = 1, .joint_count = 1, .tracks = &.{} });
     defer gpa.free(mismatch);
     try replace(&engine.assets, &engine.store, engine.os, root, names[2], mismatch);
-    try testing.expectError(error.SkeletonMismatch, walker.refresh(gpa, &engine.store, &first.world, &content, dt));
+    try rigs.contentChanged();
+    try testing.expectError(error.MissingRig, walker.evaluate(&rigs));
+    try testing.expectEqual(@as(usize, 0), walker.joint_count);
+    try testing.expectError(error.MissingRig, walker.move(gpa, &first.world, &rigs, dt));
+    try testing.expectError(error.JointCountMismatch, walker.refresh(gpa, &engine.store, &first.world, &content, &rigs));
     try testing.expect(walker.character.isNone() and walker.model.isNone() and walker.joint_count == 0);
     var empty: data.Store = .init(gpa, .default);
     defer empty.deinit(gpa);
-    try testing.expectError(error.MissingWalker, walker.refresh(gpa, &empty, &first.world, &content, dt));
-    try testing.expect(walker.character.isNone() and walker.model.isNone() and walker.joint_count == 0);
+    try testing.expectError(error.MissingWalker, walker.refresh(gpa, &empty, &first.world, &content, &rigs));
+    try testing.expect(walker.character.isNone() and walker.model.isNone() and walker.rig.isNone() and walker.joint_count == 0);
+}
+
+/// The walker as M24 played it: both clips at `tick × dt` in `f32`, a weight added to tick by tick
+/// and one blend. M34 keeps it here as the reference a change of arithmetic has to stay close to.
+const M24 = struct {
+    skeleton: anim.Skeleton,
+    idle: *const asset.animation.Animation,
+    walk: *const asset.animation.Animation,
+    weight: f32 = 0,
+    worst: f32 = 0,
+    idle_pose: [256]core.math.Transform = undefined,
+    walk_pose: [256]core.math.Transform = undefined,
+    pose: [256]core.math.Transform = undefined,
+    idle_tracks: [anim.clip.max_tracks]anim.Track = undefined,
+    walk_tracks: [anim.clip.max_tracks]anim.Track = undefined,
+
+    const tolerance = 1e-4;
+
+    fn init(content: *render3d.Content, model: render3d.ModelHandle) !M24 {
+        const source = content.skeletonOf(model) orelse return error.MissingSkeleton;
+        return .{
+            .skeleton = .{ .parents = source.parents, .rest = source.rest, .inverse_bind = source.inverse_bind, .root = source.root },
+            .idle = content.clipOf(model, "idle") orelse return error.MissingIdle,
+            .walk = content.clipOf(model, "walk") orelse return error.MissingWalk,
+        };
+    }
+
+    fn check(self: *M24, walker: *const Walker) !void {
+        const n = walker.joint_count;
+        const by = dt / walker.settings.?.cross_fade;
+        const walking = walker.player.playing(anim.clipName("walk"));
+        self.weight = std.math.clamp(self.weight + (if (walking) by else -by), 0, 1);
+        const a = try clip(self.idle, n, &self.idle_tracks);
+        const b = try clip(self.walk, n, &self.walk_tracks);
+        const time = @as(f32, @floatFromInt(walker.tick)) * dt;
+        const pose_a: anim.Pose = .{ .local = self.idle_pose[0..n] };
+        const pose_b: anim.Pose = .{ .local = self.walk_pose[0..n] };
+        const pose: anim.Pose = .{ .local = self.pose[0..n] };
+        anim.sample(self.skeleton, a, anim.wrap(time, a.duration), pose_a);
+        anim.sample(self.skeleton, b, anim.wrap(time, b.duration), pose_b);
+        anim.blend(pose_a, pose_b, self.weight, pose);
+        try self.near(walker.walkWeight(), self.weight);
+        for (self.pose[0..n], walker.pose[0..n]) |then, now| {
+            try self.near(then.translation.x, now.translation.x);
+            try self.near(then.translation.y, now.translation.y);
+            try self.near(then.translation.z, now.translation.z);
+            try self.near(then.rotation.x, now.rotation.x);
+            try self.near(then.rotation.y, now.rotation.y);
+            try self.near(then.rotation.z, now.rotation.z);
+            try self.near(then.rotation.w, now.rotation.w);
+            try self.near(then.scale.x, now.scale.x);
+            try self.near(then.scale.y, now.scale.y);
+            try self.near(then.scale.z, now.scale.z);
+        }
+    }
+
+    fn near(self: *M24, a: f32, b: f32) !void {
+        self.worst = @max(self.worst, @abs(a - b));
+        try testing.expect(@abs(a - b) <= tolerance);
+    }
+};
+
+fn clip(source: *const asset.animation.Animation, count: usize, tracks: []anim.Track) !anim.Clip {
+    try source.checkJointCount(count);
+    for (source.tracks, tracks[0..source.tracks.len]) |from, *to| to.* = .{
+        .joint = from.joint,
+        .path = @enumFromInt(@intFromEnum(from.path)),
+        .interpolation = @enumFromInt(@intFromEnum(from.interpolation)),
+        .times = from.times,
+        .values = from.values,
+    };
+    return .{ .duration = source.duration, .tracks = tracks[0..source.tracks.len] };
 }
 
 fn sourceOf(store: *const data.Store, name: []const u8) ![]const u8 {
@@ -198,6 +266,55 @@ fn resident(assets: *const asset.Registry, name: []const u8) !asset.AssetHandle 
     var entries = assets.assets();
     while (entries.next()) |entry| if (entry.id.eql(core.ContentId.fromString(name))) return entry.handle;
     return error.NotResident;
+}
+
+test "walker: M34's clips are appended, and old bytes stay" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const os = try platform.os.Os.init(gpa, .{});
+    defer os.deinit();
+    // What `idle`, `walk`, the mesh and the skeleton compile to, from before M34 appended its clips
+    // (`animation-logic.md` §9). The walker and the warden share them.
+    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "mesh0.fmesh", "skeleton0.fskel" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb }) |name, pin| {
+        const path = try std.fs.path.join(gpa, &.{ options.generated, "models/walker", name });
+        defer gpa.free(path);
+        const bytes = try os.readFile(gpa, path, 1024 * 1024);
+        defer gpa.free(bytes);
+        try testing.expectEqual(pin, std.hash.Fnv1a_64.hash(bytes));
+    }
+}
+
+test "walker: a stride covers its 0.6 m a second, and a turn is a quarter to the left" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const engine = try app.Engine.init(gpa, .{ .headless = true, .workers = 0, .content_dir = options.generated, .content = &.{
+        .{ .base_dir = std.fs.path.dirname(options.core_package).?, .file = std.fs.path.basename(options.core_package), .root = "core-assets" },
+        .{ .base_dir = std.fs.path.dirname(options.package).?, .file = std.fs.path.basename(options.package), .root = "sandbox3d-assets" },
+    } });
+    defer engine.deinit();
+    var rigs = asset.Rigs.init(gpa, &engine.assets);
+    defer rigs.deinit();
+    const handle = try rigs.acquire(core.ContentId.fromString("sandbox3d:walker.set"));
+    defer rigs.release(handle);
+    const rig = rigs.get(handle).?;
+    try testing.expectEqual(@as(usize, 7), rig.clips.len);
+    // The set means nothing by them yet, so this says what Step 7's will.
+    var clips: [7]anim.RigClip = undefined;
+    @memcpy(&clips, rig.clips);
+    for (&clips) |*entry| entry.motion = true;
+    var moving = rig.*;
+    moving.clips = &clips;
+    moving.motion_joint = 0;
+    try testing.expectApproxEqAbs(@as(f32, 0.6), moving.motionSpeed(anim.clipName("stride")), 1e-5);
+    const turn = moving.find(anim.clipName("turn")).?;
+    const turned = anim.motion.travel(moving, turn, 0, turn.clip.duration);
+    try testing.expectApproxEqAbs(std.math.pi / 2.0, turned.yaw, 1e-5);
+    for ([_][]const u8{ "jump", "drop" }) |name| {
+        const entry = moving.find(anim.clipName(name)).?;
+        const moved = anim.motion.travel(moving, entry, 0, entry.clip.duration);
+        try testing.expectEqual(@as(f32, 0), moved.yaw);
+        try testing.expectEqual(@as(f32, 0), moved.translation.length());
+    }
 }
 
 test "walker settings: bounded fields, waypoint cardinality and nonfinite values refuse" {
@@ -227,7 +344,7 @@ test "walker settings: bounded fields, waypoint cardinality and nonfinite values
         copied[i / 8] &= ~(@as(u8, 1) << @intCast(i % 8));
         try testing.expectError(error.InvalidWalker, walker_mod.Settings.read(edited));
     }
-    // FPK aligns the model ID to eight bytes, then a list descriptor and two floats.
+    // FPK aligns the two IDs to eight bytes, then a list descriptor and two floats.
     for ([_]usize{ copied.len - 8, copied.len - 4 }) |offset| {
         for ([_]f32{ 0, -1, std.math.nan(f32), std.math.inf(f32), 100 }) |value| {
             @memcpy(copied, fields.block);
@@ -244,7 +361,10 @@ test "walker settings: bounded fields, waypoint cardinality and nonfinite values
     // Zero model ID, nonfinite waypoint and identical neighbours each have a guard.
     @memset(copied[8..16], 0);
     try testing.expectError(error.InvalidWalker, walker_mod.Settings.read(edited));
-    const points = (try fields.listAt(1)).?;
+    @memcpy(copied, fields.block);
+    @memset(copied[16..24], 0);
+    try testing.expectError(error.InvalidWalker, walker_mod.Settings.read(edited));
+    const points = (try fields.listAt(2)).?;
     const first_point = (try points.nestedAt(0)).?;
     const second_point = (try points.nestedAt(1)).?;
     const mutable = @constCast(first_point.block);

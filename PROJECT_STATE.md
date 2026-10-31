@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 5 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 6** (the clips, and the walker on `Player`; its two replay pins move once there). No sample uses an animator yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 6 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 7** (`sandbox3d`: the pacer, the first skinned entity and the first user of root motion and `foundry:animator`). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 6 is done (2026-10-31): the clips, and the walker on `Player`.**
+- `scripts/m34/clips.py` adds `stride`, `turn`, `jump`, `drop` and `climb` to the walker and the warden. What `idle`, `walk`, the mesh and the skeleton compile to is byte-identical, and pins keep it so.
+- The walker plays through `anim.Player` and `asset.Rigs`. Its poses stay within 2.4e-6 of M24's formula on all 2,100 ticks.
+- Its replay pin moved once, to `655e865f98779129`, because time is now `f64`. The second pin was already stale, so there is one. The player's `cb99ccfcf2b6d6c3` did not move.
+- A rig borrows keys, so a tick must not run between a reload and `Rigs.contentChanged`. **R** in the sandbox could do that, and the sample now checks after its keys. This seam was proved by a live headless run, not a test. Step 8 owes the court the same check.
+- Bar 2,714/2,724 (ten skips), 130/130 steps. `court` and `room` stage on macOS.
+
 
 **M34 Step 5 is done (2026-10-31): the animation panel.**
 - The overlay's seventh panel prints an `anim.Report`: players, each one's channels, this tick's events and move, and warnings for dropped events and emptied channels. With no report it says so.

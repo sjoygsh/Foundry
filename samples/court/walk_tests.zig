@@ -170,3 +170,19 @@ fn fieldOffset(fields: []const data.schema.Field, index: usize) usize {
     }
     unreachable;
 }
+
+test "warden: M34's clips are appended, and old bytes stay" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const os = try platform.os.Os.init(gpa, .{});
+    defer os.deinit();
+    // What `idle`, `walk`, the mesh and the skeleton compile to, from before M34 appended its clips
+    // (`animation-logic.md` §9). The warden and the walker share them.
+    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "mesh0.fmesh", "skeleton0.fskel" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb }) |name, pin| {
+        const path = try std.fs.path.join(gpa, &.{ options.generated, "models/warden", name });
+        defer gpa.free(path);
+        const bytes = try os.readFile(gpa, path, 1024 * 1024);
+        defer gpa.free(bytes);
+        try testing.expectEqual(pin, std.hash.Fnv1a_64.hash(bytes));
+    }
+}
