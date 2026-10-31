@@ -509,6 +509,8 @@ complete, and nothing names a contract the code does not have.
 | A third-person player body | M26's sample, if it is third-person. **M26 did not fire it**: the court is first person. It is M50's |
 | An animation panel in the overlay | Debugging a game's animation needs one; M34 |
 
+> **2026-10-31:** M34's proposed design for this table's component, root motion, events and panel is [`animation-logic.md`](animation-logic.md).
+
 ## 15. Decisions acceptance fixes
 
 Every choice is recommended as written. Nothing blocks Step 1 once these are accepted.

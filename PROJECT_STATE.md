@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M33 is complete** (2026-10-31, tag `m33`; [`docs/design/agents.md`](docs/design/agents.md), ADR-0070). `main` and `m33` are pushed. **Stop before M34's design** (Animation logic I). The PC has no Foundry clone, so its next Windows step clones again.
+**Current handoff: M34's design is proposed** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071); awaiting acceptance of §16. **Stop before Step 1.** M33 is complete (2026-10-31, tag `m33`), and `main` and `m33` are pushed. The PC has no Foundry clone, so its next Windows step clones again.
 
 **M33 Step 12 is done (2026-10-31): the close.**
 - ADR-0070 is implemented, and `CLAUDE.md` §4.1, §4.3 and §9 say so. `debug` is granted `nav`.
