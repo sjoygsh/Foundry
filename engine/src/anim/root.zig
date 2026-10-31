@@ -1,8 +1,9 @@
 //! Foundry `anim` — layer L1. Depends on **`core` and nothing else**.
 //!
 //! Skeletal animation as sampled poses (ADR-0058): skeletons, clips, sampling, a two-pose
-//! blend, skin matrices and the linear-blend skinning kernel. There is no playback state and
-//! no time here: a caller says *sample this clip at this time* and is handed a pose.
+//! blend, skin matrices and the linear-blend skinning kernel. A caller says *sample this clip at
+//! this time* and is handed a pose. Playback, where a game wants it, is `Player`: a plain value
+//! of a few channels, ticked by its owner and holding no clock (ADR-0071).
 //!
 //! **No assets, no entities, no renderer, no I/O.** `asset`, `scene` and `render3d` are above
 //! this module and cannot be named from it. A skeleton and a clip arrive as values whose slices
@@ -27,7 +28,9 @@
 //! Design: `docs/design/animation3d.md`
 
 pub const clip = @import("clip.zig");
+pub const player = @import("player.zig");
 pub const pose = @import("pose.zig");
+pub const rig = @import("rig.zig");
 pub const skeleton = @import("skeleton.zig");
 pub const skinning = @import("skin.zig");
 
@@ -52,6 +55,20 @@ pub const sample = pose.sample;
 pub const skinMatrices = pose.skinMatrices;
 pub const wrap = pose.wrap;
 
+pub const Channel = player.Channel;
+pub const Phase = player.Phase;
+pub const PlayError = player.PlayError;
+pub const PlayOptions = player.PlayOptions;
+pub const Player = player.Player;
+pub const Step = player.Step;
+pub const max_channels = player.max_channels;
+pub const max_speed = player.max_speed;
+
+pub const Rig = rig.Rig;
+pub const RigClip = rig.RigClip;
+pub const clipName = rig.clipName;
+pub const max_rig_clips = rig.max_clips;
+
 pub const SkinInput = skinning.Input;
 pub const SkinOutput = skinning.Output;
 pub const max_influences = skinning.max_influences;
@@ -60,8 +77,11 @@ pub const validateInfluences = skinning.validateInfluences;
 
 test {
     _ = clip;
+    _ = player;
     _ = pose;
+    _ = rig;
     _ = skeleton;
     _ = skinning;
+    _ = @import("player_tests.zig");
     _ = @import("tests.zig");
 }

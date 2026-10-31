@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34's design is proposed** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071); awaiting acceptance of §16. **Stop before Step 1.** M33 is complete (2026-10-31, tag `m33`), and `main` and `m33` are pushed. The PC has no Foundry clone, so its next Windows step clones again.
+**Current handoff: M34 Step 1 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071, accepted 2026-10-31). **Stop before Step 2** (`anim`: events and root motion). `Rig` has no events or motion yet, and nothing outside `anim` uses a `Player`. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 1 is done (2026-10-31): `anim.Player` and `anim.Rig`.**
+- A player holds four channels and reads no clock. It cross-fades through interrupted requests, reverses mid-fade, and holds a one-shot at its end. Nothing it holds can make it assert: bad state is emptied and counted.
+- Time is `f64`, so a day-long run still resolves a tick. It agrees with M24's formula within 1e-4 over a walker's 2,100 ticks. The walker's pins move at Step 6, not here.
+- The replay is byte-identical. `anim-test` is 41/41 in Debug and ReleaseSafe, on arm64 and under Rosetta.
+- Bar 2,643/2,653 (ten skips), 128/128 steps.
 
 **M33 Step 12 is done (2026-10-31): the close.**
 - ADR-0070 is implemented, and `CLAUDE.md` §4.1, §4.3 and §9 say so. `debug` is granted `nav`.

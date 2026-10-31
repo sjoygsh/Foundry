@@ -1,6 +1,7 @@
 # Design: M34 — Animation logic I: playback, a saved component, root motion and events
 
-**Status:** Proposed 2026-10-31; awaiting the owner's acceptance of §16. No step has begun.
+**Status:** Accepted 2026-10-31, when the owner asked for Step 1, with §16 as written. Each step's
+Resolution follows §16.
 **Date:** 2026-10-31
 **Baseline:** `3a7a68d`, tag `m33`. M0–M33 are complete.
 **Decisions:**
@@ -579,3 +580,68 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 17 | The PC is needed once, at Step 10; Linux is compile-only | §12 |
 | 18 | Budgets: M24's two, 32 animators at 0.10 ms, and the court's tick unchanged at 0.25 ms | §13 |
 | 19 | The owner's watch and play is criterion 8, at Step 9 | §13 |
+
+## Resolution — Step 1: `Player` and `Rig` (2026-10-31)
+
+**Acceptance.** The owner's "Begin" accepted §16 as written. ADR-0071 is Accepted and is in
+CLAUDE.md §4.1. §4.3's lines change at the close, when the grants have been made.
+
+**What exists.** `anim/rig.zig` has `Rig`, `RigClip`, `clipName`, `find` and `validate`.
+`anim/player.zig` has `Channel`, `Player`, `Step`, `play`, `setSpeed`, `advance`, `evaluate`,
+`finished` and `playing`. `anim/player_tests.zig` adds 22 tests. Nothing outside `anim` uses them
+yet, and no pin elsewhere moved.
+
+**What the design had not settled, and the answers:**
+- **A player keeps its step size in `dt`.** §3 has `evaluate` take no `dt`, but a channel's time
+  needs one. So `advance` stores it, which also makes a load's first evaluation right with no
+  argument. It isn't a clock: it is what `ticks` are counted in. If the step changes, `advance`
+  re-anchors first, so ticks already counted keep their worth.
+- **`fade` is seconds, not weight a tick.** §3's field comment can't be met, since `play` has no
+  `dt`. It also gives M24's `dt / cross_fade` exactly.
+- **`Player` is 144 bytes:** 128 of channels, then `fade`, `newest` and `dt`, and padding. A test
+  pins the layout, since `foundry:animator` lays over it in Step 4.
+- **`.keep` and `.restart` both apply to a clip still playing.** §3 said such a clip always keeps
+  its phase, which would leave a one-shot played twice stuck at its end. So `.restart` begins it
+  again, in any channel, and `.keep` leaves its own time alone. A walker uses `.keep`, as M24's
+  shared clock did. `.keep` on a new clip takes the newest clip's unfolded time.
+- **Weights sum to 1, by sharing.** The newest moves toward 1, and the rest share what is left in
+  proportion. So an interrupted fade loses no weight, and all the old channels finish together.
+  `evaluate` still normalises as it blends, since a replaced channel's weight is gone for a tick.
+  A fade with nothing to fade from is at full weight at once.
+- **`setSpeed` does nothing for an unchanged speed,** so a game calling it every tick doesn't
+  re-anchor every tick. It takes the rig, which §3's table left out, because the rate reads the
+  clip's authored speed.
+- **`play` gains a `speed` option,** defaulting to 1, so a new clip needn't start at the wrong rate
+  for a tick.
+- **`evaluate` is `const` and skips what it can't use,** without emptying anything; only `advance`
+  repairs. With nothing usable it shows the start clip's first frame, so a new player can be drawn
+  before its first tick. That tick begins the clip, and counts as its first.
+- **A clip is capped at 1,024 per rig,** which is what a model may list. §4's 256 caps a set's
+  listed clips, and that is Step 3's.
+- **`Step` holds only `lost` for now.** Events and motion join it in Step 2.
+- **A rig refuses a name that hashes to zero,** `UnnamedClip`, since zero marks an empty channel.
+
+**Tests.** Every `Rig.validate` refusal; time, wrapping, one-shots, the rate, re-anchoring on speed
+and on step, a day's run resolving a tick, and agreement with M24's formula within 1e-4 across a
+walker's 2,100 ticks; cuts, fades, reversals, third and fifth requests, `.keep` and `.restart`;
+every `play` refusal changing nothing; a lost clip, a surviving channel, eight bad channels, and a
+bad `newest` and `fade`, none of which assert; the layout; the replay.
+
+**The replay** runs 1,200 ticks of cuts, fades, interruptions and a speed change, byte-identical
+in one process. Its pin has two values for `tests.zig`'s reason: `f1d3c73ecbaab79c` where Zig's
+`sin` is used, and `e9d45191bbdf1bd3` in an optimised arm64 build. `anim-test` passes 41 of 41 in
+Debug and ReleaseSafe on arm64, and in both under Rosetta.
+
+**Guards verified by mutation.** Twenty-six were tried and restored. Twenty-four failed at once.
+- **The first survivor was a missing test:** `play` with a fade and nothing to fade from. A test
+  now covers it, and its mutation fails.
+- **The second was a redundant line:** `repair`'s check of `dt`. `time` already refuses a bad step
+  and `advance` overwrites it, so the line is gone.
+
+The rest are the `f64` time, the clip's rate, both re-anchors, the one-shot hold, `finished`,
+`.keep`, `.restart` on a live clip, the lightest replaced, the cut, the weight share, normalised
+blending, all three `play` refusals, the sanity check, starting from nothing, the survivor taking
+over, and five rig refusals plus the rig's clip validation.
+
+**Exit met:** a player cross-fades through interrupted requests with no device and no asset, and
+its replay is byte-identical. Bar 2,643/2,653 (ten skips), 128/128 steps. Every command exits 0.
