@@ -2,6 +2,10 @@
 //! §11.2): the crowd says where to go, and the controller, with its gravity, goes, except across
 //! a link, whose curve a controller would refuse.
 //!
+//! **It plays through an `anim.Player`, on the same ticks in a run and its replay,** with no renderer.
+//! Its body stays on the crowd's wish, so a clip never moves it: `stride`'s travel is read for the
+//! rate that keeps its feet on the floor, and its footfalls are events.
+//!
 //! **Its senses and its states are the court's,** not the engine's: it patrols, chases what it
 //! sees, and searches where it last saw the player before going back. Every number is content.
 const std = @import("std");
@@ -12,17 +16,24 @@ const nav = @import("nav");
 const physics = @import("physics3d");
 const render3d = @import("render3d");
 const asset = @import("asset");
+const log = core.log.scoped(.court);
 const Vec3 = core.math.Vec3;
 const Mat4 = core.math.Mat4;
 const Transform = core.math.Transform;
 const Quat = core.math.Quat;
 const Fields = data.fpk.Fields;
 
+pub const idle = anim.clipName("idle");
+const stride_clip = anim.clipName("stride");
+/// What a foot landing is called in `foundry:animation_set`, and what `warden_step` is made from.
+pub const footfall = core.ContentId.fromString("court:event.footfall");
+
 /// The longest single move the warden's controller is asked for, metres.
 pub const max_move: f32 = 1;
 
 pub const WardenSettings = struct {
     model: core.ContentId,
+    set: core.ContentId,
     waypoints: [max_points]Vec3 = @splat(.zero),
     len: usize = 0,
     speed: f32,
@@ -44,6 +55,8 @@ pub const WardenSettings = struct {
     pub fn read(fields: Fields) !WardenSettings {
         const model = (try fields.idAt(try index(fields, "model"))) orelse return error.InvalidWarden;
         if (model.isNone()) return error.InvalidWarden;
+        const set = (try fields.idAt(try index(fields, "set"))) orelse return error.InvalidWarden;
+        if (set.isNone()) return error.InvalidWarden;
         const speed = try bounded(fields, "speed", 0.01, 10);
         const cross_fade = try bounded(fields, "cross_fade", 0.01, 5);
         const radius = try bounded(fields, "radius", 0.05, 2);
@@ -58,6 +71,7 @@ pub const WardenSettings = struct {
         if (list.len < 2 or list.len > max_points) return error.InvalidWarden;
         var out: WardenSettings = .{
             .model = model,
+            .set = set,
             .speed = speed,
             .cross_fade = cross_fade,
             .radius = radius,
@@ -87,6 +101,14 @@ pub const Mode = enum { patrolling, chasing, searching };
 pub const Warden = struct {
     settings: ?WardenSettings = null,
     model: render3d.ModelHandle = .none,
+    /// None when its set doesn't give it what it needs: it still patrols, undrawn and silent.
+    rig: asset.RigHandle = .none,
+    /// `stride`'s metres a second at speed 1, read when the rig was bound, and zero with no rig
+    /// to play.
+    stride_speed: f32 = 0,
+    player: anim.Player = .{},
+    /// This tick's, for the game to turn into `warden_step`.
+    footfalls: u32 = 0,
     character: physics.CharacterHandle = .none,
     agent: nav.AgentHandle = .none,
     /// Whether the agent has been told the waypoint it is walking to.
@@ -109,14 +131,12 @@ pub const Warden = struct {
     wait_ticks: u32 = 0,
     /// `settings.pause` in ticks, fixed when the record is read.
     pause_ticks: u32 = 0,
-    weight: f32 = 0,
     joint_count: usize = 0,
-    idle_pose: [256]Transform = undefined,
-    walk_pose: [256]Transform = undefined,
-    pose: [256]Transform = undefined,
-    matrices: [256]Mat4 = undefined,
+    scratch: [anim.max_joints]Transform = undefined,
+    pose: [anim.max_joints]Transform = undefined,
+    matrices: [anim.max_joints]Mat4 = undefined,
 
-    pub fn deinit(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, content: ?*render3d.Content) void {
+    pub fn deinit(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, content: ?*render3d.Content, rigs: ?*asset.Rigs) void {
         if (!self.character.isNone()) _ = world.removeCharacter(gpa, self.character);
         self.character = .none;
         if (content) |c| {
@@ -124,6 +144,21 @@ pub const Warden = struct {
         }
         self.model = .none;
         self.joint_count = 0;
+        if (rigs) |r| if (!self.rig.isNone()) r.release(self.rig);
+        self.rig = .none;
+        self.stride_speed = 0;
+    }
+
+    /// Whether a rig holds what the warden plays. A set is a mod's to override, and one that
+    /// doesn't leave it silent says so.
+    pub fn bind(self: *Warden, rigs: *const asset.Rigs) void {
+        self.stride_speed = 0;
+        const rig = rigs.get(self.rig) orelse return;
+        if (rig.find(idle) == null or rig.motionSpeed(stride_clip) <= 0) {
+            log.warn("the warden's set has no 'idle' or no moving 'stride'; it goes unanimated", .{});
+            return;
+        }
+        self.stride_speed = rig.motionSpeed(stride_clip);
     }
 
     /// How the warden's agent walks: its capsule, and a patrol's speed.
@@ -131,7 +166,7 @@ pub const Warden = struct {
         return .{ .radius = s.radius, .height = s.height, .speed = s.speed, .acceleration = 8, .arrival_radius = 0.04 };
     }
 
-    pub fn reset(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd) !void {
+    pub fn reset(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, rigs: ?*const asset.Rigs) !void {
         const s = self.settings orelse return;
         self.feet = s.waypoints[0];
         self.waypoint = 1;
@@ -145,8 +180,9 @@ pub const Warden = struct {
         self.wait_ticks = self.pause_ticks;
         self.velocity = 0;
         self.yaw = 0;
-        self.weight = 0;
         self.tick = 0;
+        // A cut to the start of `idle`, which is all a new game's player holds.
+        if (self.rigOf(rigs)) |rig| try self.player.play(rig.*, idle, .{});
         if (!self.character.isNone()) {
             _ = try world.setCharacterFeet(gpa, self.character, self.feet);
         }
@@ -198,7 +234,7 @@ pub const Warden = struct {
 
     /// One fixed tick. `gravity` is the court's, from its rules, and `seen` is whether it sees the
     /// player at `player`, the feet. With no mesh it stands.
-    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, gravity: f32, dt: f32, seen: bool, player: Vec3) !void {
+    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, rigs: ?*const asset.Rigs, gravity: f32, dt: f32, seen: bool, player: Vec3) !void {
         const s = self.settings orelse return;
         if (self.character.isNone()) return;
         const before = self.feet;
@@ -224,7 +260,7 @@ pub const Warden = struct {
             self.feet = self.feet.add(w.displacement);
             _ = try world.setCharacterFeet(gpa, self.character, self.feet);
             self.velocity = 0;
-            self.finishTick(before, s, dt);
+            try self.finishTick(before, s, rigs, dt);
             return;
         };
         if (wish) |w| horizontal = .init(w.displacement.x, 0, w.displacement.z);
@@ -235,43 +271,57 @@ pub const Warden = struct {
         self.feet = result.feet;
         crowd.place(self.agent, self.feet);
         if (result.grounded) self.velocity = 0;
-        self.finishTick(before, s, dt);
+        try self.finishTick(before, s, rigs, dt);
     }
 
-    fn finishTick(self: *Warden, before: Vec3, s: WardenSettings, dt: f32) void {
+    fn rigOf(self: *const Warden, rigs: ?*const asset.Rigs) ?*const anim.Rig {
+        if (self.stride_speed <= 0) return null;
+        return (rigs orelse return null).get(self.rig);
+    }
+
+    /// How far between idle and `stride` the figure is.
+    pub fn walkWeight(self: *const Warden) f32 {
+        for (self.player.channels) |channel| {
+            if (channel.clip == stride_clip) return channel.weight;
+        }
+        return 0;
+    }
+
+    fn finishTick(self: *Warden, before: Vec3, s: WardenSettings, rigs: ?*const asset.Rigs, dt: f32) !void {
         const moved = self.feet.sub(before);
         const walking = moved.x * moved.x + moved.z * moved.z > 1e-10;
+        const length = @sqrt(moved.x * moved.x + moved.z * moved.z);
         if (walking) {
             self.yaw = std.math.atan2(-moved.x, -moved.z);
-            const length = @sqrt(moved.x * moved.x + moved.z * moved.z);
             self.facing = .init(moved.x / length, 0, moved.z / length);
         }
-        const by = dt / s.cross_fade;
-        self.weight = std.math.clamp(self.weight + (if (walking) by else -by), 0, 1);
         self.tick += 1;
+        self.footfalls = 0;
+        const rig = self.rigOf(rigs) orelse return;
+        // The rate that keeps its feet on the floor, whichever speed it is going at.
+        const speed = if (walking) @min(length / dt / self.stride_speed, anim.max_speed) else 1;
+        const wanted = if (walking) stride_clip else idle;
+        if (!self.player.playing(wanted)) {
+            try self.player.play(rig.*, wanted, .{ .fade = s.cross_fade, .phase = .keep, .speed = speed });
+        }
+        if (walking) try self.player.setSpeed(rig.*, speed);
+        var step_out: anim.Step = undefined;
+        self.player.advance(rig.*, dt, &step_out);
+        for (step_out.fired()) |event| {
+            if (event.eql(footfall)) self.footfalls += 1;
+        }
     }
 
-    pub fn evaluate(self: *Warden, content: *render3d.Content, dt: f32) !void {
-        if (self.model.isNone()) return;
-        errdefer self.joint_count = 0;
-        const source = content.skeletonOf(self.model) orelse return error.MissingSkeleton;
-        const skeleton: anim.Skeleton = .{ .parents = source.parents, .rest = source.rest, .inverse_bind = source.inverse_bind, .root = source.root };
-        try skeleton.validate();
-        const n = skeleton.jointCount();
-        const idle = content.clipOf(self.model, "idle") orelse return error.MissingIdle;
-        const walk = content.clipOf(self.model, "walk") orelse return error.MissingWalk;
-        var idle_tracks: [anim.clip.max_tracks]anim.Track = undefined;
-        var walk_tracks: [anim.clip.max_tracks]anim.Track = undefined;
-        const a = try clip(idle, n, &idle_tracks);
-        const b = try clip(walk, n, &walk_tracks);
-        const time = @as(f32, @floatFromInt(self.tick)) * dt;
-        const pose_a: anim.Pose = .{ .local = self.idle_pose[0..n] };
-        const pose_b: anim.Pose = .{ .local = self.walk_pose[0..n] };
+    /// The pose, a function of the player and the rig alone.
+    pub fn evaluate(self: *Warden, rigs: ?*const asset.Rigs) void {
+        const rig = self.rigOf(rigs) orelse {
+            self.joint_count = 0;
+            return;
+        };
+        const n = rig.skeleton.jointCount();
         const pose: anim.Pose = .{ .local = self.pose[0..n] };
-        anim.sample(skeleton, a, anim.wrap(time, a.duration), pose_a);
-        anim.sample(skeleton, b, anim.wrap(time, b.duration), pose_b);
-        anim.blend(pose_a, pose_b, self.weight, pose);
-        anim.skinMatrices(skeleton, pose, self.matrices[0..n]);
+        self.player.evaluate(rig.*, .{ .local = self.scratch[0..n] }, pose);
+        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
         self.joint_count = n;
     }
 
@@ -284,21 +334,6 @@ pub const Warden = struct {
         });
     }
 };
-
-fn clip(source: *const asset.animation.Animation, count: usize, tracks: []anim.Track) !anim.Clip {
-    try source.checkJointCount(count);
-    if (source.tracks.len > tracks.len) return error.TooManyTracks;
-    for (source.tracks, tracks[0..source.tracks.len]) |from, *to| to.* = .{
-        .joint = from.joint,
-        .path = @enumFromInt(@intFromEnum(from.path)),
-        .interpolation = @enumFromInt(@intFromEnum(from.interpolation)),
-        .times = from.times,
-        .values = from.values,
-    };
-    const result: anim.Clip = .{ .duration = source.duration, .tracks = tracks[0..source.tracks.len] };
-    try result.validate(count);
-    return result;
-}
 
 fn index(fields: Fields, name: []const u8) !u32 {
     for (fields.fields, 0..) |field, i| if (std.mem.eql(u8, field.name, name)) return @intCast(i);

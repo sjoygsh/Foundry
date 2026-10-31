@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 7 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 8** (the court: the warden's `stride`, and footfalls as events). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 8 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 9** (a clip on a link: `link_clips`, `seek` by `link_t`, the land event and the sandbox's climber, and the owner gets a build). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 8 is done (2026-10-31): the warden's stride and footfalls.**
+- The warden plays through `anim.Player`, with `stride`'s rate set each tick so its feet match its body at 1.0 and 2.4 m/s. `warden_step` now comes from events, and the distance count is gone.
+- `win`, `caught` and `fell` keep every tick, compared by a digest against the code before this step. Scripted runs replay, drop no sound, and the music is clean.
+- The warden now steps three times as often, 8 a second in a chase. Whether that sounds right is for the owner at Step 9.
+- The court has a content seam. `Game.contentChanged` is proved by a real reload, and the lines in `main.zig` are not.
+- **Open, not fixed:** a package changed under a Debug court crashes it, at `hud.zig:122`, because `Text` borrows from the store. It predates M34 and has no milestone yet.
+- Bar 2,726/2,736 (ten skips), 131/131 steps. `court` and `room` stage on macOS.
+
 
 **M34 Step 7 is done (2026-10-31): the pacer.**
 - `sandbox3d`'s first skinned entity walks a 0.9 m square whose speed and corners come from its clips, through a controller, and it closes within 1 mm. The panel reports it.

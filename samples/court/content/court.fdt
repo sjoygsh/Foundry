@@ -126,6 +126,7 @@ gate court:gate.main {
 # (`docs/design/agents.md` §11.2) default here, so that a mod's record need not say.
 @schema warden {
     model id
+    set id
     waypoints [{ x f32 y f32 z f32 }]
     speed f32
     cross_fade f32
@@ -137,8 +138,26 @@ gate court:gate.main {
     sight_angle f32 (default 0.6)
     lose_seconds f32 (default 2)
 }
+# M34: what the warden's clips mean. Its body stays on the crowd's wish, so `stride`'s travel is only
+# read for the rate that keeps its feet on the floor. A foot landing is an event, and the court hears
+# it as `warden_step`.
+foundry:animation_set court:warden.set {
+    model court:models.warden
+    start "idle"
+    motion_joint "pelvis"
+    clips [
+        { name "stride" motion true events [
+            { at 0.0 event court:event.footfall }
+            { at 0.5 event court:event.footfall }
+        ] }
+        { name "turn" loop false motion true }
+        { name "jump" loop false }
+        { name "drop" loop false }
+    ]
+}
 warden court:warden.main {
     model court:models.warden
+    set court:warden.set
     waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
     speed 1.0
     cross_fade 0.25
@@ -155,7 +174,7 @@ warden court:warden.main {
     step id  step_distance f32
     jump id  land id
     gate id
-    warden_step id  warden_step_distance f32
+    warden_step id
     won id  caught id  fell id
     click id
 }
@@ -164,7 +183,7 @@ sound_set court:sounds.main {
     step court:sounds.step  step_distance 1.6
     jump court:sounds.jump  land court:sounds.land
     gate court:sounds.gate
-    warden_step court:sounds.warden_step  warden_step_distance 0.9
+    warden_step court:sounds.warden_step
     won court:sounds.won  caught court:sounds.caught  fell court:sounds.fell
     click court:sounds.click
 }

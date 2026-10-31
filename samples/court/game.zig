@@ -68,11 +68,11 @@ pub const Game = struct {
     /// Ground distance between footstep events, metres; zero for none. Presentation's to
     /// set, and outside the hash: it decides what is heard, never what happens.
     stride: f32 = 0,
-    warden_stride: f32 = 0,
     walked: f32 = 0,
     /// Ticks since the player last stood on ground.
     air_ticks: u32 = 0,
-    warden_walked: f32 = 0,
+    /// The warden's rig, here and not with the renderer, so that a replay plays it too.
+    rigs: ?asset.Rigs = null,
 
     pub const max_events = 8;
     /// A tenth of a second off the ground, at sixty ticks a second.
@@ -93,11 +93,23 @@ pub const Game = struct {
         self.clearBeacons(content);
         if (self.gate) |*g| g.deinit(self.gpa, &self.walk.world, content);
         self.gate = null;
-        if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content);
+        if (self.rigs) |*r| r.assets = assets;
+        if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content, if (self.rigs) |*r| r else null);
         self.warden = null;
         if (self.crowd) |*c| c.deinit();
         self.crowd = null;
+        if (self.rigs) |*r| r.deinit();
+        self.rigs = null;
         self.walk.deinit(assets);
+    }
+
+    /// At the seam where content changed, before any tick: a rig borrows what a reload replaced.
+    /// `assets` is passed because a game can outlive where the registry was when it began.
+    pub fn contentChanged(self: *Game, assets: *asset.Registry) !void {
+        const rigs = if (self.rigs) |*r| r else return;
+        rigs.assets = assets;
+        try rigs.contentChanged();
+        if (self.warden) |*w| w.bind(rigs);
     }
 
     fn clearBeacons(self: *Game, content: ?*render3d.Content) void {
@@ -112,7 +124,7 @@ pub const Game = struct {
         self.rules = self.walk.settings;
         self.refreshBeacons(store, content);
         self.refreshGate(store, content);
-        self.refreshWarden(store, content, dt);
+        self.refreshWarden(store, assets, content, dt);
     }
 
     fn refreshBeacons(self: *Game, store: *const data.Store, content: ?*render3d.Content) void {
@@ -207,8 +219,9 @@ pub const Game = struct {
         };
     }
 
-    fn refreshWarden(self: *Game, store: *const data.Store, content: ?*render3d.Content, dt: f32) void {
-        if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content);
+    fn refreshWarden(self: *Game, store: *const data.Store, assets: *asset.Registry, content: ?*render3d.Content, dt: f32) void {
+        if (self.rigs) |*r| r.assets = assets;
+        if (self.warden) |*w| w.deinit(self.gpa, &self.walk.world, content, if (self.rigs) |*r| r else null);
         self.warden = null;
         const rules = self.rules orelse return;
 
@@ -267,6 +280,15 @@ pub const Game = struct {
             .lose_ticks = @intFromFloat(@round(settings.lose_seconds / dt)),
             .sight_cosine = @floatCast(half[1]),
         };
+        // Its set is a mod's to override. One that does not build leaves it patrolling.
+        if (self.rigs == null) self.rigs = asset.Rigs.init(self.gpa, assets);
+        const w = &self.warden.?;
+        w.rig = self.rigs.?.acquire(settings.set) catch |err| blk: {
+            log.warn("the warden's set {f} did not build ({t}); it goes unanimated", .{ settings.set, err });
+            break :blk .none;
+        };
+        w.bind(&self.rigs.?);
+        if (w.stride_speed > 0) w.player.play(self.rigs.?.get(w.rig).?.*, warden_mod.idle, .{}) catch unreachable;
     }
 
     fn isModel(store: *const data.Store, id: core.ContentId) bool {
@@ -323,13 +345,12 @@ pub const Game = struct {
         // The gate is shut again, so the first mesh is right again. No build, and no wait.
         self.adopt(1);
         if (self.warden) |*w| {
-            try w.reset(self.gpa, &self.walk.world, &self.crowd.?);
+            try w.reset(self.gpa, &self.walk.world, &self.crowd.?, if (self.rigs) |*r| r else null);
         }
         self.gate_rested = false;
         self.tick = 0;
         self.aimed = null;
         self.walked = 0;
-        self.warden_walked = 0;
         self.air_ticks = 0;
     }
 
@@ -472,18 +493,9 @@ pub const Game = struct {
         // 4. Step warden.
         var caught = false;
         if (self.warden) |*w| {
-            const was = w.feet;
             const seen = w.sees(w.eye(), self.walk.eye(), self);
-            try w.step(self.gpa, &self.walk.world, &self.crowd.?, rules.gravity, dt, seen, self.walk.result.feet);
-            if (self.warden_stride > 0) {
-                var moved = w.feet.sub(was);
-                moved.y = 0;
-                self.warden_walked += moved.length();
-                if (self.warden_walked >= self.warden_stride) {
-                    self.warden_walked -= self.warden_stride;
-                    self.emit(.{ .kind = .warden_step, .position = w.feet });
-                }
-            }
+            try w.step(self.gpa, &self.walk.world, &self.crowd.?, if (self.rigs) |*r| r else null, rules.gravity, dt, seen, self.walk.result.feet);
+            for (0..w.footfalls) |_| self.emit(.{ .kind = .warden_step, .position = w.feet });
             caught = w.feet.sub(self.walk.result.feet).length() < rules.catch_distance;
         }
 
@@ -544,7 +556,8 @@ pub const Game = struct {
             h = hashBytes(h, std.mem.asBytes(&w.facing.z));
             h = hashBytes(h, std.mem.asBytes(&w.velocity));
             h = hashBytes(h, std.mem.asBytes(&w.wait_ticks));
-            h = hashBytes(h, std.mem.asBytes(&w.weight));
+            const weight = w.walkWeight();
+            h = hashBytes(h, std.mem.asBytes(&weight));
             h = hashBytes(h, std.mem.asBytes(&w.tick));
         }
         // Not at the title: no world runs there, and Play resets the warden and adopts generation 1,

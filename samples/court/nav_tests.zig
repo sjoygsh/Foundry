@@ -534,6 +534,19 @@ test "the warden follows a player it can see across the gap, by the jump, and do
     try testing.expect(top > 0.4);
 }
 
+test "how far it has faded into a stride is part of the hash" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.initPlaying(gpa);
+    defer env.deinit(gpa);
+    const w = &env.game.warden.?;
+    while (w.walkWeight() == 0) try env.game.step(.{}, fixtures.dt);
+    const before = env.game.hashTick();
+    const channel = &w.player.channels[w.player.newest];
+    channel.weight /= 2;
+    try testing.expect(env.game.hashTick() != before);
+}
+
 test "what the warden is doing is part of the hash" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -630,4 +643,175 @@ test "cost: a path over the court's mesh, and a tick of the chase, single-thread
     const tick_p95 = @as(f64, @floatFromInt(tick_ns[190])) / 1e6;
     std.debug.print("court: {d} polygons, path p95 {d:.1} us; a chase tick p95 {d:.3} ms, worst {d:.3} ms ({d})\n", .{ m.polygons.len, path_p95, tick_p95, @as(f64, @floatFromInt(tick_ns[199])) / 1e6, keep });
     try testing.expect(path_p95 < 50);
+}
+
+test "the warden's feet keep up with its body, on patrol and in a chase" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    const stride = @import("anim").clipName("stride");
+    // Its rig's own ground speed, and what each tick's channel asks of it.
+    try testing.expectApproxEqAbs(@as(f32, 0.6), w.stride_speed, 1e-5);
+    var patrol: u32 = 0;
+    var chase: u32 = 0;
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    for (0..400) |n| {
+        // First left to walk its patrol, then seen, then kept ahead of it.
+        if (n >= 200) try game.walk.teleport(w.feet.add(.init(2.5, 0.2, 0.3)).add(.init(0, -0.196 - w.feet.y, 0)));
+        const was = w.feet;
+        try game.step(.{}, fixtures.dt);
+        if (!w.player.playing(stride)) continue;
+        const channel = w.player.channels[w.player.newest];
+        var moved = w.feet.sub(was);
+        moved.y = 0;
+        if (moved.length() == 0) continue;
+        const rate = moved.length() / fixtures.dt;
+        try testing.expectApproxEqAbs(rate, channel.speed * w.stride_speed, 1e-4);
+        if (rate > 2.3) chase += 1 else if (rate > 0.9) patrol += 1;
+    }
+    try testing.expect(chase > 50 and patrol > 20);
+    // However fast a mod makes it, its channel stays in range, and a tick does not fail.
+    w.stride_speed = 0.01;
+    for (0..10) |_| try game.step(.{}, fixtures.dt);
+    try testing.expectEqual(@import("anim").player.max_speed, w.player.channels[w.player.newest].speed);
+}
+
+test "a replay plays the same player on the same ticks, and only events make a warden_step" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.initPlaying(gpa);
+    defer env.deinit(gpa);
+    var fresh = try fixtures.TestEnv.initPlaying(gpa);
+    defer fresh.deinit(gpa);
+    var steps: u32 = 0;
+    var stood: u32 = 0;
+    // It begins on `idle`, before a tick.
+    try testing.expect(env.game.warden.?.player.playing(warden.idle));
+    const stride = @import("anim").clipName("stride");
+    var first_stride = true;
+    for (0..600) |_| {
+        const was = env.game.warden.?.feet;
+        const held = env.game.warden.?.player.seconds(env.game.rigs.?.get(env.game.warden.?.rig).?.*, env.game.warden.?.player.newest);
+        try env.game.step(.{}, fixtures.dt);
+        try fresh.game.step(.{}, fixtures.dt);
+        const w = &env.game.warden.?;
+        const r = &fresh.game.warden.?;
+        if (w.feet.x == was.x and w.feet.z == was.z) {
+            try testing.expect(w.player.playing(warden.idle));
+            stood += 1;
+        } else if (first_stride) {
+            // It takes up the time it stood at, so a pause never restarts a foot.
+            try testing.expect(w.player.playing(stride));
+            try testing.expectApproxEqAbs(held, w.player.channels[w.player.newest].anchor, 1e-3);
+            try testing.expect(held > 0.1);
+            first_stride = false;
+        }
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.player), std.mem.asBytes(&r.player));
+        var heard: u32 = 0;
+        for (env.game.tickEvents()) |event| {
+            if (event.kind != .warden_step) continue;
+            heard += 1;
+            try testing.expectEqual(w.feet, event.position);
+        }
+        try testing.expectEqual(w.footfalls, heard);
+        steps += heard;
+    }
+    // Two a lap, at the 1.67 laps a second its 1 m/s asks for, in the time it spends walking.
+    try testing.expect(steps >= 20 and stood > 60);
+}
+
+test "a warden with no rig plays the same game, in silence, undrawn" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.initPlaying(gpa);
+    defer env.deinit(gpa);
+    var silent = try fixtures.TestEnv.initPlaying(gpa);
+    defer silent.deinit(gpa);
+    const w = &silent.game.warden.?;
+    w.stride_speed = 0;
+    w.player = .{};
+    for (0..300) |_| {
+        try env.game.step(.{}, fixtures.dt);
+        try silent.game.step(.{}, fixtures.dt);
+        try testing.expectEqual(env.game.warden.?.feet, w.feet);
+        try testing.expectEqual(env.game.walk.result.feet, silent.game.walk.result.feet);
+        try testing.expectEqual(@as(u32, 0), w.footfalls);
+    }
+    w.evaluate(if (silent.game.rigs) |*r| r else null);
+    try testing.expectEqual(@as(usize, 0), w.joint_count);
+    const posed = &env.game.warden.?;
+    posed.evaluate(if (env.game.rigs) |*r| r else null);
+    try testing.expectEqual(@as(usize, 19), posed.joint_count);
+    // One that loses its rig stops drawing what it had.
+    posed.stride_speed = 0;
+    posed.evaluate(if (env.game.rigs) |*r| r else null);
+    try testing.expectEqual(@as(usize, 0), posed.joint_count);
+}
+
+test "a content change rebuilds the warden's rig before a tick, and a set that stops building leaves it patrolling" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.initPlaying(gpa);
+    defer env.deinit(gpa);
+    // A `TestEnv` was moved after its registry was made.
+    env.assets.store = &env.store;
+    const game = &env.game;
+    const w = &game.warden.?;
+    for (0..100) |_| try game.step(.{}, fixtures.dt);
+    // A real reload replaces what the rig borrows, and the seam is what makes it safe to read.
+    try testing.expect(env.assets.reloadAll(gpa) > 0);
+    try game.contentChanged(&env.assets);
+    w.evaluate(if (game.rigs) |*r| r else null);
+    try testing.expectEqual(@as(usize, 19), w.joint_count);
+    try testing.expectApproxEqAbs(@as(f32, 0.6), w.stride_speed, 1e-5);
+    for (0..10) |_| try game.step(.{}, fixtures.dt);
+
+    // A set that no longer says anything of `stride` moving.
+    const held = game.rigs.?.get(w.rig).?;
+    const entry = @constCast(held.find(@import("anim").clipName("stride")).?);
+    entry.motion = false;
+    w.bind(&game.rigs.?);
+    try testing.expectEqual(@as(f32, 0), w.stride_speed);
+    entry.motion = true;
+    const idle = @constCast(held.find(warden.idle).?);
+    const name = idle.name;
+    idle.name +%= 1;
+    w.bind(&game.rigs.?);
+    try testing.expectEqual(@as(f32, 0), w.stride_speed);
+    idle.name = name;
+    for (0..10) |_| try game.step(.{}, fixtures.dt);
+    try testing.expectEqual(@as(u32, 0), w.footfalls);
+    try game.contentChanged(&env.assets);
+    try testing.expect(w.stride_speed > 0);
+
+    // Only a footfall is a footstep, whatever else a set names.
+    const walked = game.rigs.?.get(w.rig).?.find(@import("anim").clipName("stride")).?;
+    for (walked.events) |*event| @constCast(event).id = core.ContentId.fromString("court:event.other");
+    for (0..300) |_| {
+        try game.step(.{}, fixtures.dt);
+        try testing.expectEqual(@as(u32, 0), w.footfalls);
+    }
+}
+
+test "a warden's record has to name a set" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    // On the title screen too, with no game begun.
+    try testing.expect(env.game.warden.?.player.playing(warden.idle));
+    const fields = env.store.lookup(core.ContentId.fromString("court:warden.main")).?.fields;
+    const settings = try warden.WardenSettings.read(fields);
+    try testing.expect(settings.set.eql(core.ContentId.fromString("court:warden.set")));
+    const copied = try gpa.dupe(u8, fields.block);
+    defer gpa.free(copied);
+    var edited = fields;
+    edited.block = copied;
+    // The presence bits, then the two IDs.
+    @memset(copied[16..24], 0);
+    try testing.expectError(error.InvalidWarden, warden.WardenSettings.read(edited));
 }

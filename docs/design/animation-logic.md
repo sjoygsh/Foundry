@@ -967,3 +967,72 @@ pacer's feet, which is what that read.
 **Exit met:** from a relocated ReleaseSafe install on Metal, the tour passes across a save and a load,
 and `pacer_quick` changes the square with no code. Bar 2,720/2,730 (ten skips), 131/131 steps. Every
 command exits 0. `court` and `room` stage on macOS.
+
+## Resolution — Step 8: the warden's stride and footfalls (2026-10-31)
+
+**What exists.** The warden plays through `anim.Player`. Its copied poses, `weight` and `clip()` are
+gone, and its record names `court:warden.set`. `Game` owns a `Rigs`, so a replay plays the same
+player on the same ticks with no renderer. A `court:event.footfall` makes each `warden_step`.
+`warden_stride`, `warden_walked` and the sound set's `warden_step_distance` are gone. `Warden.tick`
+stays, since the hash reads it. The warden's clips for a link are Step 9's.
+
+**The body did not move.** A digest of each tick's phase, player, gate, warden feet, heading, facing,
+fall, mode and what it saw, and every event but `warden_step`, was taken from the code before this
+step and compared afterwards:
+
+| Script | Ticks | Digest, before and after | `warden_step`s now |
+| --- | --- | --- | --- |
+| `win` | 2,441 | `9ec8566cf9c09877` | 106 |
+| `caught` | 92 | `81f804f7ab2c6538` | 3 |
+| `fell` | 185 | `f1e54339e42864be` | 16 |
+
+The headless scripted runs replay every tick against a fresh game, drop no sound, and the music is
+clean. The hash still reads the weight, which is why the digest was needed: the weight's bits may
+differ, and nothing has to agree with the old hash.
+
+**What the design had not settled, and the answers:**
+- **`Game` owns the `Rigs`,** not `main.zig`, so `TestEnv` and the replay need no new wiring. But a
+  `TestEnv` moves its `Registry` by value, so `Rigs.assets` is set again by `refreshWarden`,
+  `contentChanged` and `deinit`, each of which is handed the registry.
+- **`stride_speed` is read once by `Warden.bind`,** at the same seam, rather than on every tick. It
+  doubles as whether there is a rig to play: zero leaves the warden patrolling, undrawn and silent.
+  Its set is a mod's to override, so a missing `idle` or `stride` is said, not refused.
+- **A rate is capped at `anim.max_speed`.** A mod's `chase_speed` of 10 asks for 16.7, which `setSpeed`
+  would refuse, and that would fail the tick.
+- **A warden's walking starts with `.keep`,** so a pause never restarts a foot. A live clip keeps its
+  phase, and a fresh one takes `idle`'s time.
+- **`noon` restates `set`.** A required field is simpler than a default ID, and that is its only change.
+
+**The warden now steps three times as often.** The old count was 0.9 m a step, and `stride` covers
+0.6 m a lap, or 0.3 m a step. So at 1 m/s it steps 3.3 times a second, and in a chase at 2.4 m/s it
+steps 8 times, with its legs at four times the clip's rate. That is what §11 asked for, with its feet
+matching at both speeds, and whether it sounds right is for Step 9's criterion 8.
+
+**The court now has a content seam.** It had none, and M24's warden re-read its clips on every
+evaluate so it didn't need one. `main.zig` checks the generation after `beginFrame`, before any tick,
+and rebuilds the game's rig and the replay's. A test does a real `reloadAll` and then evaluates, and
+without the rebuild it fails on freed keys. That covers `Game.contentChanged`. **The lines in
+`main.zig` have no such proof.** The seam fired on real reloads, in Debug, headless and on Metal, but
+removing the rebuild there did not crash either run. So those lines are read, not mutated.
+
+**A bug that was already here, and is not fixed:** a package changed under a Debug court crashes it.
+`Text` borrows strings from the store, a reload frees them, and `hud.zig:122` reads them. The same
+crash happens at Step 7's commit, and only Debug hot-reloads. It has nothing to do with animation,
+so it is left for the owner to place.
+
+**Tests.** Feet matching at both speeds, to 1e-4 m/s, and the cap. A replay's player byte-identical
+on every tick, each `warden_step` from a footfall at the warden's feet, `idle` when it stands, and a
+pause keeping its phase. A warden with no rig playing the same game undrawn, and one that loses its
+rig ceasing to draw. A real reload, sets that stop giving it what it needs, and only a footfall
+making a step. The weight in the hash, `idle` before the first tick, and a record with no set.
+
+**Guards verified by mutation.** Twenty-five were tried against a checked baseline, and 15 failed at
+once. Of the ten survivors, seven were test gaps, each now caught: the rate's cap, `idle` when
+stopped, a pause's phase, the event filter, a stale pose, the weight in the hash and the first `idle`.
+Two reset lines were redundant and are gone. One can't fail: a `stride` with no motion already reads
+0. Two runs were void and were repeated: one had no `zig` on its path, and one's live reload never
+fired.
+
+**Exit met:** `win`, `caught`, `fell` and the soundtrack replay on the ticks they did, with
+`warden_step` now from events. Bar 2,726/2,736 (ten skips), 131/131 steps. Every command exits 0.
+`court` and `room` stage on macOS.

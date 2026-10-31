@@ -388,7 +388,6 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     if (game.walk.character.isNone() or game.walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
     if (sounds.set) |set| {
         game.stride = set.step_distance;
-        game.warden_stride = set.warden_step_distance;
     }
     // M32: the warden's navigation mesh, built on the pool from the level it just loaded.
     if (engine.os.envVar("FOUNDRY_COURT_NAV")) |value| {
@@ -414,13 +413,13 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         fresh.meshes = &navigation.meshes;
         fresh.refresh(&engine.store, &engine.assets, null, engine.step_delta.toSecondsF32());
         fresh.stride = game.stride;
-        fresh.warden_stride = game.warden_stride;
     }
     var replay_ticks: u64 = 0;
     const costs = try gpa.create(Costs);
     defer gpa.destroy(costs);
     costs.* = .{};
 
+    var content_generation = engine.contentGeneration();
     var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
     var menus: menus_mod.Menus = .{};
     var chosen = prefs.options();
@@ -442,6 +441,12 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     while (!engine.shouldQuit()) {
         const started = if (!headless) engine.os.monotonicNanos() else 0;
         engine.beginFrame();
+        // Before any tick: a reload replaced what the warden's rig borrows, here and in its replay.
+        if (engine.contentGeneration() != content_generation) {
+            content_generation = engine.contentGeneration();
+            game.contentChanged(&engine.assets) catch |err| log.warn("the warden's rig could not follow a content change ({t})", .{err});
+            if (replay) |*fresh| fresh.contentChanged(&engine.assets) catch |err| log.warn("the replay's rig could not follow a content change ({t})", .{err});
+        }
         {
             const scope = engine.beginScope("navigation.pump");
             defer scope.end();
@@ -663,7 +668,6 @@ test "court: scripted runtime refuses a different replay hash" {
 }
 
 fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, game: *game_mod.Game, navigation: *const nav_mod.Navigation, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
-    const dt = engine.step_delta.toSecondsF32();
     if (extent.isEmpty()) return false;
     try renderer.begin(.{
         .camera = .{ .position = game.walk.eye(), .rotation = game.walk.rotation(), .vertical_fov = std.math.pi / 3.2, .near = 0.1, .far = 80 },
@@ -697,8 +701,8 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         }
     }
     if (game.warden) |*w| {
-        // A warden whose skeleton or clips do not resolve is left undrawn; it still patrols.
-        w.evaluate(content, dt) catch |err| log.debug("warden pose skipped ({t})", .{err});
+        // A warden whose set does not resolve is left undrawn; it still patrols.
+        w.evaluate(if (game.rigs) |*r| r else null);
         try w.draw(content);
     }
     try navigation.draw(renderer);

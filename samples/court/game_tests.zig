@@ -200,7 +200,6 @@ pub const Recording = struct {
         var fresh = try TestEnv.init(gpa);
         defer fresh.deinit(gpa);
         fresh.game.stride = 1.6;
-        fresh.game.warden_stride = 0.9;
         for (self.intents[0..self.len], self.hashes[0..self.len]) |intent, expected| {
             try fresh.game.step(intent, dt);
             try testing.expectEqual(expected, fresh.game.hashTick());
@@ -214,7 +213,6 @@ test "court: the win script plays from the title, pauses, resumes, wins, restart
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
     env.game.stride = 1.6;
-    env.game.warden_stride = 0.9;
 
     try testing.expectEqual(@as(usize, 3), env.game.beacon_count);
     try testing.expect(env.game.gate != null and env.game.warden != null);
@@ -276,7 +274,6 @@ test "court: the caught and fell scripts reach their endings and restart to the 
         var env = try TestEnv.init(gpa);
         defer env.deinit(gpa);
         env.game.stride = 1.6;
-        env.game.warden_stride = 0.9;
         rec.* = .{};
         const driver = try rec.run(&env.game, script);
         try testing.expect(driver.succeeded());
@@ -342,7 +339,6 @@ test "court: a pause the script did not ask for fails it as interrupted, mid-jum
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
     env.game.stride = 1.6;
-    env.game.warden_stride = 0.9;
     // The win script, paused by a lost focus once its player is past the floor's edge over the
     // gap, then resumed by the person's click: the run M26 Step 8 saw fall on Metal. Without
     // the refusal the script skips the rest of its route to `expect won` and the player,

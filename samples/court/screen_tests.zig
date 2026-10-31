@@ -156,11 +156,10 @@ test "court: footsteps follow the ground walked, and an event the buffer cannot 
     try testing.expectEqual(@as(u32, 1), jumps);
     try testing.expectEqual(@as(u32, 1), lands);
 
-    // The presentation's strides never reach the outcome's hash.
+    // The presentation's stride never reaches the outcome's hash.
     var other = try TestEnv.initPlaying(gpa);
     defer other.deinit(gpa);
     other.game.stride = 0.3;
-    other.game.warden_stride = 0.2;
     var plain = try TestEnv.initPlaying(gpa);
     defer plain.deinit(gpa);
     for (0..200) |_| {
