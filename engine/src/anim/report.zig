@@ -31,7 +31,7 @@ pub const ChannelRow = struct {
     speed: f32 = 0,
 
     pub fn label(row: *const ChannelRow) []const u8 {
-        return row.name[0..row.name_len];
+        return row.name[0..@min(row.name_len, max_label)];
     }
 };
 
@@ -45,7 +45,7 @@ pub const Row = struct {
     motion: Motion = .{},
 
     pub fn label(row: *const Row) []const u8 {
-        return row.name[0..row.name_len];
+        return row.name[0..@min(row.name_len, max_label)];
     }
 };
 

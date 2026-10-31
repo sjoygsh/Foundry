@@ -185,8 +185,9 @@ const layering = [_]Module{
     //
     // `render3d` joined at M21 for one line of frame counts (`hierarchy.md` §7): the same
     // downward kind of dependency as `render2d`, and cheaper than routing a renderer's
-    // statistics through the engine loop for one panel.
-    .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "nav", "render2d", "render3d", "scene", "audio", "app" } },
+    // statistics through the engine loop for one panel. `anim` joined at M34 for the same
+    // reason `nav` did at M33: a panel prints a report, a value a game fills.
+    .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "anim", "nav", "render2d", "render3d", "scene", "audio", "app" } },
 
     // L5 — the one public API surface (I4, ADR-0004, docs/design/public-abi.md). A **peer
     // of `debug`, not a layer over `app`** (ADR-0026), and the reason is visible one screen
@@ -1570,7 +1571,7 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "abi")) {
             b.step("abi-test", "Run the public ABI agreement, refusal and caller-context tests").dependOn(&run.step);
         }
-        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav") or std.mem.eql(u8, spec.name, "scene")) {
+        if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav") or std.mem.eql(u8, spec.name, "scene") or std.mem.eql(u8, spec.name, "debug")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
         }
     }

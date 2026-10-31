@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-10-31
-**Current handoff: M34 Step 4 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 5** (`debug`: the animation panel). No sample uses an animator yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Current handoff: M34 Step 5 is complete** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). **Stop before Step 6** (the clips, and the walker on `Player`; its two replay pins move once there). No sample uses an animator yet. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+
+**M34 Step 5 is done (2026-10-31): the animation panel.**
+- The overlay's seventh panel prints an `anim.Report`: players, each one's channels, this tick's events and move, and warnings for dropped events and emptied channels. With no report it says so.
+- `Sources.animation` is a const pointer to a value with no pointers in it, and a test holds that, so the panel has no write path.
+- `debug` is granted `anim`, and `zig build debug-test` is a new focused target.
+- Bar 2,711/2,721 (ten skips), 130/130 steps.
+
 
 **M34 Step 4 is done (2026-10-31): `foundry:animator`, saved with a world.**
 - `foundry:animator` is `anim.Player` under an engine name, and `foundry:root_motion` is this tick's move, derived and unsaved. A world opts in with `enableAnimation`, and `scene` is granted `anim`, not `asset`.

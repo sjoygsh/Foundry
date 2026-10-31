@@ -804,3 +804,38 @@ of `Animator` stops the build on that assertion.
 
 **Exit met:** a world saved mid-stride and loaded continues byte-identical to the one that was not,
 in `scene`'s hermetic tests. Bar 2,702/2,712 (ten skips), 130/130 steps. Every command exits 0.
+
+## Resolution — Step 5: the animation panel (2026-10-31)
+
+**What exists.** `debug/animation_panel.zig` is the overlay's seventh built-in panel, registered
+through `addPanel` as the other six are. `Sources.animation` is `?*const anim.Report`, and `debug` is
+granted `anim`. No sample fills it yet, so each says "no animation reported" until Step 7's pacer
+and Step 8's warden do. `zig build debug-test` is a new focused target.
+
+**What the design had not settled, and the answers:**
+- **A game fills a report through `Report.add`,** as Step 2 built it, not `Player.report` as §8 says.
+  `Options.report` in `scene.animation.advance` does the same for a world's animators. A report
+  accumulates, so a game resets it each tick.
+- **An empty report says "no players",** which is different from no report at all, as the navigation
+  panel's "no mesh yet" is.
+- **A row prints its move only when there is one:** metres this tick, and radians. Either a walk or a
+  turn on the spot counts. Dropped events and emptied channels are warnings, and print only when
+  non-zero. Players past the eight rows are "and N more".
+- **Counts out of range read no further than the arrays.** A report is a value a game can write, and
+  ADR-0025 says to validate what a mod could supply, so `row_count` and `channel_count` are clamped
+  in the panel, and `name_len` in `anim`'s `label()`. A label cut mid-codepoint is safe, because the
+  text layer already substitutes invalid UTF-8.
+- **"No write path" is a test:** `Sources.animation` is exactly a const pointer, and a comptime walk
+  finds no pointer anywhere in `anim.Report`, so nothing the panel holds leads back to a player.
+
+**Tests.** Nine in `animation_panel.zig`: no report; an empty report; a report's players, channels,
+events, motion and warnings; a still player; a turn on the spot; a straight walk; counts out of
+range; no write path; and the panel reached through a real overlay. `overlay.zig`'s count is seven.
+
+**Guards verified by mutation.** Twenty-one were tried and restored against `debug-test`. The first
+run was void, because that step did not exist and every build failed; the step was added and the
+baseline checked first. Then 18 failed at once. The three survivors were real gaps, a straight walk
+with no yaw and two unbounded names, and tests were added that catch them.
+
+**Exit met:** seven panels, the panel prints a report and says so when there is none, and `debug` has
+no write path. Bar 2,711/2,721 (ten skips), 130/130 steps. Every command exits 0.

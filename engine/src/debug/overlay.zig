@@ -5,6 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const anim = @import("anim");
 const app = @import("app");
 const asset = @import("asset");
 const audio = @import("audio");
@@ -16,6 +17,7 @@ const render3d = @import("render3d");
 const scene = @import("scene");
 const ui = @import("ui");
 
+const animation_panel = @import("animation_panel.zig");
 const console_panel = @import("console_panel.zig");
 const content_panel = @import("content_panel.zig");
 const entity_panel = @import("entity_panel.zig");
@@ -181,6 +183,9 @@ pub const Sources = struct {
     /// What navigation is doing, as the game fills it in each frame (`agents.md` §10). A game
     /// with none passes nothing, and the panel says so.
     navigation: ?*const nav.Report = null,
+    /// What animation is doing, as the game fills it in each tick (`animation-logic.md` §8). A
+    /// game with none passes nothing, and the panel says so.
+    animation: ?*const anim.Report = null,
 };
 
 /// What a panel is handed.
@@ -284,6 +289,7 @@ pub const Overlay = struct {
     entities: entity_panel.State = .{},
     content: content_panel.State = .{},
     navigation: navigation_panel.State = .{},
+    animation: animation_panel.State = .{},
 
     /// Heap-allocated because the built-in panels are registered with pointers into it, the
     /// same reason `app.Engine.init` returns a pointer.
@@ -329,6 +335,12 @@ pub const Overlay = struct {
                 .title = "navigation",
                 .ctx = &self.navigation,
                 .describe = navigation_panel.State.describe,
+            });
+            _ = try self.addPanel(.{
+                .id = root_id.child("animation"),
+                .title = "animation",
+                .ctx = &self.animation,
+                .describe = animation_panel.State.describe,
             });
         }
         return self;
@@ -635,10 +647,10 @@ pub fn countText(ctx: *const ui.Context) usize {
 
 const testing = std.testing;
 
-test "an overlay registers the six built-in panels" {
+test "an overlay registers the seven built-in panels" {
     const o = try Overlay.init(testing.allocator, .{});
     defer o.deinit();
-    try testing.expectEqual(@as(usize, 6), o.panels.items.len);
+    try testing.expectEqual(@as(usize, 7), o.panels.items.len);
     // The profiler is the one that is open to begin with: it is the panel that answers the
     // question the overlay exists for.
     try testing.expect(o.panels.items[0].open);

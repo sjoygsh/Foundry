@@ -1,7 +1,7 @@
 //! Foundry `debug` — layer L5. The in-process debug overlay (ADR-0025).
 //!
-//! Depends on `core`, `data`, `ui`, `asset`, `nav`, `render2d`, `render3d`, `scene`, `audio` and `app`, and
-//! **nothing depends on it**. A game opts in by importing it, exactly as it opts into
+//! Depends on `core`, `data`, `ui`, `asset`, `anim`, `nav`, `render2d`, `render3d`, `scene`, `audio` and
+//! `app`, and **nothing depends on it**. A game opts in by importing it, exactly as it opts into
 //! `render2d` or `audio`; a game that does not import it does not build it.
 //!
 //! ## The rule this module exists to obey
@@ -39,6 +39,7 @@
 
 pub const overlay = @import("overlay.zig");
 
+pub const animation_panel = @import("animation_panel.zig");
 pub const console_panel = @import("console_panel.zig");
 pub const content_panel = @import("content_panel.zig");
 pub const entity_panel = @import("entity_panel.zig");
@@ -66,6 +67,7 @@ pub const span = overlay.span;
 
 test {
     _ = overlay;
+    _ = animation_panel;
     _ = console_panel;
     _ = content_panel;
     _ = entity_panel;
