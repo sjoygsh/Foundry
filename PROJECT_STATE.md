@@ -1,7 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-05
-**Current handoff: M34 Step 9 is complete; stop before Step 10** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). The owner played it on 2026-11-05 (criterion 8): the warden's quick legs stay, as a balance factor, and the sandbox is fine. Step 10 is Windows/Vulkan: §13's budgets and the pins on x86_64. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Last updated:** 2026-11-06
+**Current handoff: M34 Step 10 is complete; stop before Step 11, the close** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). Step 11 corrects §4.3's grants and the `scene` line, adds §9's row and the modding docs, and tags `m34`. M34 is committed locally and not pushed. The PC keeps a clone at `src\Foundry-m34` and `m34` scratch beside it.
+
+**M34 Step 10 is done (2026-11-06): Windows/Vulkan.**
+- On the Arc A750 and the i3: null 2,710/2,729 (19 skips), Vulkan 2,991/3,021 (30 skips), and the ReleaseSafe pin suites 347/347.
+- Every pin holds on x86_64, unchanged: the player's, the walker's `655e865f98779129` and the pacer's two. Both samples run relocated, read-only, under validation and off, and every court ending replays.
+- §13's budgets, i3 p95: one walker 0.007 ms, one skin 0.107 ms, 32 animators 0.027 ms, the court's tick 0.192 ms. The 32-animator run is new, as `FOUNDRY_SANDBOX3D_ANIMATORS=32`, because nothing measured it.
+- Bar 2,731/2,741 (ten skips), 131/131 steps.
+
 
 **M34 Step 9 is done (2026-10-31; played by the owner 2026-11-05): a clip on a link.**
 - The warden plays a clip for each kind of link, put at `link_t` on each tick, so a jump of any length fits its arc. It lands with a `court:event.land`, heard where it is.

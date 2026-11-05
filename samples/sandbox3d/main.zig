@@ -39,6 +39,8 @@
 //! - `FOUNDRY_SANDBOX3D_WORKERS=n` sets the engine's worker count, and
 //!   `FOUNDRY_SANDBOX3D_BACKGROUND=n` its background pool's;
 //! - `FOUNDRY_SANDBOX3D_WALKERS=1|16` selects the M24 cost-run instance count;
+//! - `FOUNDRY_SANDBOX3D_ANIMATORS=32` also advances 32 animators of the pacer's set, with no pose,
+//!   in a world of their own, measured as `animation.animators` (`animation-logic.md` §13);
 //! - `FOUNDRY_SANDBOX3D_WALK=tour` proves the player and the generated walker, then replays;
 //! - `FOUNDRY_SANDBOX3D_PANELS=1` starts with the debug overlay shown;
 //! - `FOUNDRY_SANDBOX3D_SAVE_DIR=path` redirects F5/F9 for a disposable evidence run;
@@ -111,6 +113,7 @@ const walk_mod = @import("walk.zig");
 const Tour = @import("tour.zig").Tour;
 const Walker = @import("walker.zig").Walker;
 const pacer_mod = @import("pacer.zig");
+const animators_mod = @import("animators.zig");
 const Props = @import("props.zig").Props;
 const native_mod = @import("native.zig");
 const gallery_mod = @import("gallery.zig");
@@ -500,7 +503,7 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
     });
 
     const recorder = engine.profiler() orelse return;
-    for ([_][]const u8{ "animation", "render.skin", "abi.instances" }) |name| {
+    for ([_][]const u8{ "animation", "render.skin", "abi.instances", "animation.animators" }) |name| {
         var values: [240]i64 = undefined;
         var work: [240]i64 = undefined;
         var count: usize = 0;
@@ -518,9 +521,11 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
                 count += 1;
             }
         }
+        // The cost run's line, only when it ran.
+        if (count == 0 and std.mem.eql(u8, name, "animation.animators")) continue;
         const measured = core.profile.summarise(values[0..count], &work);
         const instances = if (sample.native) |native| native.instances.instances.count() else 0;
-        log.info("{s}: {d} objects, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, if (std.mem.eql(u8, name, "abi.instances")) instances else sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
+        log.info("{s}: {d} objects, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, if (std.mem.eql(u8, name, "abi.instances")) instances else if (std.mem.eql(u8, name, "animation.animators")) animators_mod.count else sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
     }
     var totals: [240]i64 = undefined;
     var scratch: [240]i64 = undefined;
@@ -762,6 +767,8 @@ const Sample = struct {
     walkers: []Walker,
     rigs: asset.Rigs,
     pacer: pacer_mod.Figure = .{},
+    /// The 32-animator cost run, when asked for.
+    animators: ?animators_mod.Animators = null,
     /// The tour's save, and what the run went on to do after it.
     pacer_proof: PacerProof = .{},
     course: render3d.ModelHandle = .none,
@@ -856,6 +863,11 @@ const Sample = struct {
         } else 1;
         const walkers = try gpa.alloc(Walker, walker_count);
         @memset(walkers, .{});
+        const animators: ?animators_mod.Animators = if (engine.os.envVar("FOUNDRY_SANDBOX3D_ANIMATORS")) |text| blk: {
+            if (std.mem.eql(u8, text, "32")) break :blk .{};
+            log.warn("ANIMATORS must be 32; running none", .{});
+            break :blk null;
+        } else null;
 
         return .{
             .gpa = gpa,
@@ -866,6 +878,7 @@ const Sample = struct {
             .navigation = nav_mod.Navigation.init(gpa),
             .crowd = crowd_mod.CrowdDemo.init(gpa),
             .walkers = walkers,
+            .animators = animators,
             .rigs = asset.Rigs.init(gpa, &engine.assets),
             .cube = cube,
             .cube_material = cube_material,
@@ -1052,6 +1065,7 @@ const Sample = struct {
             defer pacer_scope.end();
             try self.pacer.step(self.gpa, &self.orrery.world, &self.walk.world, &self.rigs, s.delta.toSecondsF32());
         }
+        if (self.animators) |*bench| self.stepAnimators(engine, bench, s.delta.toSecondsF32());
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
@@ -1278,6 +1292,32 @@ const Sample = struct {
         self.panels.entities.selected = self.orrery.role(.sheared);
         const same = if (self.saved_hash) |saved| (if (saved == hash) ", the same as this run's save" else ", not this run's save") else "";
         log.info("f9: poses {x:0>16}{s}", .{ hash, same });
+    }
+
+    /// The cost run's tick: made the first time the pacer has a rig, then advanced in a span.
+    fn stepAnimators(self: *Sample, engine: *app.Engine, bench: *animators_mod.Animators, dt: f32) void {
+        if (bench.failed) return;
+        if (!bench.built) {
+            const e = self.pacer.entity orelse return;
+            const set = (scene.animation.animatorOf(&self.orrery.world, e) orelse return).set;
+            bench.start(self.gpa, set, &self.rigs, dt) catch |err| {
+                log.warn("animators: not made ({t}); the cost run is off", .{err});
+                bench.failed = true;
+                return;
+            };
+            log.info("animators: {d} of the pacer's set, advanced with no pose", .{animators_mod.count});
+        }
+        const scope = engine.beginScope("animation.animators");
+        defer scope.end();
+        const summary = bench.tick(&self.rigs, dt) catch |err| {
+            log.warn("animators: a tick failed ({t}); the cost run is off", .{err});
+            bench.failed = true;
+            return;
+        };
+        if (summary.animators != animators_mod.count or summary.unresolved != 0 or summary.lost != 0) {
+            log.warn("animators: {d} advanced, {d} unresolved, {d} lost; the cost run is off", .{ summary.animators, summary.unresolved, summary.lost });
+            bench.failed = true;
+        }
     }
 
     fn refreshPacer(self: *Sample, engine: *app.Engine) void {
@@ -1528,6 +1568,7 @@ const Sample = struct {
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
         self.pacer.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null, &self.rigs);
         self.pacer_proof.deinit(self.gpa);
+        if (self.animators) |*bench| bench.deinit(self.gpa, &self.rigs);
         self.gpa.free(self.walkers);
         // After what holds a rig, and before the registry it borrows from.
         self.rigs.deinit();

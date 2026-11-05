@@ -1096,3 +1096,71 @@ stride clip is not lengthened. **The sandbox is fine** as a demonstrator. The ow
 orrery's crates are meant to pass part-way through the figures. They are: the orrery is drawn and
 not solid, and moving solid bodies and pushing are M37's (Character and collision extras), not
 M34's.
+
+## Resolution — Step 10: Windows/Vulkan (2026-11-06)
+
+**What exists now:**
+- **`scripts/m34/windows.ps1`,** from M33's. `build` runs the native suites, the pins at ReleaseSafe
+  and stages a relocated, read-only ReleaseSafe install; `desktop` runs both samples from it in the
+  desktop session.
+- **`samples/sandbox3d/animators.zig` and `FOUNDRY_SANDBOX3D_ANIMATORS=32`.** §13's 32-animator budget
+  had no measurement anywhere, so the step adds one. Thirty-two `foundry:animator`s of the pacer's set
+  play `stride` from staggered points, in a world of their own. That keeps the pacer's events, report
+  and save as they were. `scene.animation.advance` over them is timed as `animation.animators`, with no
+  pose, inside the paced frame loop. A run that cannot make them, or a tick that loses or cannot
+  resolve one, says so and stops measuring. It is measurement only, like M33's window line, and adds
+  no guard.
+
+**Run on** the Arc A750 and the i3-10105F, from a fresh clone of `m33` with M34's commits by bundle
+and this step's three files overlaid and hash-checked. Nothing was pushed. The first `build` lost its
+SSH session during the release suite, so it and the desktop runs went through a scheduled task.
+
+**Suites.** Null 2,710/2,729 (19 skips), 127/127 steps. Vulkan 2,991/3,021 (30 skips), 231/231
+steps. ReleaseSafe `anim-test`, `rigs-test`, `scene-test`, `sandbox3d-test` and `court-test`
+347/347.
+
+**The pins on x86_64.** Every one holds, unchanged from the Mac. In the tests: the player's and the
+clips' (Zig's own `sin` on both), the step replay `ad558f6b1a182eac`, and the clip, mesh and skeleton
+bytes. In the tour, windowed and relocated: the player's `cb99ccfcf2b6d6c3`, the walker's
+`655e865f98779129` and the pacer's `47f67027ff3a12b0`, or `ef5c24337f5f2925` with `pacer_quick`. The
+walker's pin is asserted on Apple Silicon alone, since a linked `sin` could differ. It does not
+differ here, and that is recorded rather than asserted. **There is no difference to record.**
+
+**Samples, from the relocated install, read-only and unchanged by the runs.** The tour passed four
+times: with and without `pacer_quick`, and each under Khronos validation with synchronization. Each
+validation log holds only the lines that prove it was live. The pacer crosses its save and load with
+5 corners and 3,675 bytes, as on the Mac. The court's three endings each replayed exactly, under
+validation and off:
+
+| Court run | Ending ticks | Replay |
+| --- | --- | --- |
+| `win` ×3 | 1,219 and 2,436; 1,222 and 2,439 twice | all matched |
+| `caught` | 93 | 95 matched |
+| `fell` | 190 | 193 matched |
+| `win`, validation | 1,227 and 2,444 | 2,449 matched |
+| `caught`, validation | 96 | 98 matched |
+| `fell`, validation | 193 | 196 matched |
+
+As in M33, an ending moves a little run to run, because the first mesh's arrival is a recorded
+input. One `win` matched the Mac's 1,219 exactly.
+
+**§13's budgets,** p95 at ReleaseSafe, inside the paced 60 Hz loop, with no validation layer:
+
+| What | i3 | M5 | Budget |
+| --- | --- | --- | --- |
+| `animation`: one walker | 0.003–0.007 ms | 0.008 ms | 0.10 ms |
+| `render.skin`, one figure | 0.064–0.098 ms; the warden 0.047–0.107 ms | 0.085 ms; the warden 0.080 ms | 0.25 ms |
+| `animation.advance` over 32 animators, no pose | 0.018–0.027 ms | 0.042 ms | 0.10 ms |
+| The court's whole tick (`character`) | 0.054–0.192 ms | 0.131 ms | 0.25 ms |
+
+Three cost runs gave the sandbox's numbers and four court runs the court's. The i3's worst court tick
+p95, 0.192 ms, was `caught`, whose 79 frames are a small sample. Under validation the warden's skin
+reached 0.255 ms once, in that same short run. The layer adds that cost, and no budget is read under it.
+
+**Where the step sharpened the design:** §13 names a 32-animator budget and no place to read it. It
+is read in the sandbox, in a world of its own, because the pacer's world saves and its events are
+counted.
+
+**Guards verified by breaking them:** none. The step adds a measurement and a script.
+
+Bar **2,731/2,741** (ten skips), 131/131 steps, unchanged from Step 9. Every command exits 0.
