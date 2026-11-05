@@ -90,14 +90,25 @@ const Screens = struct {
             log.warn("the fallback font is unavailable ({t})", .{err});
             break :blk .none;
         };
+        self.resolveTheme(engine);
+    }
+
+    /// The screens' look, from content. Resolved again at the content seam, as the room's is: a
+    /// theme holds textures and regions of what a reload replaced.
+    fn resolveTheme(self: *Screens, engine: *app.Engine) void {
         var diags: data.Diagnostics = .init(self.gpa, .default);
         defer diags.deinit(self.gpa);
-        self.theme = app.resolveUiTheme(self.gpa, &engine.store, &engine.assets, &self.overlay, core.ContentId.fromString(theme_id), &diags) catch |err| blk: {
+        const fresh = app.resolveUiTheme(self.gpa, &engine.store, &engine.assets, &self.overlay, core.ContentId.fromString(theme_id), &diags) catch |err| blk: {
             log.warn("the ui theme could not be resolved ({t})", .{err});
             break :blk null;
         };
         for (diags.items.items) |d| log.warn("{s}", .{d.message});
-        if (self.theme != null) log.info("the screens are drawn from {s}", .{theme_id});
+        if (fresh != null) log.info("the screens are drawn from {s}", .{theme_id});
+        // The new theme first and then the old one released, so a texture both hold is not
+        // unloaded and loaded again in between.
+        self.ctx.skin = null;
+        if (self.theme) |*old| old.deinit(&engine.assets);
+        self.theme = fresh;
     }
 
     fn deinit(self: *Screens, engine: *app.Engine) void {
@@ -403,7 +414,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         navigation.request(engine.tasks(), &engine.store, &engine.assets, gateBox(&game), asked);
         log.info("navigation: the request took {d:.3}ms on the main thread", .{@as(f64, @floatFromInt(engine.os.monotonicNanos() - asked)) / core.time.ns_per_ms});
     }
-    const text = Text.read(&engine.store);
+    // Borrowed from the store, so read again at the content seam below: a reload frees it.
+    var text = Text.read(&engine.store);
     const goal_ticks: u64 = @intFromFloat(@round(settings.goal_seconds / engine.step_delta.toSecondsF32()));
 
     // The proof replays every admitted tick against a fresh simulation in this binary.
@@ -445,6 +457,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         // Before any tick: a reload replaced what the warden's rig borrows, here and in its replay.
         if (engine.contentGeneration() != content_generation) {
             content_generation = engine.contentGeneration();
+            text = Text.read(&engine.store);
+            screens.resolveTheme(engine);
             game.contentChanged(&engine.assets) catch |err| log.warn("the warden's rig could not follow a content change ({t})", .{err});
             if (replay) |*fresh| fresh.contentChanged(&engine.assets) catch |err| log.warn("the replay's rig could not follow a content change ({t})", .{err});
         }

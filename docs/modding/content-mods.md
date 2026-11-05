@@ -599,7 +599,56 @@ route. How an agent moves, what it sees and what it does on arrival are the game
 are what a mod overrides there: the court's warden has a speed, a sight range and a sight angle in
 `court:warden.main`.
 
-## 10. Hot reload
+## 10. Skeletal animation
+
+A skinned model's clips come from its import, and they carry no meaning of their own. What a clip
+means is one `foundry:animation_set` record per model: which clips loop, how fast they play, which
+carry the body with them, and where in a clip an event falls. Override that record, and a figure's
+timing changes with no asset and no code.
+
+```
+foundry:animation_set sandbox3d:walker.set {
+    model sandbox3d:models.walker
+    start "idle"
+    motion_joint "pelvis"
+    clips [
+        { name "stride" speed 2 motion true events [
+            { at 0.0 event sandbox3d:event.footfall }
+            { at 0.6 event sandbox3d:event.footfall }
+        ] }
+        { name "turn" loop false motion true }
+        { name "jump" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+        { name "drop" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+    ]
+}
+```
+
+- **`model`** is a skinned `foundry:model`, and **`start`** the clip a figure begins with.
+- **A clip** is named as the model names it. Unlisted clips loop at speed 1 with no motion and no
+  events. `loop false` makes a clip play once and hold its end. `speed` is above 0 and at most 16.
+  A set lists at most 256 clips.
+- **`motion true`** takes the body's travel out of the clip and gives it to the game, which moves the
+  body by it. That joint is `motion_joint`, a root of the skeleton. A game that moves its figure by
+  other means still uses that travel to keep the feet on the floor.
+- **An event** is an ID at a fraction of the clip, `at`, from 0 up to but not including 1. A one-shot
+  clip may also use exactly 1, its end. A clip holds at most 64. A fraction and not seconds means a
+  retimed clip keeps its footsteps on its feet. What an event does is the game's: the sandbox counts
+  `footfall`, and the court's warden plays a step sound for its own.
+- **An override replaces the whole set,** so restate every clip you want to keep saying something
+  about. A clip you leave out goes back to the defaults.
+
+A mistake one record can show, such as a duplicate clip or an `at` out of range, is refused when the
+package is built. A mistake that depends on other records, such as a clip the model does not have,
+a `motion_joint` that is not a root, or a model with no skin, is named when the game builds the
+figure's rig. That figure is left unanimated and the rest of the game runs.
+
+`samples/sandbox3d/testdata/mods/pacer_quick` is a complete mod of two files, and `zig build install`
+stages it beside the game. It is the set above: `stride` at twice its speed, so the sandbox's pacer
+walks a square twice as wide, because each side lasts the same time. Run the sandbox with
+`FOUNDRY_SANDBOX3D_PACKAGES=pacer_quick:content` to see it. Which clip plays when is the game's:
+the court's warden names its sets and its clips for each kind of link in `court:warden.main`.
+
+## 11. Hot reload
 
 In a development build the engine watches what it loaded. Recompile your package, or just
 save an image, and the running program picks it up at the start of the next frame:
@@ -620,7 +669,7 @@ packages declaring the same record type at the same version must agree about it,
 could read either one's records. Add a field, raise the version, give the field a default —
 content written against the old version keeps working, which is what versioning is for.
 
-## 11. Types
+## 12. Types
 
 The list is closed. There are no others, on purpose: every type costs three implementations
 that have to agree, and a type that reaches a compiled package can never be removed.
@@ -639,7 +688,7 @@ An inline struct composes, which is why there is no colour type and no vector ty
 a mod might want to override *on its own* should be a record with a content ID instead;
 that choice is the most consequential one a schema author makes.
 
-## 12. When something is wrong
+## 13. When something is wrong
 
 `fpack` prints the file, the line, the column and the line itself with a caret under the
 problem. It reports every mistake it can rather than stopping at the first, and it exits
@@ -650,7 +699,7 @@ different fixes — an asset that is *missing* is a different sentence from one 
 *corrupt*, and a record that is not the type you asked for is a third. That distinction is
 deliberate and tested.
 
-## 13. What this does not cover yet
+## 14. What this does not cover yet
 
 See [`README.md`](README.md) for the honest list. The short version: the room's mod screen is
 the only mod manager so far; there are no partial edits (`@patch` and `@remove` are reserved

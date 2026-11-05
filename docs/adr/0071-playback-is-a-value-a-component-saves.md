@@ -1,6 +1,6 @@
 # ADR-0071: Playback is a value a component saves, and a clip's meaning is a record
 
-**Status:** Accepted 2026-10-31, when the owner requested M34 Step 1
+**Status:** Accepted 2026-10-31, when the owner requested M34 Step 1; implemented in M34 (2026-11-06, tag `m34`)
 **Date:** 2026-10-31
 **Informed by:** ADR-0010, ADR-0013, ADR-0041, ADR-0050, ADR-0055, ADR-0058, ADR-0070,
 `docs/design/animation-logic.md`

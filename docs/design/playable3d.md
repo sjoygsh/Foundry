@@ -559,7 +559,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | A warden that sees and chases | **Done in M33** (2026-10-31): M32 ([`navigation.md`](navigation.md)) built the warden's mesh from the level, and M33 ([`agents.md`](agents.md)) gave it paths, an agent and the chase |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
 | A hierarchy authored in content | **M103**, Prefabs |
-| An animation component saved with a world | **M34**; the court saves no pose |
+| An animation component saved with a world | **Done in M34** (2026-11-06, [`animation-logic.md`](animation-logic.md)): `foundry:animator`, saved by the sandbox's pacer. The court still saves no pose, and its warden plays through `anim.Player` |
 | A third-person player body | **M50**, the second 3D sample |
 | A sky, image-based lighting | **M41**, Environment |
 | A save game | **M47**, Saves II, proved in M50's sample |

@@ -204,7 +204,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Spatial audio | One listener and a position per spatial voice, placed on the game thread in `Mixer.update` from `foundry:audio_attenuation` (distance, constant-power pan, game-supplied occlusion as gain and a one-pole low-pass), interpolated across the next buffer; output stays stereo; HRTF is M144's, Doppler M55's, surround not planned; accepted and implemented in M31 (2026-10-27) | [0068](docs/adr/0068-spatial-voices-are-placed-on-the-game-thread.md) |
 | Navigation meshes | `nav` at L1 on `core` alone builds them from copied collision triangles by the published voxel method, reimplemented in Zig; `foundry:nav_mesh` is a recipe (sources, the controller's four agent quantities, resolution), and the mesh is built at load from the merged store on the background pool, owned by its creator, never content or saved; accepted 2026-10-28, implemented in M32 (2026-10-29) | [0069](docs/adr/0069-navigation-meshes-are-built-from-collision-at-load.md) |
 | Agents | Search, `nav.Crowd` and ORCA avoidance live in `nav` as values a game owns and ticks: a crowd gives each agent a wish, the game moves the body and reports it; a running obstacle is a source in a whole rebuild, and a rebuilt mesh reaches a tick only as a recorded input (ADR-0061's decision 4); accepted 2026-10-30, implemented in M33 (2026-10-31) | [0070](docs/adr/0070-agents-are-values-a-game-ticks.md) |
-| Animation playback | Playback is `anim.Player`, a fixed value on `core` alone, and a pose is never state; `foundry:animator` is that value under an engine name, so a world saves it; `foundry:animation_set` says what a clip means, and none of that enters a clip's bytes; `asset.Rigs` builds rigs below the renderer; root motion is a wish a game carries out, and events are IDs reported on the tick; accepted 2026-10-31 | [0071](docs/adr/0071-playback-is-a-value-a-component-saves.md) |
+| Animation playback | Playback is `anim.Player`, a fixed value on `core` alone, and a pose is never state; `foundry:animator` is that value under an engine name, so a world saves it; `foundry:animation_set` says what a clip means, and none of that enters a clip's bytes; `asset.Rigs` builds rigs below the renderer; root motion is a wish a game carries out, and events are IDs reported on the tick; accepted 2026-10-31, implemented in M34 (2026-11-06) | [0071](docs/adr/0071-playback-is-a-value-a-component-saves.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
@@ -303,9 +303,11 @@ L1  physics3d   -> core.        3D shapes, rigid poses, bodies, queries and the
                                 (ADR-0057). No entities, no content, no I/O.
 L1  anim        -> core.        Skeletons, clips and poses as borrowed values:
                                 sampling at a caller's time, blending and
-                                linear-blend skinning on the CPU (ADR-0058, M24).
-                                No clock, no playback state, no assets, no
-                                entities, no renderer.
+                                linear-blend skinning on the CPU (ADR-0058, M24);
+                                `Player`, playback as a fixed value, `Rig`,
+                                events, root motion and a `Report` (ADR-0071,
+                                M34). No clock, no assets, no entities, no
+                                renderer.
 L1  particles   -> core.        Emitter descriptions, the fixed-capacity store
                                 and the deterministic step (ADR-0064, M29). No
                                 assets, no entities, no renderer, no clock.
@@ -324,10 +326,12 @@ L2  rhi         -> core, platform.  Render hardware interface + backends.
                                 *** Metal/Vulkan/D3D are referenced ONLY here. ***
                                 backends/null, backends/metal (+ its ObjC shim),
                                 backends/vulkan.
-L2  asset       -> core, data, platform.  Asset registry, loading in two phases
-                                (ADR-0062, M27), hot reload, the pure mesh
+L2  asset       -> core, data, platform, anim.  Asset registry, loading in two
+                                phases (ADR-0062, M27), hot reload, the pure mesh
                                 builder (M28), the Ogg Vorbis decoder and the
-                                music records (ADR-0065, ADR-0066, M30).
+                                music records (ADR-0065, ADR-0066, M30);
+                                `foundry:animation_set` and `Rigs`, which build
+                                rigs below the renderer (ADR-0071, M34).
 L2  mod         -> core, data, platform.  Mod discovery, manifests, dependency
                                 resolution, deterministic load order. Produces the
                                 order `data` consumes; opens no library and loads no
@@ -345,7 +349,10 @@ L3  render3d    -> core, rhi, asset, anim, particles.  Mesh residency, 3D camera
                                           materials changed in place and uploaded from the pool
                                           (ADR-0063, M28); particle emitters run by handle and
                                           drawn as runtime meshes (ADR-0064, M29).
-L3  scene       -> core, data, asset.     Entities, components, world, systems.
+L3  scene       -> core, data, anim.      Entities, components, world, systems;
+                                          `foundry:animator`, saved with a world, and
+                                          `foundry:root_motion` (ADR-0071, M34). No
+                                          `asset`: a game hands it rigs.
 L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID; a
                                           sample clock, scheduled starts, ramped gains,
                                           streamed voices decoded on the background pool
@@ -364,13 +371,14 @@ L4  author      -> core, data, platform, asset, mod, scene.
                 `ui`, no `audio` — it reads text and writes packages, so a workspace
                 unit-tests with no device, no window and no frame.
 
-L5  debug       -> core, data, ui, asset, render2d, render3d, nav, scene, audio, app.
+L5  debug       -> core, data, ui, asset, anim, render2d, render3d, nav, scene, audio, app.
                 The in-process debug overlay: profiler, memory, log console, entity
                 inspector, content browser. Nothing in the engine depends on it; a game
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
                 reads the engine's answers, not the devices under them. `render3d`
                 joined at M21 for its frame counts (hierarchy.md §7), `nav` at M33 for
-                the navigation panel's report (agents.md §10).
+                the navigation panel's report (agents.md §10), `anim` at M34 for the
+                animation panel's (animation-logic.md §8).
 L5  abi         -> core, data, physics2d, physics3d, platform, ui, asset, render2d,
                 render3d, scene, audio, app, author, mod, net.  The public C ABI, and
                 the native mod loader. A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
@@ -753,7 +761,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Networking | **Done in M16** (2026-09-23) | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6) and holds against hostile peers and the controlled envelope (Step 7); desktops, the public internet and the external consumer are proven (Step 8, [networking guide](docs/modding/networking.md)). What it deliberately left out — relays, NAT traversal, accounts, prediction, lockstep, IPv6 — is networking.md §11's, and each is its own decision. |
 | Certified releases (Developer ID, notarization, Windows code signing) | **M150, the last milestone** (ADR-0060, re-dating ADR-0047) | M17 publishes unsigned, labelled GitHub pre-releases instead. When due, use the implemented Developer ID/notary path and verify the exact quarantined download on a genuinely clean recipient Mac; add Windows signing. No membership is bought before then. |
 | Linux runtime support | **Done in M18** (2026-09-27) | Removed from M13 by ADR-0039; headless servers proven in M16.5 (ADR-0046). The desktop is a runtime claim on one Intel Arc/Mesa machine, under Xorg, sway and GNOME, with its limits in [linux-desktop.md](docs/design/linux-desktop.md). In M26 a person played the 3D court there under GNOME, on an Ubuntu 26.04 rebuilt from the kit. No Linux release artifact exists; that is M137's. |
-| Everything the design documents deferred | **Scheduled** (2026-10-02, ADR-0060); **owned** (2026-10-17, rule 17); **M27 done** (2026-10-18, tag `m27`); **M28 done** (2026-10-23, tag `m28`); **M29 done** (2026-10-24, tag `m29`); **M30 done** (2026-10-27, tag `m30`); **M31 done** (2026-10-27, tag `m31`); **M32 done** (2026-10-29, tag `m32`); **M33 done** (2026-10-31, tag `m33`) | M27–M149 in `docs/ROADMAP.md`: the game toolkit, dynamics and worlds, the renderer's upper tier, tools, and reach. Each item names its milestone in the roadmap's intent column; what belonged to M0–M25's own work was finished in M26 (Steps 8–11). Each item's recorded trigger no longer decides whether it is built; it still decides its shape and budget. A milestone is designed only when its turn comes. |
+| Everything the design documents deferred | **Scheduled** (2026-10-02, ADR-0060); **owned** (2026-10-17, rule 17); **M27 done** (2026-10-18, tag `m27`); **M28 done** (2026-10-23, tag `m28`); **M29 done** (2026-10-24, tag `m29`); **M30 done** (2026-10-27, tag `m30`); **M31 done** (2026-10-27, tag `m31`); **M32 done** (2026-10-29, tag `m32`); **M33 done** (2026-10-31, tag `m33`); **M34 done** (2026-11-06, tag `m34`) | M27–M149 in `docs/ROADMAP.md`: the game toolkit, dynamics and worlds, the renderer's upper tier, tools, and reach. Each item names its milestone in the roadmap's intent column; what belonged to M0–M25's own work was finished in M26 (Steps 8–11). Each item's recorded trigger no longer decides whether it is built; it still decides its shape and budget. A milestone is designed only when its turn comes. |
 | 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`); **M25 done** (2026-10-02, tag `m25`); **M26 done** (2026-10-18, tag `m26`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0059: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M25's [public 3D design](docs/design/public3d.md) is implemented (ADR-0059): `FoundryApi_v6` is frozen, a content mod and a consented C99 mod add lit, solid objects to that room on both, and [the 3D modding guide](docs/modding/3d.md) is written from a mod built outside the repository. M26's [playable sample](docs/design/playable3d.md), `samples/court`, was played from a relocated install by a person on macOS/Metal, Windows/Vulkan and Linux/Vulkan (a freshly provisioned Ubuntu), adding only pointer capture to the engine for it; by rule 17 it also finished M19–M25's own leftovers. M27–M149 follow (ADR-0060). Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific (3d.md §10.2). What 3d.md §11, light.md §14, collision3d.md §15, animation3d.md §14, public3d.md §14 and playable3d.md §13 set aside each names its milestone. |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, iOS,

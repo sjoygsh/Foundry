@@ -477,9 +477,23 @@ court and a whole chase tick. The tests assert the M5's budgets, 50 µs for a pa
 crowd step, and the i3's are three times those (3.4–5.2 µs and 0.026 ms there at M33). `nav-test`
 also asserts the crowd pin in every mode.
 
+M34's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test. Run them
+when `anim`, `scene.animation`, `asset.Rigs` or either sample's figures change:
+- `FOUNDRY_SANDBOX3D_ANIMATORS=32 FOUNDRY_SANDBOX3D_FRAMES=900 bin/sandbox3d` prints one walker's
+  `animation`, its `render.skin`, and `animation.animators`, 32 animators advanced with no pose.
+  Their budgets are 0.10, 0.25 and 0.10 ms p95 (0.008, 0.085 and 0.042 ms on the M5 at M34, and
+  0.007, 0.107 and 0.027 ms on the i3).
+- `FOUNDRY_COURT_PLAY=win bin/court` prints the court's `character`, its whole tick, and the
+  warden's `render.skin`, each against 0.25 ms (0.131 and 0.080 ms on the M5, at most 0.192 and
+  0.107 ms on the i3).
+- `FOUNDRY_SANDBOX3D_WALK=tour` replays the player, the walker and the pacer across a save and a
+  load, and prints their pins. `anim-test`, `rigs-test` and `scene-test` hold the rest.
+
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
-`scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs, and
-`scripts/m33/windows.ps1` runs M33's, with the crowd, `marsh` and the warden's endings.
+`scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
+`scripts/m33/windows.ps1` runs M33's, with the crowd, `marsh` and the warden's endings, and
+`scripts/m34/windows.ps1` runs M34's, with the tour, `pacer_quick`, the cost runs and the endings.
+Run it from a scheduled task, not over SSH alone: a dropped session ends what it started.
 
 ### Staging a release
 

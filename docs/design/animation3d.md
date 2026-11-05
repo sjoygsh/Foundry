@@ -510,6 +510,8 @@ complete, and nothing names a contract the code does not have.
 | An animation panel in the overlay | Debugging a game's animation needs one; M34 |
 
 > **2026-10-31:** M34's proposed design for this table's component, root motion, events and panel is [`animation-logic.md`](animation-logic.md).
+>
+> **2026-11-06, M34 closed (tag `m34`, ADR-0071):** the component (`foundry:animator`, saved with a world), root motion, events and the animation panel are done. State machines, layers, masks and additive poses are M35's.
 
 ## 15. Decisions acceptance fixes
 

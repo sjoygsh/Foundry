@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M34 Step 10 is complete; stop before Step 11, the close** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). Step 11 corrects §4.3's grants and the `scene` line, adds §9's row and the modding docs, and tags `m34`. M34 is committed locally and not pushed. The PC keeps a clone at `src\Foundry-m34` and `m34` scratch beside it.
+**Current handoff: M34 is complete (2026-11-06, tag `m34`, pushed); stop before M35's design** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). M35 is Animation logic II: state machines, layers, masks and additive poses. Nothing of it is designed. The PC holds no Foundry clone.
+
+**M34 is complete (2026-11-06, tag `m34`): Animation logic I.** Playback is `anim.Player`, a value `foundry:animator` saves with a world. `foundry:animation_set` says what a clip means, root motion is a wish, and events are IDs on the tick. The pacer saves in mid-stride, the warden steps, jumps and lands on its clips, and the owner played it. It runs on Metal and on Windows/Vulkan with every pin equal.
+- The close fixed the Debug court's reload crash (`hud.zig:122`): its text and theme are read again at the content seam.
+- CLAUDE.md §4.3 now matches the build for `anim`, `asset`, `scene` and `debug`. `content-mods.md` gains §10, Skeletal animation.
+- Bar 2,731/2,741 (ten skips), 131/131 steps. `court` and `room` stage on macOS.
+
 
 **M34 Step 10 is done (2026-11-06): Windows/Vulkan.**
 - On the Arc A750 and the i3: null 2,710/2,729 (19 skips), Vulkan 2,991/3,021 (30 skips), and the ReleaseSafe pin suites 347/347.

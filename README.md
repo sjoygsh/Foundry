@@ -179,10 +179,12 @@ and materials at run time beside compiled content, draw
 content-defined particle effects, play streamed Ogg Vorbis music sequenced to the frame
 from content, and mix it through buses and effects with sounds placed and occluded in 3D.
 They build navigation meshes from a level's collision as it loads, and agents walk them in
-crowds, keeping apart, going round obstacles that move and chasing a player. It runs on macOS, Windows and Linux (X11
+crowds, keeping apart, going round obstacles that move and chasing a player. Their figures play
+clips by what a record says the clips mean, step and land on events, are moved by their own
+clips, and save in mid-stride. It runs on macOS, Windows and Linux (X11
 and Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M34's design on the long roadmap
+**What comes next** is M35's design on the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to

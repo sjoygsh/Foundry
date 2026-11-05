@@ -393,7 +393,8 @@ The curves are `nav`'s, in plain arithmetic with no trig. The gravity is a fixed
 constant and never a simulation one. A game with a body sets it directly during a crossing
 (`setCharacterFeet`), because a controller would refuse the path a jump takes. `AgentView`
 says which link and how far, so a game can play a clip. M34's animation events are where a
-crossing gets a proper one. An agent that has begun a crossing finishes it even if the mesh
+crossing gets a proper one. *(2026-11-06: done in M34. A game names a clip for each link kind and
+seeks it to `link_t` each tick; [`animation-logic.md`](animation-logic.md) §11.)* An agent that has begun a crossing finishes it even if the mesh
 is rebuilt, and then re-seats at `to`.
 
 ## 7. `locate` stays a scan
@@ -752,7 +753,7 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | Rebuilding only the tiles around an obstacle | M60 | M33 rebuilds a whole mesh; tiles make it local |
 | A spatial index for `locate` | M60 | Tiles change how a polygon is found. Comes forward if a scan on a real level passes 50 µs on the i3 (§7) |
 | Navigation in the public table, and in Lua | M48, M49 | §12. M48's line gains this at the close |
-| The clip an agent plays on a link | M34 | Its events are the right hook. `AgentView` already reports a crossing |
+| The clip an agent plays on a link | **Done in M34** (2026-11-06) | The warden and the sandbox's climber play one, put at `link_t` ([`animation-logic.md`](animation-logic.md) §11) |
 | Crowds over 256 agents, on `core.Jobs` | M100 | Its parallel systems are the first general reason to split a step |
 | The ~5 ms a crate's rebuild request spends in `navigation.pump` on the i3 (Step 11) | M60 | Inside the frame and unexplained. Tiles replace this request, and M60 measures its replacement |
 | A reload's landmark upload passing 16.67 ms on the i3 (Step 11) | M60 | Not navigation's: `uploads.pump` takes 7–14 ms of the frame a person asked for with **r**. Streaming is the first work that needs uploads inside a frame's budget |

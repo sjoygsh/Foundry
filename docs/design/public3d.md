@@ -525,7 +525,7 @@ complete and v6 frozen, and nothing names a contract the code does not have.
 
 | Deferred | Returns when |
 | --- | --- |
-| Animation through the ABI (poses, clips, skinned instances) | A mod needs an animated character; it would publish sampling over a model's named clips and a palette on an instance |
+| Animation through the ABI (poses, clips, skinned instances) | A mod needs an animated character; it would publish sampling over a model's named clips and a palette on an instance. **M48** (2026-11-06, M34's close): what it publishes is M34's `foundry:animator` and its events ([`animation-logic.md`](animation-logic.md) §12), not a pose |
 | A camera a mod writes | A mod needs a spectator or cutscene camera; it needs a host grant like `mods_write` |
 | Runtime meshes, materials and textures from a mod | A mod needs procedural geometry or materials it cannot ship as content. **M28 built them in `render3d`** ([`runtime-geometry.md`](runtime-geometry.md), ADR-0063), owned by handle and never content; **M48 publishes them** in `FoundryApi_v8`, with mod-owned handles and per-mod byte quotas |
 | Mod-authored shaders and shading models | ADR-0015's trigger: a mod needs a look the engine's models cannot give |

@@ -1,7 +1,7 @@
 # Design: M34 — Animation logic I: playback, a saved component, root motion and events
 
-**Status:** Accepted 2026-10-31, when the owner asked for Step 1, with §16 as written. Each step's
-Resolution follows §16.
+**Status:** Complete 2026-11-06, tag `m34`; all eleven steps done. Accepted 2026-10-31, when the
+owner asked for Step 1, with §16 as written. Each step's Resolution follows §16.
 **Date:** 2026-10-31
 **Baseline:** `3a7a68d`, tag `m33`. M0–M33 are complete.
 **Decisions:**
@@ -555,7 +555,8 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | Events and clips moved by an authoring view | M111 | With joints drawn in the world. `.fdt` is the authoring path until then |
 | Clip compression, and a rig's memory with it | M76 | |
 | Pose replication | M128 | A pose is a function of `Player` and the rig, so what replicates is the player |
-| Advancing animators on `core.Jobs` | M100 | Measured against §13's 32-animator budget |
+| Advancing animators on `core.Jobs` | M100 | Measured against §13's 32-animator budget, 0.027 ms on the i3 at M34 |
+| A ladder's climb fitted to its height | M35 | Step 9 plays one lap of `climb` across any ladder, which is right only for a short one. A clip that repeats over a crossing is playback logic |
 
 ## 16. Decisions acceptance fixes
 
@@ -1164,3 +1165,35 @@ counted.
 **Guards verified by breaking them:** none. The step adds a measurement and a script.
 
 Bar **2,731/2,741** (ten skips), 131/131 steps, unchanged from Step 9. Every command exits 0.
+
+## Resolution — Step 11: the close (2026-11-06)
+
+**Resolved, as §14 named them:**
+- `animation3d.md` §14 and ADR-0058's playback sentence carry dated notes pointing to ADR-0071.
+- `agents.md` §6.3 and §15's link row, `playable3d.md` §13's row and `public3d.md` §14's animation
+  row now say what M34 did, and the last gives M48 the animator and its events, not a pose.
+- The roadmap's M34 line is complete, and M48's line gains M34's animation.
+- CLAUDE.md: §4.1's row says implemented. §4.3's `anim` line no longer says "no playback state". It
+  grants `asset` `anim` and `debug` `anim`, and `scene`'s line now matches the build: `core`,
+  `data`, `anim`, and no `asset`. §9's row adds M34.
+- `content-mods.md` has a new §10, Skeletal animation, written from `pacer_quick`, so hot reload and
+  the later sections renumber to §11–§14.
+- AGENTS.md says where M34's costs are read, and names `scripts/m34/windows.ps1`. The bar's commands
+  did not change. The design index and README say M34 is complete.
+
+**The crash that had no owner is fixed.** Step 8 found that a package changed under a Debug court
+segfaults at `hud.zig:122`. Rule 17 leaves no place to put that, so the close fixed it. Two things in
+the court borrowed what a reload frees. `Text`'s strings were one. The screens' theme was the other,
+and its texture failed next, as `InvalidTexture`. Both are now read again at the content seam that
+already rebuilds the warden's rig, as the room has done since M14. **Each line is proven by its
+failure.** A Debug court had its package swapped under it while it ran. With neither line it
+segfaulted at `hud.zig:122`, and with only the first it failed with `InvalidTexture`. With both it
+reloaded and ran on. The seam's rig lines are still read, not mutated, as Step 8 said.
+
+**§15 gains one owner.** Step 9's ladder plays one lap of `climb` at any height. That belongs to
+M35, beside clips kept in step, because a clip repeated across a crossing is playback logic.
+
+**Exit.** Every document names M34 complete, and none names a contract the code does not have.
+
+Bar **2,731/2,741** (ten skips), 131/131 steps. Every command exits 0. `court` and `room` stage on
+macOS.

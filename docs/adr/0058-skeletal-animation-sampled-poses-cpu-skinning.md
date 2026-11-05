@@ -40,6 +40,11 @@ and draws the result with the existing shaders, in the colour and the shadow pas
 **Playback is the caller's.** Time is seconds derived from a tick count. No engine component
 holds animation state until a second consumer shows what it should hold.
 
+> **2026-11-06:** M34 answered this decision's revisit. Playback is now `anim.Player`, a fixed
+> value that `foundry:animator` saves with a world, under
+> [ADR-0071](0071-playback-is-a-value-a-component-saves.md). Sampling, blending and CPU skinning
+> stand as written.
+
 ## Consequences
 
 - Sampling and skinning are tested with no device, no asset and no entity, and the skinning
