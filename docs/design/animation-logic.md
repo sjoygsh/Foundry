@@ -1085,6 +1085,14 @@ the rig's own guard stops first. It is gone.
 **The court's panel.** The warden fills an `anim.Report` each tick, and the court hands it to the
 overlay. It had not, so F1 there would have said no animation was reported.
 
-**Exit, in part.** All three link kinds play a clip in a sample, and replays hold. **The owner has
-not played it yet,** which is the rest of this exit and criterion 8. Bar 2,731/2,741 (ten skips),
-131/131 steps. Every command exits 0. `court` and `room` stage on macOS.
+**Exit.** All three link kinds play a clip in a sample, and replays hold. Bar 2,731/2,741 (ten
+skips), 131/131 steps. Every command exits 0. `court` and `room` stage on macOS.
+
+**The owner played it (2026-11-05), which is criterion 8.** A rebuilt relocated ReleaseSafe Metal
+install of `3e0e4c3` was played. The owner won the court at tick 1,067 and watched the sandbox for
+2,472 frames; both exited cleanly with nothing dropped. **The warden stays as it is.** Its legs are
+quick, 8 steps a second in a chase, and the owner called that a balance factor doing its job, so the
+stride clip is not lengthened. **The sandbox is fine** as a demonstrator. The owner asked whether the
+orrery's crates are meant to pass part-way through the figures. They are: the orrery is drawn and
+not solid, and moving solid bodies and pushing are M37's (Character and collision extras), not
+M34's.

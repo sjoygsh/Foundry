@@ -1,13 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-10-31
-**Current handoff: M34 Step 9's work is committed, and its exit waits on the owner** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). The owner has a relocated macOS build to play, which is criterion 8. **Stop until they have,** then record what they said, then Step 10 (Windows/Vulkan). M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
+**Last updated:** 2026-11-05
+**Current handoff: M34 Step 9 is complete; stop before Step 10** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). The owner played it on 2026-11-05 (criterion 8): the warden's quick legs stay, as a balance factor, and the sandbox is fine. Step 10 is Windows/Vulkan: §13's budgets and the pins on x86_64. M34 is committed locally and not pushed. The PC has no Foundry clone, so its Step 10 clones again.
 
-**M34 Step 9's work is done (2026-10-31): a clip on a link.**
+**M34 Step 9 is done (2026-10-31; played by the owner 2026-11-05): a clip on a link.**
 - The warden plays a clip for each kind of link, put at `link_t` on each tick, so a jump of any length fits its arc. It lands with a `court:event.land`, heard where it is.
 - `sandbox3d`'s first climber is a walker figure that plays `drop` and `climb` by the same rule, so all three link kinds run in a sample. A figure changes nothing about where a pawn goes.
 - `win`, `caught` and `fell` keep their digests, and every replay and pin holds, on a relocated ReleaseSafe install on Metal too.
 - Bar 2,731/2,741 (ten skips), 131/131 steps. `court` and `room` stage on macOS.
+- The owner played it: the warden's 8 steps a second in a chase stay, a balance factor doing its job. The orrery's crates pass through figures because they are not solid; moving solid bodies are M37's.
 
 
 **M34 Step 8 is done (2026-10-31): the warden's stride and footfalls.**
