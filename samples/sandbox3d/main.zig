@@ -39,7 +39,8 @@
 //! - `FOUNDRY_SANDBOX3D_WORKERS=n` sets the engine's worker count, and
 //!   `FOUNDRY_SANDBOX3D_BACKGROUND=n` its background pool's;
 //! - `FOUNDRY_SANDBOX3D_WALKERS=1|16` selects the M24 cost-run instance count;
-//! - `FOUNDRY_SANDBOX3D_ANIMATORS=32` also advances 32 animators of the pacer's set, with no pose,
+//! - `FOUNDRY_SANDBOX3D_ANIMATORS=32` also advances 32 animators of the pacer's machine, both its
+//!   layers, with no pose,
 //!   in a world of their own, measured as `animation.animators` (`animation-logic.md` §13);
 //! - `FOUNDRY_SANDBOX3D_WALK=tour` proves the player and the generated walker, then replays;
 //! - `FOUNDRY_SANDBOX3D_PANELS=1` starts with the debug overlay shown;
@@ -99,6 +100,7 @@
 
 const std = @import("std");
 
+const anim = @import("anim");
 const app = @import("app");
 const asset = @import("asset");
 const core = @import("core");
@@ -139,17 +141,25 @@ pub const std_options = app.std_options;
 const app_name = "foundry-sandbox3d";
 const config_id = "sandbox3d:config.main";
 const default_headless_frames: u64 = 120;
-/// M34's tour stage (`animation-logic.md` §10): the pacer is saved in mid-stride, the run goes on,
-/// and a fresh world loaded from that save has to do the same thing to the bit.
+/// M34's tour stage (`animation-logic.md` §10), grown in M35 (`animation-states.md` §13): the pacer is
+/// saved in mid-stride, the run goes on, and a fresh world loaded from that save has to do the same
+/// thing to the bit. Then the same across a save in mid-turn, and an M34 save from before machines
+/// has to walk M34's walk.
 const PacerProof = struct {
     bytes: std.ArrayList(u8) = .empty,
     /// The figure's hash when the run was `ticks` past the save.
     expected: ?u64 = null,
+    /// Whether no package is selected beyond the sample's own, so M34's pin applies.
+    base_content: bool = true,
 
     const save_tick = 100;
     const ticks = 600;
     /// By then it has walked its square, and on past the corner it began at.
     const corners = 4;
+    /// Saved by M34's tour code at its `save_tick`, at tag `m34`. With the head still, 600 ticks of it
+    /// are M34's replay pin.
+    const m34_save = @embedFile("testdata/saves/pacer_m34.fsav");
+    const m34_pin: u64 = 0x47f67027ff3a12b0;
 
     fn deinit(self: *PacerProof, gpa: std.mem.Allocator) void {
         self.bytes.deinit(gpa);
@@ -167,31 +177,105 @@ const PacerProof = struct {
         }
     }
 
+    const Run = struct {
+        gpa: std.mem.Allocator,
+        orrery: *Orrery,
+        figure: *pacer_mod.Figure,
+        walk: *@import("physics3d").World,
+        content: *render3d.Content,
+        rigs: *asset.Rigs,
+        delta: core.time.Duration,
+        ticks: u64 = 0,
+
+        /// A fresh world from `bytes`, its figure stood in `walk`. A save from before machines
+        /// becomes one with the pacer's at `refresh`.
+        fn load(gpa: std.mem.Allocator, bytes: []const u8, roles: anytype, store: *const data.Store, jobs: core.Jobs, walk: *@import("physics3d").World, content: *render3d.Content, rigs: *asset.Rigs, delta: core.time.Duration) !Run {
+            const orrery = try gpa.create(Orrery);
+            errdefer gpa.destroy(orrery);
+            try orrery.init(gpa, jobs);
+            errdefer orrery.deinit();
+            orrery.roles = roles;
+            _ = orrery.load(bytes, store) orelse return error.PacerTourFailed;
+            const figure = try gpa.create(pacer_mod.Figure);
+            errdefer gpa.destroy(figure);
+            figure.* = .{};
+            errdefer figure.deinit(gpa, walk, content, rigs);
+            try figure.refresh(gpa, &orrery.world, orrery.role(.pacer), walk, content, rigs);
+            return .{ .gpa = gpa, .orrery = orrery, .figure = figure, .walk = walk, .content = content, .rigs = rigs, .delta = delta };
+        }
+
+        fn deinit(self: *Run) void {
+            self.figure.deinit(self.gpa, self.walk, self.content, self.rigs);
+            self.gpa.destroy(self.figure);
+            self.orrery.deinit();
+            self.gpa.destroy(self.orrery);
+        }
+
+        fn stack(self: *Run) *anim.Stack {
+            return scene.animation.stack(&self.orrery.world, self.orrery.role(.pacer).?).?;
+        }
+
+        fn tick(self: *Run) !void {
+            try self.figure.step(self.gpa, &self.orrery.world, self.walk, self.rigs, self.delta.toSecondsF32());
+            self.orrery.step(.{ .tick = self.ticks, .delta = self.delta });
+            try self.figure.evaluate(&self.orrery.world, self.rigs);
+            self.figure.record(&self.orrery.world);
+            self.ticks += 1;
+        }
+
+        fn corners(self: *Run) u32 {
+            return pacer_mod.paceIn(&self.orrery.world, self.orrery.role(.pacer).?).?.corners;
+        }
+    };
+
     fn prove(self: *PacerProof, gpa: std.mem.Allocator, orrery: *const Orrery, store: *const data.Store, jobs: core.Jobs, walk: *@import("physics3d").World, content: *render3d.Content, rigs: *asset.Rigs, delta: core.time.Duration) !void {
         const expected = self.expected orelse return error.PacerTourFailed;
-        const fresh = try gpa.create(Orrery);
-        defer gpa.destroy(fresh);
-        try fresh.init(gpa, jobs);
-        defer fresh.deinit();
-        fresh.roles = orrery.roles;
-        _ = fresh.load(self.bytes.items, store) orelse return error.PacerTourFailed;
-        const figure = try gpa.create(pacer_mod.Figure);
-        defer gpa.destroy(figure);
-        figure.* = .{};
-        defer figure.deinit(gpa, walk, content, rigs);
-        try figure.refresh(gpa, &fresh.world, fresh.role(.pacer), walk, content, rigs);
-        for (0..ticks) |i| {
-            try figure.step(gpa, &fresh.world, walk, rigs, delta.toSecondsF32());
-            fresh.step(.{ .tick = i, .delta = delta });
-            try figure.evaluate(&fresh.world, rigs);
-            figure.record(&fresh.world);
-        }
-        const pace = pacer_mod.paceIn(&fresh.world, fresh.role(.pacer).?).?;
-        if (figure.hash != expected or pace.corners < corners) {
-            log.warn("tour: FAIL pacer ({x:0>16} after the load, {x:0>16} without it, {d} corners)", .{ figure.hash, expected, pace.corners });
+        var live = try Run.load(gpa, self.bytes.items, orrery.roles, store, jobs, walk, content, rigs, delta);
+        defer live.deinit();
+        for (0..ticks) |_| try live.tick();
+        if (live.figure.hash != expected or live.corners() < corners) {
+            log.warn("tour: FAIL pacer ({x:0>16} after the load, {x:0>16} without it, {d} corners)", .{ live.figure.hash, expected, live.corners() });
             return error.PacerTourFailed;
         }
-        log.info("tour: pacer pass ({d} ticks across a save and a load, {d} corners, {d} footfalls, {d} bytes, replay {x:0>16})", .{ ticks, pace.corners, figure.footfalls, self.bytes.items.len, figure.hash });
+        log.info("tour: pacer pass ({d} ticks across a save and a load, {d} corners, {d} footfalls, {d} bytes, replay {x:0>16})", .{ ticks, live.corners(), live.figure.footfalls, self.bytes.items.len, live.figure.hash });
+
+        // On into the next corner, and saved halfway through its turn.
+        const turn = anim.clipName("turn");
+        var guard: u32 = 0;
+        while (live.stack().layers[0].state != turn or live.stack().layers[0].state_ticks != 24) : (guard += 1) {
+            if (guard > 2000) return error.PacerTourFailed;
+            try live.tick();
+        }
+        var turning: std.ArrayList(u8) = .empty;
+        defer turning.deinit(gpa);
+        _ = try live.orrery.save(&turning);
+        live.figure.hash = pacer_mod.Figure.hash_seed;
+        const at = live.corners();
+        for (0..ticks) |_| try live.tick();
+        var turned = try Run.load(gpa, turning.items, orrery.roles, store, jobs, walk, content, rigs, delta);
+        defer turned.deinit();
+        for (0..ticks) |_| try turned.tick();
+        if (turned.figure.hash != live.figure.hash or turned.corners() <= at) {
+            log.warn("tour: FAIL pacer mid-turn ({x:0>16} after the load, {x:0>16} without it)", .{ turned.figure.hash, live.figure.hash });
+            return error.PacerTourFailed;
+        }
+        log.info("tour: pacer mid-turn pass ({d} ticks across the turn's end and its fade, {d} bytes, replay {x:0>16})", .{ ticks, turning.items.len, turned.figure.hash });
+
+        // M34's save: no machine in it, and the head held still so the pose is the body's alone.
+        var old = try Run.load(gpa, m34_save, orrery.roles, store, jobs, walk, content, rigs, delta);
+        defer old.deinit();
+        try anim.machine.set(old.stack(), old.figure.machineOf(rigs).?.*, anim.clipName("look"), 0);
+        for (0..ticks) |_| try old.tick();
+        if (!self.base_content) {
+            // A package may restate the set or the machine, and then M34's walk is not this one.
+            log.info("tour: pacer M34 save carries on ({d} ticks, {d} corners, replay {x:0>16}); M34's pin is the base content's, and a package is selected", .{ ticks, old.corners(), old.figure.hash });
+            return;
+        }
+        if (old.figure.hash != m34_pin) {
+            log.warn("tour: FAIL pacer from M34's save ({x:0>16}, M34's pin {x:0>16})", .{ old.figure.hash, m34_pin });
+            return error.PacerTourFailed;
+        }
+        log.info("tour: pacer M34 save pass ({d} ticks from a version 1 save, {d} bytes, M34's replay {x:0>16})", .{ ticks, m34_save.len, old.figure.hash });
     }
 };
 
@@ -322,6 +406,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     defer engine.deinit();
 
     var sample = try Sample.init(gpa, engine, options);
+    // M34's pin is the base content's walk; a selected package may restate it.
+    sample.pacer_proof.base_content = selected.items.len == 0;
     defer sample.deinit(engine);
     if (frameLimit(engine, headless) == null and os.envVar("FOUNDRY_SANDBOX3D_KEYS") == null and os.envVar("FOUNDRY_SANDBOX3D_WALK") == null) sample.rememberPanels(engine);
     try sample.load(engine);
@@ -1299,13 +1385,13 @@ const Sample = struct {
         if (bench.failed) return;
         if (!bench.built) {
             const e = self.pacer.entity orelse return;
-            const set = (scene.animation.animatorOf(&self.orrery.world, e) orelse return).set;
-            bench.start(self.gpa, set, &self.rigs, dt) catch |err| {
+            const animator = scene.animation.animatorOf(&self.orrery.world, e) orelse return;
+            bench.start(self.gpa, animator.set, animator.machine, &self.rigs, dt) catch |err| {
                 log.warn("animators: not made ({t}); the cost run is off", .{err});
                 bench.failed = true;
                 return;
             };
-            log.info("animators: {d} of the pacer's set, advanced with no pose", .{animators_mod.count});
+            log.info("animators: {d} of the pacer's machine, both layers, advanced with no pose", .{animators_mod.count});
         }
         const scope = engine.beginScope("animation.animators");
         defer scope.end();

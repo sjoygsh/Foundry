@@ -165,6 +165,8 @@ pub const Figure = struct {
     stride_speed: f32 = 0,
     player: anim.Player = .{},
     link_clip: u64 = 0,
+    /// How many laps of it the crossing it is on is fitted to.
+    link_laps: u32 = 1,
     link_clips: [link_kinds]u64 = @splat(0),
     last: Vec3 = .zero,
     yaw: f32 = 0,
@@ -194,11 +196,15 @@ pub const Figure = struct {
                 self.played[self.kindOf(crowd, view)] += 1;
             }
             self.link_clip = clip;
-            self.player.seek(rig.*, view.link_t, dt, &out);
+            // A climb is fitted to its ladder: as many laps as the rungs it rises (`animation-states.md`
+            // §13). A clip with no `rise` is one lap, which is what `seek` is.
+            const link = crowd.mesh.?.links[view.link];
+            self.link_laps = rig.lapsFor(clip, link.to.y - link.from.y);
+            self.player.seekLaps(rig.*, view.link_t, self.link_laps, dt, &out);
         } else if (self.link_clip != 0) {
             // The tick it lands: the crowd has already said it is off the link.
             self.link_clip = 0;
-            self.player.seek(rig.*, 1, dt, &out);
+            self.player.seekLaps(rig.*, 1, self.link_laps, dt, &out);
         } else {
             const speed = if (walking) @min(length / dt / self.stride_speed, anim.max_speed) else 1;
             const wanted = if (walking) stride_clip else idle_clip;

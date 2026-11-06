@@ -449,7 +449,14 @@ test "crowd: sixteen pawns go round, one by the drop and the ladder, keeping apa
             const clip = anim.clipName(if (kind == .drop) "drop" else "climb");
             try testing.expect(figure.player.playing(clip));
             const duration = rig.find(clip).?.clip.duration;
-            try testing.expectApproxEqAbs(climber.link_t * duration, figure.player.seconds(rig.*, figure.player.newest), 2e-3);
+            // The 0.6 m ladder is two laps of a climb that rises 0.3 m one (`animation-states.md` §13).
+            const laps: u32 = if (kind == .ladder) 2 else 1;
+            try testing.expectEqual(laps, figure.link_laps);
+            const into = climber.link_t * @as(f32, @floatFromInt(laps));
+            const lap = into - @floor(into);
+            // A lap's end is its start: either side of the seam is the same pose.
+            const at = if (lap == 0 and into > 0) duration else lap * duration;
+            try testing.expectApproxEqAbs(at, figure.player.seconds(rig.*, figure.player.newest), 2e-3);
         }
         for (demo.pawns[0..s.count], 0..) |a, i| {
             const va = crowd.agent(a.handle).?;

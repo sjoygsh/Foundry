@@ -1,7 +1,18 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 7 is complete; stop before Step 8** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 8 is `sandbox3d`'s pacer on a machine, with the look layer, saves mid-turn and from v1, the `pacer_back` mod, the climber's `lapsFor`, and 32 animators. No sample plays a new clip yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 8 is complete; stop before Step 9** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 9 is the court: the warden on `court:warden.machine`, with 5 parameters, and the owner plays it. **Open for the owner:** the 32 animators read 0.173–0.231 ms p95 on the M5, against a 0.10 ms budget. That is §16's revisit of ADR-0071, which belongs to M100. The PC holds no Foundry clone.
+
+**M35 Step 8 is done (2026-11-06): the pacer on a machine.**
+- `sandbox3d:pacer.machine` does what `pacer.zig` decided in M34. An additive `look` layer turns the head, and `pacer.zig` keeps only the body.
+- With the head still, M34's pins hold: `47f67027ff3a12b0`, and `ef5c24337f5f2925` with `pacer_quick`.
+- A save from M34's own code, `testdata/saves/pacer_m34.fsav`, is adopted at `ticks + 1` and continues to that pin.
+- The tour proves three saves: mid-stride, mid-turn, and M34's.
+- `pacer_back`, a content mod, mirrors the square with no code. It is pinned at `59632bcff2461113`.
+- `pacer_quick` now restates the set's version 2 lists. The climber fits its ladder in two laps by `lapsFor`.
+- Relocated ReleaseSafe on Metal passes every proof. The 32 animators read 0.17–0.23 ms p95, against 0.030 ms for `anim` alone in a tight loop.
+- Bar 2,811/2,821 (ten skips), 132/132 steps. `court` and `room` stage.
+
 
 **M35 Step 7 is done (2026-11-06): the clips.**
 - `scripts/m35/clips.py` generates `run` (0.7 s, 1.3 m a lap), `reach` (the upper body only), and the additive `pant` and `look`. The walker and the warden append them after M34's seven, through M34's `build`.

@@ -13,5 +13,14 @@ foundry:animation_set sandbox3d:walker.set {
         { name "turn" loop false motion true }
         { name "jump" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
         { name "drop" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+        { name "run" motion true events [
+            { at 0.0 event sandbox3d:event.footfall }
+            { at 0.5 event sandbox3d:event.footfall }
+        ] }
     ]
+    # M35's version 2 lists, restated with the rest: a record a mod overrides is the mod's whole.
+    masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]
+    sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
+    additive [ { clip "pant" } { clip "look" } ]
+    rises [ { clip "climb" rise 0.3 } ]
 }

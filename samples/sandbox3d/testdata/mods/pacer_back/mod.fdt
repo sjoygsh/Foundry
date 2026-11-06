@@ -1,0 +1,7 @@
+foundry:mod pacer_back:content {
+    name     "Pacer Back"
+    version  1
+    license  "Apache-2.0"
+    summary  "A pacer that walks every other side backward: one machine overridden, no code."
+    requires [ { id sandbox3d:content } ]
+}

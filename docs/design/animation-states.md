@@ -1168,3 +1168,123 @@ The sandbox's mutations failed `sandbox3d-test`, and the court's failed `court-t
 **Not yet:** the pacer's machine (Step 8) and the warden's (Step 9).
 
 **Bar:** 2,807/2,817 (ten skips), 131/131 steps. `sandbox3d-test` and `court-test` gain one test each. The samples' content changed, so `court` and `room` were staged with `dist` on macOS, ReleaseSafe on Metal, and both exited 0.
+
+## Resolution — Step 8: `sandbox3d`: the pacer on a machine (2026-11-06)
+
+§13 is built:
+- the pacer plays `sandbox3d:pacer.machine`;
+- its head looks about on an additive layer;
+- the tour proves three saves;
+- `pacer_back` changes its walk with no code;
+- the climber fits its climb;
+- the 32 animators each play the machine with both layers.
+
+**The machine,** in `sandbox3d.fdt`, says what `pacer.zig`'s `decide` did:
+- `stride` until `{ quantity "laps" at_least 1.5 }`, then a cut to `turn`;
+- `turn` until `{ quantity "finished" is 1 }`, then a fade of 0.1 s to `stride`;
+- entry `turn`, so a fresh figure begins on a corner as M34's did.
+
+A second layer, additive, plays `look` with `weight_param "look"` (default 1) and `weight_fade 1`.
+The animator record names the machine. `pacer.main` loses `strides`, which the schema now
+defaults, and `turning` and `ticks` stay in `Pace` only for the shape of an older save.
+
+**`pacer.zig` keeps the body.**
+- `refresh` holds the machine with `Rigs.acquireMachine` and refuses `MissingMachine` by name. The
+  M34 refusals `MissingStride`, `MissingTurn` and `TurnLoops` are gone: the machine's
+  validation names a missing clip, and what plays is content now.
+- `step` advances the world and carries out the root motion, as before. A corner is counted on the
+  tick the base leaves any state that plays `turn`, so a machine with two turning states counts
+  both.
+- `scratch` holds two poses.
+
+**This sharpens the design: M34's pins hold with the head held still, and move with it turning.**
+- §13 asks for the look layer at weight 1 and for the two pins to hold. They can't both hold, since
+  a turned head is a different pose in the hash.
+- A stack skips a layer at weight 0, and its base alone evaluates exactly as its player does
+  (Step 2). So with `look` set to 0, the machine's walk is M34's to the bit:
+  - `47f67027ff3a12b0`, and `ef5c24337f5f2925` with `pacer_quick`;
+  - 600 ticks from tick 100, in Debug and ReleaseSafe alike.
+- Those are the proof that the machine does what the code did, tick for tick. With the head
+  turning, the feet are identical tick for tick, and only the pose differs.
+
+**This sharpens the design: M34's tick count and the machine's differ by one.**
+- M34 counted a side's ticks from the tick after it began. The machine's `state_ticks` counts the
+  tick it began on. Both compare against `ticks × dt` on the same ticks.
+- So a version 1 save is adopted at `state_ticks = ticks + 1` in mid-stride. A mutation dropping
+  the `+ 1` fails the M34-save test.
+
+**The three saves.**
+- **Mid-stride:** M34's save at tick 100, as before.
+- **Mid-turn and mid-fade:** the tests add saves at ticks 47, the first turn's last, and 52, in the
+  fade after it with the head's layer still fading in. Each continues byte-identical for 600
+  ticks. The tour runs on into its next corner, saves at the turn's 24th tick, and requires a
+  load of that save to match the live run across the turn's end and the fade.
+- **Version 1:** `testdata/saves/pacer_m34.fsav`, 3,675 bytes, was saved by M34's own tour code from
+  a scratch worktree at tag `m34`. It is embedded in the test and in the sample, so a relocated
+  install has it.
+  - `refresh` finds no machine named, gives it the pacer's, and puts the base where `turning` and
+    `ticks` say. The player is left as saved.
+  - With the head still, 600 ticks reproduce M34's pin `47f67027ff3a12b0`. With it turning, the
+    layer's first weight is one tick of its fade: no pop.
+  - A selected package may restate the walk, so the tour requires that pin only when no package is
+    selected. Otherwise it logs the run and says why there is no pin to compare.
+
+**`pacer_back`,** a content mod in `testdata/mods/pacer_back`, restates the machine:
+- four states, with `back` playing `stride` at speed −1;
+- every other side is walked backward, with travel reversed, turning left at each corner as
+  before.
+
+The square is mirrored across its first side, north instead of south, and still closes. A test
+holds each corner against the plain square's mirror, and pins 600 ticks at `59632bcff2461113`,
+Debug and ReleaseSafe alike. It is built and installed beside `pacer_quick`.
+
+**`pacer_quick` restates the set's version 2 lists.** A mod that overrides a record overrides all of
+it. Its M34 restatement had no `additive`, so `look` was not additive under it, and the pacer's
+machine refused to build. A mutation dropping the line fails both `pacer_quick` tests.
+
+**The climber** seeks its ladder with `seekLaps(t, lapsFor(climb, to.y − from.y))`. The 0.6 m ladder
+is two laps of a climb that rises 0.3 m. Jumps and drops have no rise, so they stay at one lap,
+which is `seek`. The crowd test now checks the lap count and folds the time into the lap.
+
+**The 32 animators** each name the set and the machine. Each is primed by nine ticks more than the
+one before it, so their corners and footfalls are spread out.
+
+**From the relocated ReleaseSafe install on Metal,** windowed:
+- **The tour** passes all three saves:
+  - mid-stride replay `e46c09dc62b1eeac`, with 5 corners, 18 footfalls and a 9,280-byte save
+    (3,675 at version 1);
+  - mid-turn `222e0a9b12fd152c`;
+  - the M34 save `47f67027ff3a12b0`, M34's pin.
+  - The player's `cb99ccfcf2b6d6c3` and the walker's `655e865f98779129` hold.
+- **With `pacer_quick`** it passes: `9cdfec98342c5bea` at 31 footfalls, and mid-turn
+  `b026642288afb59c`.
+- **With `pacer_back`** and no code, the pacer's position at frames 200, 320, 440 and 560 is
+  (1.765, 0.665), (1.765, −0.085), (2.650, −0.085), (2.650, 0.800). The plain run gives
+  (1.765, 0.925), (1.765, 1.685), (2.650, 1.685), (2.650, 0.800): the same square, mirrored.
+
+**Budgets, measured on the M5 in that install, p95 at ReleaseSafe in the paced loop:**
+
+| What | Four runs | Budget |
+| --- | --- | --- |
+| `animation`: the pacer's advance, evaluate and skin matrices | 0.016–0.020 ms | 0.10 ms |
+| `render.skin`, one figure | 0.102–0.123 ms | 0.25 ms |
+| `animation.animators`: 32 animators, each the two-layer machine, no pose | **0.173–0.231 ms** | 0.10 ms |
+
+**The 32 animators pass their budget on the M5.** Their medians are 0.079–0.114 ms. M34's bare
+players read 0.042 ms p95 here. In a tight ReleaseSafe loop in `anim` alone, 32 machines take
+0.030 ms a tick against 0.018 ms for 32 bare players. So the machine's own work is not most of it.
+What the frame adds, plausibly cold caches over 872-byte animators and `scene`'s per-animator
+lookups, is not yet measured apart. §16 says this is ADR-0071's second revisit, and M100's. It is
+put to the owner with this step. Step 10 reads the i3, which is the machine M34's budget was set
+on.
+
+**Guards verified by mutation:**
+- the adopted `+ 1`;
+- adopting at all;
+- corners counted by clip, not by state name;
+- the climber's `lapsFor`;
+- `pacer_quick`'s additive list;
+- the look layer's fade (no pop);
+- `MissingMachine`, held by its test.
+
+**Bar:** 2,811/2,821 (ten skips), 132/132 steps, `pacer_back` being a new one. `fdt-check` first refused the two new machines' layout, which `fpack fmt` fixed. The samples' content changed, so `court` and `room` were staged with `dist` on macOS, ReleaseSafe on Metal, and both exited 0.
