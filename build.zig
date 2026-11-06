@@ -1607,7 +1607,7 @@ pub fn build(b: *std.Build) void {
 
     // A rig from a compiled package, with no renderer in the import list: that is its point.
     const rigs_mod = b.createModule(.{ .root_source_file = b.path("engine/tests/animation_rigs.zig"), .target = target, .optimize = optimize });
-    for ([_][]const u8{ "core", "data", "platform", "asset", "author", "anim" }) |name| rigs_mod.addImport(name, modules.get(name).?);
+    for ([_][]const u8{ "core", "data", "platform", "asset", "author", "anim", "scene" }) |name| rigs_mod.addImport(name, modules.get(name).?);
     const rigs_tests = b.addTest(.{ .root_module = rigs_mod });
     check_step.dependOn(&rigs_tests.step);
     const rigs_run = b.addRunArtifact(rigs_tests);

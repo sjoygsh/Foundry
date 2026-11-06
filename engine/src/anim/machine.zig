@@ -316,7 +316,7 @@ fn choose(stack: *Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usi
         const wanted = state.speed * value(stack, machine, state.speed_param) / per;
         const rate = std.math.clamp(wanted, -player_mod.max_speed, player_mod.max_speed);
         // `validate` made the state's clip the layer's to play, and the rate is in range.
-        own.player.setSpeed(rig, if (std.math.isFinite(rate)) rate else 0) catch unreachable;
+        stack.players[i].setSpeed(rig, if (std.math.isFinite(rate)) rate else 0) catch unreachable;
     }
     if (state.seek_param != 0) return value(stack, machine, state.seek_param);
     return null;
@@ -326,7 +326,7 @@ fn choose(stack: *Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usi
 /// from before machines carries on, and otherwise its entry, cut.
 fn adoptState(stack: *Stack, rig: Rig, layer: MachineLayer, i: usize) void {
     const own = &stack.layers[i];
-    const player = &own.player;
+    const player = &stack.players[i];
     if (player.newest < player.channels.len and Player.usableIn(rig, player.channels[player.newest]) != null) {
         const clip = player.channels[player.newest].clip;
         for (layer.states) |*state| {
@@ -348,7 +348,7 @@ fn enter(stack: *Stack, rig: Rig, i: usize, state: *const State, how: Entry) voi
     const own = &stack.layers[i];
     // `validate` made every state's clip one the layer may play, its speed in range and its fade
     // valid, so nothing here is refused.
-    own.player.play(rig, state.clip, .{ .fade = how.fade, .phase = how.phase, .speed = state.speed }) catch unreachable;
+    stack.players[i].play(rig, state.clip, .{ .fade = how.fade, .phase = how.phase, .speed = state.speed }) catch unreachable;
     own.state = state.name;
     own.state_ticks = 0;
 }
@@ -378,7 +378,7 @@ fn meets(stack: *const Stack, rig: Rig, machine: Machine, layer: MachineLayer, i
         .param => return compare(value(stack, machine, condition.param), condition.compare, condition.value),
         .finished => {
             const state = layer.state(own.state).?;
-            const done: f32 = if (own.player.playing(state.clip) and own.player.finished(rig)) 1 else 0;
+            const done: f32 = if (stack.players[i].playing(state.clip) and stack.players[i].finished(rig)) 1 else 0;
             return compare(done, condition.compare, condition.value);
         },
         .laps => {

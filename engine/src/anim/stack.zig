@@ -48,9 +48,11 @@ pub const Spec = struct {
     fade: f32 = 0,
 };
 
-/// `extern`, since `foundry:animator` lays its fields over this exactly (§8).
+/// Where one layer has got, besides its player. `extern`, since `foundry:animator` lays its fields
+/// over a stack exactly (§8). The player is apart, in `Stack.players`: a `Player` ends in four bytes
+/// of padding, and a component's fields, derived one by one, could not reproduce a struct laid out
+/// after it.
 pub const Layer = extern struct {
-    player: Player = .{},
     /// 0 to 1. The base's is always 1.
     weight: f32 = 0,
     /// Where `weight` is going.
@@ -103,13 +105,15 @@ pub const Param = extern struct {
 };
 
 pub const Stack = extern struct {
+    /// Each layer's player, base first.
+    players: [max_layers]Player = @splat(.{}),
     layers: [max_layers]Layer = .{ .{ .weight = 1, .target = 1 }, .{}, .{} },
     /// A machine's parameters, in its order once it has run (`machine.zig`).
     params: [max_params]Param = @splat(.{}),
 
     /// The base layer's player, which is all a one-layer stack is.
     pub fn base(self: *Stack) *Player {
-        return &self.layers[0].player;
+        return &self.players[0];
     }
 
     /// `Player.play` on `layer`, refusing a clip that layer cannot play. A refusal changes nothing.
@@ -119,7 +123,7 @@ pub const Stack = extern struct {
         if (!fits(entry, specs[layer].mode, layer)) {
             return if (entry.motion and layer != 0) error.MotionOffBase else error.ModeMismatch;
         }
-        try self.layers[layer].player.play(rig, name, options);
+        try self.players[layer].play(rig, name, options);
     }
 
     /// Where `layer`'s weight goes, from 0 to 1, at its spec's fade. The base's stays at 1. A value
@@ -141,10 +145,11 @@ pub const Stack = extern struct {
     /// machine calls this a layer at a time (`machine.zig`).
     pub fn advanceLayer(self: *Stack, rig: Rig, specs: []const Spec, i: usize, dt: f32, seek: ?f32, step: *Step) void {
         const layer = &self.layers[i];
+        const player = &self.players[i];
         self.repair(rig, specs, i, dt, step);
-        if (i != 0 and !layer.player.hasClip()) return;
+        if (i != 0 and !player.hasClip()) return;
         var own: Step = undefined;
-        if (seek) |fraction| layer.player.seek(rig, fraction, dt, &own) else layer.player.advance(rig, dt, &own);
+        if (seek) |fraction| player.seek(rig, fraction, dt, &own) else player.advance(rig, dt, &own);
         step.lost +|= own.lost;
         step.dropped +|= own.dropped;
         if (i == 0) step.motion = own.motion;
@@ -156,19 +161,36 @@ pub const Stack = extern struct {
     /// The pose: the base, then each layer above it with weight, mixed in order. `scratch` is two
     /// poses the caller lends, and `out` may be followed by `skinMatrices`.
     pub fn evaluate(self: *const Stack, rig: Rig, specs: []const Spec, scratch: [2]Pose, out: Pose) void {
-        self.layers[0].player.evaluate(rig, scratch[1], out);
+        self.players[0].evaluate(rig, scratch[1], out);
         const count = @min(specs.len, max_layers);
         for (1..count) |i| {
-            const layer = &self.layers[i];
-            const weight = unit(layer.weight);
-            if (weight == 0 or !layer.player.hasWeight(rig)) continue;
-            layer.player.evaluate(rig, scratch[1], scratch[0]);
+            const player = &self.players[i];
+            const weight = unit(self.layers[i].weight);
+            if (weight == 0 or !player.hasWeight(rig)) continue;
+            player.evaluate(rig, scratch[1], scratch[0]);
             const mask = if (specs[i].mask == 0) null else if (rig.mask(specs[i].mask)) |m| m.weights else continue;
             switch (specs[i].mode) {
                 .override => pose_mod.blendMasked(out, scratch[0], mask, weight, out),
                 .additive => pose_mod.addMasked(out, scratch[0], mask, weight, out),
             }
         }
+    }
+
+    /// Whether a stack read from outside is one a load may take: every player sane, every weight and
+    /// target in `[0, 1]`, and every parameter finite, an empty slot holding zero. A stack that
+    /// fails is refused; one written raw later is repaired by `advance`.
+    pub fn sane(self: *const Stack) bool {
+        for (&self.players) |*player| {
+            if (!player.sane()) return false;
+        }
+        for (self.layers) |layer| {
+            if (!inUnit(layer.weight) or !inUnit(layer.target)) return false;
+        }
+        for (self.params) |param| {
+            if (!std.math.isFinite(param.value)) return false;
+            if (param.name == 0 and param.value != 0) return false;
+        }
+        return true;
     }
 
     /// Makes one layer safe to tick: its weight moved toward its target and both held in range, and
@@ -189,7 +211,7 @@ pub const Stack = extern struct {
                 layer.weight = if (layer.weight < layer.target) @min(layer.target, layer.weight + by) else @max(layer.target, layer.weight - by);
             }
         }
-        for (&layer.player.channels) |*channel| {
+        for (&self.players[i].channels) |*channel| {
             if (channel.clip == 0) continue;
             if (Player.usableIn(rig, channel.*)) |entry| {
                 if (fits(entry, specs[i].mode, i)) continue;
@@ -209,6 +231,11 @@ pub const Stack = extern struct {
 fn fits(entry: *const RigClip, mode: Mode, i: usize) bool {
     if (entry.motion and i != 0) return false;
     return entry.additive == (mode == .additive);
+}
+
+/// Written so a NaN is false.
+fn inUnit(value: f32) bool {
+    return value >= 0 and value <= 1;
 }
 
 /// Written so a NaN is 0.

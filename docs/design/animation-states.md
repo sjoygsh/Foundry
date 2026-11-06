@@ -306,6 +306,11 @@ plays by hand keeps doing so.
 value that is not finite, or a parameter whose name is zero but whose value is not. `advance`
 repairs what a raw write left, as M34's does.
 
+*Note, 2026-11-06 (Step 5):* the table's shape is sharpened in Step 5's Resolution. `l1` and `l2`
+are the two players alone; every layer's weight, target, state and ticks are `s0`, `s1` and `s2`;
+and `anim.Stack` holds its three players before its three layers, so the fields can lie over it.
+A save grows by 664 bytes an animator, not about 450.
+
 ## 9. `foundry:animation_set` version 2
 
 > **2026-11-06, Step 4:** `sync`, `additive`, `reference` and `rise` are **not fields of
@@ -964,3 +969,86 @@ the additive layer in under the `legs` mask.
 No sample record names version 2 or a machine until Step 7.
 
 **Bar:** 2,791/2,801 (ten skips), 131/131 steps. `asset-test` is 236/236 and `rigs-test` 20/20, ten of them new. No sample's content changed, so no `dist` staging.
+
+## Resolution — Step 5: `foundry:animator` version 2 (2026-11-06)
+
+`scene` now covers §8. The code is in `engine/src/scene/animation.zig`, with `derive.zig` and
+`anim.Stack` changed for it. Its tests are in that file, and one more is in
+`engine/tests/animation_rigs.zig` over the real `Rigs`.
+
+**This sharpens the design: `anim.Stack` holds its players apart from its layers.**
+- An `anim.Player` is 144 bytes and ends in four bytes of padding. A component's fields are derived
+  one by one, so a field appended after `dt` lands at 140, where Step 2's `Layer.weight` was at 144.
+  No derived struct could have lain over `Layer { player, weight, … }`.
+- So `Stack` is now `players: [3]Player`, then `layers: [3]Layer`, then `params: [8]Param`. `Layer`
+  is `{ weight, target, state, state_ticks }`. Each block is a whole number of 8-byte words, so a
+  nested field of each shape sits where the stack's does.
+- `stack.layers[i].player` became `stack.players[i]`. No behaviour changed: `anim-test` is 117/117
+  as before, and the warden's replay pin holds, since the replay hashes fields and not memory.
+
+**The fields.** Version 2 appends fourteen, each `since 2`:
+- `l1` and `l2`: the players of layers 1 and 2, as `c0`…`c3`, `fade`, `newest` and `dt`
+  (`LayerPlayer`);
+- `s0`, `s1` and `s2`: every layer's `weight`, `target`, `state` and `ticks` (`LayerState`). `s0`
+  defaults to a weight and target of 1;
+- `p0` … `p7`: `{ name value }` (`LayerParam`);
+- `machine`: an ID, none by default.
+
+From `c0` to `p7` the fields lie over `anim.Stack` as one span. The base keeps version 1's offsets,
+so `player` is unchanged. The layout check asserts every offset of the three mirrors and of the
+span, and `machine` lies past it.
+
+**`derive` gains `component_since`,** a struct literal from a field's name to the version that
+added it. Before this, no engine component had reached version 2, and a derived appended field
+would have said `since 1`. A name that is not a field is a compile error. `fieldsOf` raises
+comptime's branch quota, which the animator's forty nested defaults exceed.
+
+**The calls.**
+- `RigSource` gains `lookup_machine`, which is optional. `rigSource` fills it when the source has
+  `lookupMachine`, as `asset.Rigs` does. A test in `rigs-test` holds that, so a rename in `asset`
+  cannot quietly empty it.
+- `advance` runs `anim.machine.advance` for an animator that names a machine, and the base player
+  alone for one that does not. Order is still by entity.
+- An animator whose machine does not resolve is left whole and counted in `unresolved`, as one
+  whose set is gone is. Its base alone would carry on without the layers and parameters that steer
+  it.
+- `Summary` gains `transitions`, `reentered` and `params_dropped`, summed from each `Step`.
+- `stack(world, entity)` returns the `*anim.Stack`, and `Animator.stack()` gives the same.
+  `player` stays the base layer's.
+- `evaluate` keeps its signature. For an animator with a machine, `scratch` must hold twice the
+  joint count, since a stack mixes in two poses. A shorter one, or a machine that is gone, answers
+  null.
+
+**The deserializer** refuses what `anim.Stack.sane` refuses. That is new in `anim`: every player
+sane, every weight and target in `[0, 1]`, and every parameter finite, with an empty slot holding
+zero. It is held by six new cases in the bad-save test, and by `stack_tests`' own test.
+
+**Saves.**
+- A version 1 save loads: `save.zig` takes a saved type whose fields are a prefix of the registered
+  one's. Every version 2 field reads as its default, and the animator then runs tick for tick as
+  M34's hand-driven player would.
+- A world saved mid-transition continues byte-identical over 240 ticks, field by field. At the
+  save, the base was ten ticks into a half-second fade and the wave layer was mid-fade. Every
+  field is equal after the load.
+- A saved parameter the machine lacks is dropped and counted, and the kept ones are found by name
+  after a reorder.
+
+**This corrects the design's size: a save grows by 664 bytes an animator, not about 450.** The stack
+past the base player is 488 bytes, but a save gives each field a slot of its own. A test pins 208
+bytes an animator at version 1 and 872 at version 2, measured as two animators less one, so the
+type table cancels. ADR-0071 names no size among its revisits.
+
+**Guards verified by mutation:**
+- the deserializer's whole-stack check;
+- `sane`'s empty-slot rule;
+- `advance` through the machine;
+- the machine's `since`, and `derive`'s `since` itself;
+- `evaluate`'s two scratch poses;
+- the layout check, by swapping `l1` and `l2`, which fails to compile;
+- `s0`'s default weight;
+- a gone machine left unadvanced.
+
+**Not yet:** the panel's layers, which are Step 6. No sample names a machine until Steps 8 and 9,
+and no sample's content changed.
+
+**Bar:** 2,802/2,812 (ten skips), 131/131 steps. `scene-test` is 135/135, nine of them new, `anim-test` 118/118 and `rigs-test` 21/21. No sample's content changed, so no `dist` staging.

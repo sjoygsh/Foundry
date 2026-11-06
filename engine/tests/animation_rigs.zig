@@ -9,6 +9,7 @@ const author = @import("author");
 const core = @import("core");
 const data = @import("data");
 const platform = @import("platform");
+const scene = @import("scene");
 
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -556,10 +557,47 @@ test "a machine compiled from text builds against a rig and runs, with no render
     try anim.machine.set(&stack, machine.*, anim.clipName("near"), 1);
     for (0..30) |_| anim.machine.advance(&stack, rig.*, machine.*, 1.0 / 60.0, &step);
     try testing.expectEqual(anim.clipName("walk"), stack.layers[0].state);
-    const base = &stack.layers[0].player;
+    const base = &stack.players[0];
     try testing.expectApproxEqAbs(@as(f32, 2), base.channels[base.newest].speed, 1e-5);
     try testing.expectEqual(@as(f32, 1), stack.layers[1].weight);
-    try testing.expect(stack.layers[1].player.playing(anim.clipName("idle")));
+    try testing.expect(stack.players[1].playing(anim.clipName("idle")));
+}
+
+test "a world's animator plays a machine from compiled content, through `Rigs` as its source" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    // The machine holds its rig.
+    const handle = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    defer s.rigs.releaseMachine(handle);
+    const source = scene.animation.rigSource(&s.rigs);
+    try testing.expect(source.lookup_machine != null);
+
+    var schemas: data.Registry = .init(gpa, .default);
+    defer schemas.deinit(gpa);
+    var world: scene.World = .init(gpa, &schemas, .{});
+    defer world.deinit();
+    const types = try world.enableAnimation();
+    const entity = try world.create();
+    var animator: scene.animation.Animator = .{ .set = id("demo:set"), .machine = id("demo:machine") };
+    _ = try world.addComponent(entity, types.animator, std.mem.asBytes(&animator));
+
+    const machine = s.rigs.getMachine(handle).?;
+    try anim.machine.set(scene.animation.stack(&world, entity).?, machine.*, anim.clipName("speed"), 2.4);
+    try anim.machine.set(scene.animation.stack(&world, entity).?, machine.*, anim.clipName("near"), 1);
+    for (0..30) |_| {
+        const summary = try scene.animation.advance(&world, source, 1.0 / 60.0, .{});
+        try testing.expectEqual(@as(u32, 0), summary.unresolved);
+    }
+    const stack = scene.animation.stack(&world, entity).?;
+    try testing.expectEqual(anim.clipName("walk"), stack.layers[0].state);
+    try testing.expectEqual(@as(f32, 1), stack.layers[1].weight);
+    var scratch: [6]core.math.Transform = undefined;
+    var out: [3]core.math.Transform = undefined;
+    try testing.expectEqual(@as(?usize, 3), scene.animation.evaluate(&world, entity, source, &scratch, &out));
 }
 
 test "every machine refusal that needs the rig is named, and leaves nothing behind" {

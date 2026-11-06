@@ -54,6 +54,10 @@ pub const SerializeError = component.SerializeError;
 /// it is how a component grows a field without invalidating content and saves written
 /// against the old shape (I8) — and `data.Registry` refuses a version bump that is not
 /// additive, so the mistake is caught at registration rather than at load.
+///
+/// `pub const component_since` names the version each appended field arrived in, as a struct
+/// literal of field names, `.{ .regen = 2 }`; a field it does not name is version 1's. Only a
+/// component's own fields take one, since a nested type's shape is fixed at every version.
 pub fn componentType(comptime T: type) ComponentTypeInfo {
     return Info(T).value;
 }
@@ -104,6 +108,9 @@ fn allDefaulted(comptime T: type) bool {
 
 fn fieldsOf(comptime T: type) []const data.Field {
     comptime {
+        // A wide component, `foundry:animator`'s forty nested structs, walks its defaults past
+        // the default quota.
+        @setEvalBranchQuota(100_000);
         const info = switch (@typeInfo(T)) {
             .@"struct" => |s| s,
             else => @compileError(@typeName(T) ++ " is not a struct, so it cannot be a component type"),
@@ -123,11 +130,23 @@ fn fieldsOf(comptime T: type) []const data.Field {
                 .name = f.name,
                 .type = fieldTypeOf(f.type, @typeName(T) ++ "." ++ f.name),
                 .presence = presenceOf(f, @typeName(T) ++ "." ++ f.name),
+                .since = sinceOf(T, f.name),
             };
         }
         const frozen = fields;
         return &frozen;
     }
+}
+
+fn sinceOf(comptime T: type, comptime name: []const u8) u32 {
+    if (!@hasDecl(T, "component_since")) return 1;
+    const since = T.component_since;
+    for (@typeInfo(@TypeOf(since)).@"struct".fields) |f| {
+        if (!@hasField(T, f.name)) @compileError(
+            @typeName(T) ++ ".component_since names " ++ f.name ++ ", which is not one of its fields",
+        );
+    }
+    return if (@hasField(@TypeOf(since), name)) @field(since, name) else 1;
 }
 
 fn fieldTypeOf(comptime F: type, comptime where: []const u8) data.FieldType {
@@ -550,6 +569,25 @@ test "content written against an older schema version leaves the newer field alo
     try testing.expectEqual(@as(u32, 4), value.current);
     try testing.expectEqual(@as(u32, 6), value.max);
     try testing.expectEqual(@as(f32, 1.5), value.regen);
+    try testing.expectEqual(@as(u32, 1), componentType(V2).schema.fields[2].since);
+
+    // The same growth, saying which version brought the field.
+    const V2Since = struct {
+        pub const component = "test:health";
+        pub const component_version: u32 = 2;
+        pub const component_since = .{ .regen = 2 };
+        current: u32 = 10,
+        max: u32 = 10,
+        regen: f32 = 1.5,
+    };
+    const since = componentType(V2Since).schema.fields;
+    try testing.expectEqual(@as(u32, 1), since[0].since);
+    try testing.expectEqual(@as(u32, 1), since[1].since);
+    try testing.expectEqual(@as(u32, 2), since[2].since);
+    var registry: data.Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, componentType(V1).schema);
+    _ = try registry.register(gpa, componentType(V2Since).schema);
 
     // And the extension itself is legal: `data.Registry` refuses a non-additive bump, so
     // this passing is the proof that a derived version 2 appends rather than reinterprets.

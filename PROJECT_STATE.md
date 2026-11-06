@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 4 is complete; stop before Step 5** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 5 is `scene`: `foundry:animator` v2, saving a machine's place, its layers and parameters. No sample uses a machine yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 5 is complete; stop before Step 6** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 6 is `debug`: layers, states and parameters in the animation panel. No sample uses a machine yet. The PC holds no Foundry clone.
+
+**M35 Step 5 is done (2026-11-06): `foundry:animator` version 2.**
+- Fourteen fields are appended, each `since 2`: the players of layers 1 and 2, every layer's weight, target, state and ticks, eight parameters, and `machine`. A version 1 save loads with a base layer alone and carries on as M34's did.
+- `anim.Stack` now holds `players[3]`, then `layers[3]`, then `params[8]`. A `Player` ends in padding, so the component's derived fields could not lie over Step 2's layout. No behaviour changed, and the replay pin holds.
+- `derive` gains `component_since`. `RigSource` gains an optional machine lookup, which `rigSource` fills from `asset.Rigs`. `advance` runs an animator's machine. A machine that is gone leaves the animator whole and counted in `unresolved`. `stack(world, entity)` is the borrow. `evaluate` needs twice the joint count of scratch for a machine.
+- A save mid-transition continues byte-identical. A save grows by 664 bytes an animator, not about 450 as the design estimated.
+- Bar 2,802/2,812 (ten skips), 131/131 steps.
+
 
 **M35 Step 4 is done (2026-11-06): the set's version 2 and `foundry:animation_machine`.**
 - **A correction to §9, by I8:** version 2's `sync`, `additive` and `rises` are lists beside `clips`, not fields inside it. A field added inside a list item would have refused every version 1 package. `masks` joins them, and a version 1 set builds the rig it did.

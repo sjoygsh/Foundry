@@ -149,7 +149,7 @@ const Buffers = struct {
 fn baseOnly(stack: *const Stack) [joints]Transform {
     var out: [joints]Transform = undefined;
     var scratch: [joints]Transform = undefined;
-    stack.layers[0].player.evaluate(rig, .{ .local = &scratch }, .{ .local = &out });
+    stack.players[0].evaluate(rig, .{ .local = &scratch }, .{ .local = &out });
     return out;
 }
 
@@ -254,7 +254,7 @@ test "one layer: a stack of its base alone is its player, bit for bit" {
         }
         stack.advance(rig, &body_only, dt, &a);
         player.advance(rig, dt, &b);
-        try t.expectEqualSlices(u8, std.mem.asBytes(&player), std.mem.asBytes(&stack.layers[0].player));
+        try t.expectEqualSlices(u8, std.mem.asBytes(&player), std.mem.asBytes(&stack.players[0]));
         try t.expectEqual(b.event_count, a.event_count);
         try t.expectEqualSlices(ContentId, b.fired(), a.fired());
         try t.expectEqualSlices(u8, std.mem.asBytes(&b.motion), std.mem.asBytes(&a.motion));
@@ -401,25 +401,25 @@ test "motion: only the base moves a body, and a clip with motion is refused abov
 
     try stack.play(rig, &three, 0, name_idle, .{});
     // A raw write a save could carry: a walk on the upper layer.
-    stack.layers[1].player.channels[0] = .{ .clip = name_walk, .speed = 1, .weight = 1 };
+    stack.players[1].channels[0] = .{ .clip = name_walk, .speed = 1, .weight = 1 };
     stack.layers[1].weight = 1;
     var step: Step = .{};
     stack.advance(rig, &three, dt, &step);
     try t.expectEqual(@as(u32, 1), step.lost);
     try t.expectEqual(@as(f32, 0), step.motion.translation.length());
-    try t.expect(!stack.layers[1].player.hasClip());
+    try t.expect(!stack.players[1].hasClip());
     // Emptied, it stays empty, and the base's start clip is not begun on it.
     stack.advance(rig, &three, dt, &step);
     try t.expectEqual(@as(u32, 0), step.lost);
-    try t.expect(!stack.layers[1].player.hasClip());
+    try t.expect(!stack.players[1].hasClip());
 }
 
 test "untrusted: a clip on the wrong kind of layer, or gone, is emptied and counted" {
     var stack: Stack = .{};
     try stack.play(rig, &three, 0, name_idle, .{});
-    stack.layers[0].player.channels[1] = .{ .clip = name_pant, .speed = 1, .weight = 0 };
-    stack.layers[2].player.channels[0] = .{ .clip = name_reach, .speed = 1, .weight = 1 };
-    stack.layers[1].player.channels[0] = .{ .clip = clipName("gone"), .speed = 1, .weight = 1 };
+    stack.players[0].channels[1] = .{ .clip = name_pant, .speed = 1, .weight = 0 };
+    stack.players[2].channels[0] = .{ .clip = name_reach, .speed = 1, .weight = 1 };
+    stack.players[1].channels[0] = .{ .clip = clipName("gone"), .speed = 1, .weight = 1 };
     stack.layers[1].weight = std.math.nan(f32);
     stack.layers[2].target = 7;
     var step: Step = .{};
@@ -451,4 +451,51 @@ test "weight: a layer fades toward its target at its spec's rate, and a cut is a
     cut.setTarget(1, 0.75);
     run(&cut, &three, 1);
     try t.expectEqual(@as(f32, 0.75), cut.layers[1].weight);
+}
+
+test "sane: a default stack is, and each bad value a load could carry is not" {
+    const fresh: Stack = .{};
+    try t.expect(fresh.sane());
+    const edits = [_]*const fn (*Stack) void{
+        struct {
+            fn edit(s: *Stack) void {
+                s.players[2].channels[0] = .{ .clip = 7, .speed = std.math.nan(f32), .weight = 1 };
+            }
+        }.edit,
+        struct {
+            fn edit(s: *Stack) void {
+                s.layers[1].weight = 1.5;
+            }
+        }.edit,
+        struct {
+            fn edit(s: *Stack) void {
+                s.layers[2].target = -0.25;
+            }
+        }.edit,
+        struct {
+            fn edit(s: *Stack) void {
+                s.layers[0].weight = std.math.nan(f32);
+            }
+        }.edit,
+        struct {
+            fn edit(s: *Stack) void {
+                s.params[3] = .{ .name = 5, .value = std.math.inf(f32) };
+            }
+        }.edit,
+        struct {
+            fn edit(s: *Stack) void {
+                s.params[7] = .{ .name = 0, .value = 2 };
+            }
+        }.edit,
+    };
+    for (edits) |edit| {
+        var stack: Stack = .{};
+        edit(&stack);
+        try t.expect(!stack.sane());
+    }
+    // The edges of the range are in it, and a named parameter may hold any finite value.
+    var edge: Stack = .{};
+    edge.layers[1] = .{ .weight = 0, .target = 1 };
+    edge.params[0] = .{ .name = 5, .value = -1e30 };
+    try t.expect(edge.sane());
 }

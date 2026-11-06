@@ -305,8 +305,8 @@ test "entry: a fresh stack enters each layer's entry, and the upper layers wait 
     try t.expectEqual(s_idle, stack.layers[0].state);
     try t.expectEqual(s_reach, stack.layers[1].state);
     try t.expectEqual(s_pant, stack.layers[2].state);
-    try t.expect(stack.layers[0].player.playing(c_idle));
-    try t.expect(stack.layers[1].player.playing(c_reach));
+    try t.expect(stack.players[0].playing(c_idle));
+    try t.expect(stack.players[1].playing(c_reach));
     try t.expectEqual(@as(f32, 0), stack.layers[1].weight);
     try t.expectEqual(@as(u64, 1), stack.layers[0].state_ticks);
 }
@@ -351,7 +351,7 @@ test "transitions: one taken mid-fade holds every channel and keeps the sum" {
     try t.expectEqual(s_walk, stack.layers[0].state);
     var total: f32 = 0;
     var live: usize = 0;
-    for (stack.layers[0].player.channels) |channel| {
+    for (stack.players[0].channels) |channel| {
         if (channel.clip == 0) continue;
         live += 1;
         total += channel.weight;
@@ -365,7 +365,7 @@ test "speed_param: the rate keeps the feet on the floor, and a negative one walk
     _ = tick(&stack, warden, 1);
     try machine_mod.set(&stack, warden, p_speed, 1.2);
     _ = tick(&stack, warden, 60);
-    const base = &stack.layers[0].player;
+    const base = &stack.players[0];
     try t.expectApproxEqAbs(@as(f32, 2), base.channels[base.newest].speed, 1e-5);
     const step = tick(&stack, warden, 1);
     try t.expectApproxEqAbs(@as(f32, -1.2 * dt), step.motion.translation.z, 1e-4);
@@ -384,7 +384,7 @@ test "seek_param: a crossing state is put where the parameter says, and lands wi
     try machine_mod.set(&stack, warden, p_link, 1);
     try machine_mod.set(&stack, warden, p_link_t, 0.5);
     _ = tick(&stack, warden, 1);
-    const base = &stack.layers[0].player;
+    const base = &stack.players[0];
     try t.expectApproxEqAbs(@as(f32, 0.4), base.seconds(rig, base.newest), 1e-5);
     try machine_mod.set(&stack, warden, p_link_t, 1);
     const step = tick(&stack, warden, 1);
@@ -470,17 +470,17 @@ test "untrusted: a state the machine lacks begins its entry again, and is counte
 test "untrusted: a stack with no state adopts its newest clip's, so an old save carries on" {
     // What a save from before machines holds: a player in mid-walk, and nothing else.
     var stack: Stack = .{};
-    try stack.layers[0].player.play(rig, c_walk, .{});
+    try stack.players[0].play(rig, c_walk, .{});
     var step: Step = .{};
-    for (0..20) |_| stack.layers[0].player.advance(rig, dt, &step);
-    const before = stack.layers[0].player;
+    for (0..20) |_| stack.players[0].advance(rig, dt, &step);
+    const before = stack.players[0];
     try machine_mod.set(&stack, warden, p_speed, 0.6);
     step = tick(&stack, warden, 1);
     try t.expectEqual(s_walk, stack.layers[0].state);
     try t.expectEqual(@as(u32, 0), step.transitions);
     // Carried on, not begun again: one tick further into the same clip.
-    try t.expectEqual(before.channels[0].clip, stack.layers[0].player.channels[0].clip);
-    try t.expect(stack.layers[0].player.seconds(rig, 0) > before.seconds(rig, 0));
+    try t.expectEqual(before.channels[0].clip, stack.players[0].channels[0].clip);
+    try t.expect(stack.players[0].seconds(rig, 0) > before.seconds(rig, 0));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -506,15 +506,15 @@ test "replay: a three-layer machine run from parameters alone is byte-identical,
                 machine_mod.advance(&stack, rig, warden, dt, &step);
                 machine_mod.evaluate(&stack, rig, warden, .{ .{ .local = &a }, .{ .local = &b } }, .{ .local = &out });
                 // Field by field: an `extern` struct's padding is not a value.
-                for (stack.layers) |layer| {
-                    for (layer.player.channels) |channel| {
+                for (stack.layers, stack.players) |layer, player| {
+                    for (player.channels) |channel| {
                         hash.update(std.mem.asBytes(&channel.clip));
                         hash.update(std.mem.asBytes(&channel.anchor));
                         hash.update(std.mem.asBytes(&channel.ticks));
                         hash.update(std.mem.asBytes(&channel.speed));
                         hash.update(std.mem.asBytes(&channel.weight));
                     }
-                    hash.update(std.mem.asBytes(&layer.player.newest));
+                    hash.update(std.mem.asBytes(&player.newest));
                     hash.update(std.mem.asBytes(&layer.weight));
                     hash.update(std.mem.asBytes(&layer.state));
                     hash.update(std.mem.asBytes(&layer.state_ticks));
