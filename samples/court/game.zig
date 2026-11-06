@@ -287,8 +287,12 @@ pub const Game = struct {
             log.warn("the warden's set {f} did not build ({t}); it goes unanimated", .{ settings.set, err });
             break :blk .none;
         };
+        if (!w.rig.isNone()) w.machine = self.rigs.?.acquireMachine(settings.set, settings.machine) catch |err| blk: {
+            log.warn("the warden's machine {f} did not build ({t}); it goes unanimated", .{ settings.machine, err });
+            break :blk .none;
+        };
         w.bind(&self.rigs.?);
-        if (w.stride_speed > 0) w.player.play(self.rigs.?.get(w.rig).?.*, warden_mod.idle, .{}) catch unreachable;
+        if (w.stride_speed > 0) w.body().play(self.rigs.?.get(w.rig).?.*, warden_mod.idle, .{}) catch unreachable;
     }
 
     fn isModel(store: *const data.Store, id: core.ContentId) bool {
@@ -522,6 +526,17 @@ pub const Game = struct {
     }
 
     pub fn hashTick(self: *const Game) u64 {
+        return self.hashWith(true);
+    }
+
+    /// `hashTick` without the warden's walk weight: what a tick did to the world, and nothing of how
+    /// its body was animated. A change to the warden's animation must keep this on every tick
+    /// (`animation-states.md` §14), since its body is on the crowd's wish.
+    pub fn bodyHash(self: *const Game) u64 {
+        return self.hashWith(false);
+    }
+
+    fn hashWith(self: *const Game, animation: bool) u64 {
         var h: u64 = 0xcbf29ce484222325;
         const phase_val: u8 = @intFromEnum(self.phase);
         h = hashBytes(h, std.mem.asBytes(&phase_val));
@@ -557,8 +572,10 @@ pub const Game = struct {
             h = hashBytes(h, std.mem.asBytes(&w.facing.z));
             h = hashBytes(h, std.mem.asBytes(&w.velocity));
             h = hashBytes(h, std.mem.asBytes(&w.wait_ticks));
-            const weight = w.walkWeight();
-            h = hashBytes(h, std.mem.asBytes(&weight));
+            if (animation) {
+                const weight = w.walkWeight();
+                h = hashBytes(h, std.mem.asBytes(&weight));
+            }
             h = hashBytes(h, std.mem.asBytes(&w.tick));
         }
         // Not at the title: no world runs there, and Play resets the warden and adopts generation 1,

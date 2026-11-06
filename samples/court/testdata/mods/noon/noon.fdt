@@ -14,9 +14,9 @@ court:config court:config.main {
 court:warden court:warden.main {
     model court:models.warden
     set court:warden.set
-    link_clips { jump "jump" drop "drop" ladder "climb" }
+    machine court:warden.machine
     waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
-    speed 0.75 cross_fade 0.25 radius 0.22 height 1.7 pause 1
+    speed 0.75 radius 0.22 height 1.7 pause 1
 }
 court:beacon court:beacon.open {
     model court:models.beacon sound court:sounds.beacon

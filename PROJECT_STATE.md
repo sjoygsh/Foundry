@@ -1,7 +1,19 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 8 is complete; stop before Step 9** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 9 is the court: the warden on `court:warden.machine`, with 5 parameters, and the owner plays it. **Open for the owner:** the 32 animators read 0.173–0.231 ms p95 on the M5, against a 0.10 ms budget. That is §16's revisit of ADR-0071, which belongs to M100. The PC holds no Foundry clone.
+**Current handoff: M35 Step 9 is committed, and waits on the owner's play, which is its exit's last clause** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Then Step 10, Windows/Vulkan. **Still open for the owner:** the 32 animators read 0.173–0.231 ms p95 on the M5, against a 0.10 ms budget, which is §16's revisit of ADR-0071 (M100). The PC holds no Foundry clone.
+
+**M35 Step 9 is done, pending the owner's play (2026-11-06): the warden on a machine.**
+- `court:warden.machine` is §10's as written:
+  - a body of idle, walk, run and a seeked jump;
+  - arms on `upper`, weighted by `near`;
+  - an additive breath, weighted by `winded`.
+- The court sets `speed`, `link`, `link_t`, `near` and `winded` each tick. On the tick it lands, it keeps `link`, with `link_t` at 1.
+- The warden's record loses `link_clips` and `cross_fade`, and gains `machine` and `reach_distance` (2.5 m). `noon` follows.
+- `Game.bodyHash`'s digests, taken before the step, hold after it on all four scripts (`win` 2,441 ticks, `caught` 92, `fell` 185, `soundtrack` 42,023). So no route moved, and only footfalls changed.
+- Relocated ReleaseSafe on Metal: all four scripts replay every tick, with no sound dropped. The court's tick reads 0.131 ms p95.
+- Bar 2,813/2,823 (ten skips), 132/132 steps. `court` and `room` stage.
+
 
 **M35 Step 8 is done (2026-11-06): the pacer on a machine.**
 - `sandbox3d:pacer.machine` does what `pacer.zig` decided in M34. An additive `look` layer turns the head, and `pacer.zig` keeps only the body.

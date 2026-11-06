@@ -463,6 +463,69 @@ test "seen, the warden chases at its chase speed and catches a player who stands
     try testing.expectApproxEqAbs(w.settings.?.chase_speed, fastest, 0.1);
 }
 
+test "in a chase it runs, footfalls from the run, reaches when near, and heaves; the breath fades after" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    const anim_mod = @import("anim");
+    const run = anim_mod.clipName("run");
+    const arms = &w.stack.layers[1];
+    const breath = &w.stack.layers[2];
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    try game.walk.teleport(.init(4, 0.004, 3));
+    var ran_steps: u32 = 0;
+    var far_ticks: u32 = 0;
+    var reached = false;
+    for (0..600) |_| {
+        try game.step(.{}, fixtures.dt);
+        if (game.phase != .playing) break;
+        try testing.expectEqual(warden.Mode.chasing, w.mode);
+        const body = w.body();
+        if (body.channels[body.newest].clip == run) ran_steps += w.footfalls;
+        const away = game.walk.result.feet.sub(w.feet).length();
+        // Out of reach the arms stay down; within it they come up over their 0.3 s.
+        if (away > w.settings.?.reach_distance + 0.1) {
+            far_ticks += 1;
+            try testing.expectEqual(@as(f32, 0), arms.target);
+        } else if (arms.weight > 0) reached = true;
+        // Winded from the chase's first tick, the breath coming in over 1.5 s.
+        try testing.expectEqual(@as(f32, 1), breath.target);
+    }
+    try testing.expectEqual(game_mod.Phase.caught, game.phase);
+    try testing.expect(far_ticks > 10 and reached);
+    try testing.expect(ran_steps > 0);
+    try testing.expect(breath.weight > 0);
+    // The report names the layers and their states.
+    const row = &w.report.rows[0];
+    try testing.expect(row.machine);
+    try testing.expectEqualStrings("arms", row.layers[1].label());
+    try testing.expectEqualStrings("breath", row.layers[2].label());
+    try testing.expectEqual(@as(u8, 5), row.param_count);
+
+    // Out of sight, the chase ends, and the breath fades at a 1.5 s rate rather than at once.
+    var again = try fixtures.TestEnv.init(gpa);
+    defer again.deinit(gpa);
+    const other = try hunted(&again);
+    const v = &other.warden.?;
+    face(other, 1, 0);
+    v.wait_ticks = 0;
+    try other.walk.teleport(.init(3.5, 0.004, 3));
+    // A second of chase is two thirds of the way in.
+    for (0..60) |_| try other.step(.{}, fixtures.dt);
+    try testing.expectEqual(warden.Mode.chasing, v.mode);
+    try testing.expectApproxEqAbs(@as(f32, 60 * fixtures.dt / 1.5), v.stack.layers[2].weight, 1e-4);
+    try other.walk.teleport(.init(-5, 0.004, 7.5));
+    while (v.mode == .chasing) try other.step(.{}, fixtures.dt);
+    const held = v.stack.layers[2].weight;
+    try other.step(.{}, fixtures.dt);
+    try testing.expectApproxEqAbs(held - fixtures.dt / 1.5, v.stack.layers[2].weight, 1e-5);
+    try testing.expectEqual(@as(f32, 0), v.stack.layers[2].target);
+}
+
 test "out of sight it goes to where it last saw the player, then back to its patrol" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -572,15 +635,15 @@ fn overTheJump(gpa: std.mem.Allocator, speed: ?f32) !u32 {
     while (n < 1800 and game.phase == .playing) : (n += 1) {
         try game.step(.{}, fixtures.dt);
         try again.step(.{}, fixtures.dt);
-        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.player), std.mem.asBytes(&again.warden.?.player));
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.stack), std.mem.asBytes(&again.warden.?.stack));
         const view = game.crowd.?.agent(w.agent).?;
         const crossing = view.state == .on_link;
         if (crossing) {
             // The first tick fades in, so a clip never snaps on at the edge.
-            if (ticks == 0) try testing.expect(w.player.channels[w.player.newest].weight < 1);
+            if (ticks == 0) try testing.expect(w.stack.players[0].channels[w.stack.players[0].newest].weight < 1);
             ticks += 1;
-            try testing.expect(w.player.playing(jump));
-            try testing.expectApproxEqAbs(view.link_t * duration, w.player.seconds(rig.*, w.player.newest), 1e-3);
+            try testing.expect(w.stack.players[0].playing(jump));
+            try testing.expectApproxEqAbs(view.link_t * duration, w.stack.players[0].seconds(rig.*, w.stack.players[0].newest), 1e-3);
             try testing.expectEqual(@as(u32, 0), w.footfalls);
         } else if (was_crossing) {
             left_at = n;
@@ -597,9 +660,9 @@ fn overTheJump(gpa: std.mem.Allocator, speed: ?f32) !u32 {
     // One landing, on the tick the crowd let go of the crossing.
     try testing.expectEqual(@as(u32, 1), landed);
     try testing.expectEqual(left_at, landed_tick.?);
-    try testing.expectEqual(@as(u64, 0), w.link_clip);
+    try testing.expectEqual(@as(f32, 0), w.link);
     // After it, it walks again.
-    try testing.expect(!w.player.playing(jump));
+    try testing.expect(!w.stack.players[0].playing(jump));
     return ticks;
 }
 
@@ -633,7 +696,7 @@ test "a link gone from under a crossing asks for no clip" {
     try testing.expect(w.crossing(crowd) == null);
 }
 
-test "a set with no clip for a link crosses it in its walk, in silence; a restart forgets a crossing" {
+test "a restart forgets a crossing, and the machine's place with it" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
     var env = try fixtures.TestEnv.init(gpa);
@@ -641,26 +704,15 @@ test "a set with no clip for a link crosses it in its walk, in silence; a restar
     const game = try hunted(&env);
     try atTheGap(game, gpa);
     const w = &game.warden.?;
-    const stride = @import("anim").clipName("stride");
-    // As `bind` leaves it for a record naming a clip the set doesn't have.
-    w.settings.?.link_clips[@intFromEnum(nav.LinkKind.jump)] = @import("anim").clipName("no such clip");
-    w.bind(&game.rigs.?);
-    try testing.expectEqual(@as(u64, 0), w.link_clips[@intFromEnum(nav.LinkKind.jump)]);
-    var crossed = false;
-    for (0..600) |_| {
-        try game.step(.{}, fixtures.dt);
-        if (game.crowd.?.agent(w.agent).?.state == .on_link) {
-            crossed = true;
-            try testing.expect(w.player.playing(stride));
-        }
-        for (game.tickEvents()) |event| try testing.expect(event.kind != .warden_land);
-        if (game.phase != .playing) break;
-    }
-    try testing.expect(crossed);
-
-    w.link_clip = 1;
+    while (game.crowd.?.agent(w.agent).?.state != .on_link) try game.step(.{}, fixtures.dt);
+    try game.step(.{}, fixtures.dt);
+    try testing.expectEqual(@as(f32, 1), w.link);
+    try testing.expectEqual(@import("anim").clipName("jump"), w.stack.layers[0].state);
     try game.restart();
-    try testing.expectEqual(@as(u64, 0), w.link_clip);
+    try testing.expectEqual(@as(f32, 0), w.link);
+    // A cut to `idle`, with no state yet: the first tick takes the one that plays it.
+    try testing.expectEqual(@as(u64, 0), w.stack.layers[0].state);
+    try testing.expect(w.body().playing(warden.idle));
 }
 
 test "how far it has faded into a stride is part of the hash" {
@@ -671,7 +723,7 @@ test "how far it has faded into a stride is part of the hash" {
     const w = &env.game.warden.?;
     while (w.walkWeight() == 0) try env.game.step(.{}, fixtures.dt);
     const before = env.game.hashTick();
-    const channel = &w.player.channels[w.player.newest];
+    const channel = &w.stack.players[0].channels[w.stack.players[0].newest];
     channel.weight /= 2;
     try testing.expect(env.game.hashTick() != before);
 }
@@ -782,6 +834,8 @@ test "the warden's feet keep up with its body, on patrol and in a chase" {
     const game = try hunted(&env);
     const w = &game.warden.?;
     const stride = @import("anim").clipName("stride");
+    const run = @import("anim").clipName("run");
+    const rig = game.rigs.?.get(w.rig).?;
     // Its rig's own ground speed, and what each tick's channel asks of it.
     try testing.expectApproxEqAbs(@as(f32, 0.6), w.stride_speed, 1e-5);
     var patrol: u32 = 0;
@@ -793,20 +847,26 @@ test "the warden's feet keep up with its body, on patrol and in a chase" {
         if (n >= 200) try game.walk.teleport(w.feet.add(.init(2.5, 0.2, 0.3)).add(.init(0, -0.196 - w.feet.y, 0)));
         const was = w.feet;
         try game.step(.{}, fixtures.dt);
-        if (!w.player.playing(stride)) continue;
-        const channel = w.player.channels[w.player.newest];
+        // Walk or run, whichever leads, at the rate its own travel asks. A rate past ±16 is the
+        // machine's to clamp (`machine_tests.zig`).
+        const body = w.body();
+        const channel = body.channels[body.newest];
+        if (channel.clip != stride and channel.clip != run) continue;
         var moved = w.feet.sub(was);
         moved.y = 0;
         if (moved.length() == 0) continue;
         const rate = moved.length() / fixtures.dt;
-        try testing.expectApproxEqAbs(rate, channel.speed * w.stride_speed, 1e-4);
-        if (rate > 2.3) chase += 1 else if (rate > 0.9) patrol += 1;
+        try testing.expectApproxEqAbs(rate, channel.speed * rig.motionSpeed(channel.clip), 1e-4);
+        if (rate > 2.3) {
+            chase += 1;
+            // A chase runs, and a patrol walks.
+            try testing.expectEqual(run, channel.clip);
+        } else if (rate > 0.9 and rate < 1.6) {
+            patrol += 1;
+            try testing.expectEqual(stride, channel.clip);
+        }
     }
     try testing.expect(chase > 50 and patrol > 20);
-    // However fast a mod makes it, its channel stays in range, and a tick does not fail.
-    w.stride_speed = 0.01;
-    for (0..10) |_| try game.step(.{}, fixtures.dt);
-    try testing.expectEqual(@import("anim").player.max_speed, w.player.channels[w.player.newest].speed);
 }
 
 test "a replay plays the same player on the same ticks, and only events make a warden_step" {
@@ -819,27 +879,27 @@ test "a replay plays the same player on the same ticks, and only events make a w
     var steps: u32 = 0;
     var stood: u32 = 0;
     // It begins on `idle`, before a tick.
-    try testing.expect(env.game.warden.?.player.playing(warden.idle));
+    try testing.expect(env.game.warden.?.stack.players[0].playing(warden.idle));
     const stride = @import("anim").clipName("stride");
     var first_stride = true;
     for (0..600) |_| {
         const was = env.game.warden.?.feet;
-        const held = env.game.warden.?.player.seconds(env.game.rigs.?.get(env.game.warden.?.rig).?.*, env.game.warden.?.player.newest);
+        const held = env.game.warden.?.stack.players[0].seconds(env.game.rigs.?.get(env.game.warden.?.rig).?.*, env.game.warden.?.stack.players[0].newest);
         try env.game.step(.{}, fixtures.dt);
         try fresh.game.step(.{}, fixtures.dt);
         const w = &env.game.warden.?;
         const r = &fresh.game.warden.?;
         if (w.feet.x == was.x and w.feet.z == was.z) {
-            try testing.expect(w.player.playing(warden.idle));
+            try testing.expect(w.stack.players[0].playing(warden.idle));
             stood += 1;
         } else if (first_stride) {
             // It takes up the time it stood at, so a pause never restarts a foot.
-            try testing.expect(w.player.playing(stride));
-            try testing.expectApproxEqAbs(held, w.player.channels[w.player.newest].anchor, 1e-3);
+            try testing.expect(w.stack.players[0].playing(stride));
+            try testing.expectApproxEqAbs(held, w.stack.players[0].channels[w.stack.players[0].newest].anchor, 1e-3);
             try testing.expect(held > 0.1);
             first_stride = false;
         }
-        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.player), std.mem.asBytes(&r.player));
+        try testing.expectEqualSlices(u8, std.mem.asBytes(&w.stack), std.mem.asBytes(&r.stack));
         var heard: u32 = 0;
         for (env.game.tickEvents()) |event| {
             if (event.kind != .warden_step) continue;
@@ -864,7 +924,7 @@ test "a warden with no rig plays the same game, in silence, undrawn" {
     defer silent.deinit(gpa);
     const w = &silent.game.warden.?;
     w.stride_speed = 0;
-    w.player = .{};
+    w.stack = .{};
     for (0..300) |_| {
         try env.game.step(.{}, fixtures.dt);
         try silent.game.step(.{}, fixtures.dt);
@@ -914,6 +974,15 @@ test "a content change rebuilds the warden's rig before a tick, and a set that s
     w.bind(&game.rigs.?);
     try testing.expectEqual(@as(f32, 0), w.stride_speed);
     idle.name = name;
+    // A machine that did not build leaves it unanimated too, as `bind` says.
+    const machine = w.machine;
+    w.machine = .none;
+    w.bind(&game.rigs.?);
+    try testing.expectEqual(@as(f32, 0), w.stride_speed);
+    w.machine = machine;
+    w.bind(&game.rigs.?);
+    try testing.expect(w.stride_speed > 0);
+    w.stride_speed = 0;
     for (0..10) |_| try game.step(.{}, fixtures.dt);
     try testing.expectEqual(@as(u32, 0), w.footfalls);
     try game.contentChanged(&env.assets);
@@ -934,7 +1003,7 @@ test "a warden's record has to name a set" {
     var env = try fixtures.TestEnv.init(gpa);
     defer env.deinit(gpa);
     // On the title screen too, with no game begun.
-    try testing.expect(env.game.warden.?.player.playing(warden.idle));
+    try testing.expect(env.game.warden.?.stack.players[0].playing(warden.idle));
     const fields = env.store.lookup(core.ContentId.fromString("court:warden.main")).?.fields;
     const settings = try warden.WardenSettings.read(fields);
     try testing.expect(settings.set.eql(core.ContentId.fromString("court:warden.set")));
@@ -942,7 +1011,11 @@ test "a warden's record has to name a set" {
     defer gpa.free(copied);
     var edited = fields;
     edited.block = copied;
-    // The presence bits, then the two IDs.
+    // The presence bits, then the three IDs: a set and a machine are each required.
     @memset(copied[16..24], 0);
     try testing.expectError(error.InvalidWarden, warden.WardenSettings.read(edited));
+    @memcpy(copied, fields.block);
+    @memset(copied[24..32], 0);
+    try testing.expectError(error.InvalidWarden, warden.WardenSettings.read(edited));
+    try testing.expect(settings.machine.eql(core.ContentId.fromString("court:warden.machine")));
 }

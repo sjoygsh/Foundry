@@ -669,7 +669,7 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
     try expectValueRefused(S.gate, &.{ "open", "y" }, 1e30, S.Gate, error.InvalidGate);
 
     for ([_]f32{ 0, -1, 11 }) |v| try expectValueRefused(S.warden, &.{"speed"}, v, S.Warden, error.InvalidWarden);
-    for ([_]f32{ 0, -1, 6 }) |v| try expectValueRefused(S.warden, &.{"cross_fade"}, v, S.Warden, error.InvalidWarden);
+    for ([_]f32{ -1, 21 }) |v| try expectValueRefused(S.warden, &.{"reach_distance"}, v, S.Warden, error.InvalidWarden);
     for ([_]f32{ 0, -1, 3 }) |v| try expectValueRefused(S.warden, &.{"radius"}, v, S.Warden, error.InvalidWarden);
     // A capsule shorter than its own two caps.
     for ([_]f32{ 0, -1, 0.3, 5 }) |v| try expectValueRefused(S.warden, &.{"height"}, v, S.Warden, error.InvalidWarden);
@@ -796,4 +796,65 @@ test "court: a sound behind the closed gate is occluded by one ray, and one in t
     try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, ears, null));
     // The gate's own sound is not occluded by the gate it comes from.
     try testing.expectEqual(@as(f32, 0), sounds_mod.occluded(world, ears, gate.current_pos, gate.body));
+}
+
+/// A script's digest: every tick's `bodyHash` and every event but the warden's footfalls, folded,
+/// with no recording of its own, so that the soundtrack's ten minutes fit.
+const Digest = struct {
+    ticks: usize = 0,
+    body: u64 = 0xcbf29ce484222325,
+    warden_steps: u32 = 0,
+
+    fn of(game: *game_mod.Game, script: *const play.Script) !Digest {
+        var out: Digest = .{};
+        var driver: scripted.ScriptDriver = .{ .script = script };
+        var menus: menus_mod.Menus = .{};
+        var chosen: menus_mod.Options = .{};
+        while (!driver.done) {
+            const frame = driver.next(game);
+            if (driver.failure != null) return error.ScriptFailed;
+            var intent = frame.intent;
+            intent.action = menus.update(game.phase, frame.keys, null, null, &chosen).action();
+            try game.step(intent, dt);
+            for (game.tickEvents()) |event| {
+                if (event.kind == .warden_step) {
+                    out.warden_steps += 1;
+                    continue;
+                }
+                const kind: u8 = @intFromEnum(event.kind);
+                out.fold(std.mem.asBytes(&kind));
+                out.fold(std.mem.asBytes(&event.position));
+                out.fold(std.mem.asBytes(&event.beacon));
+            }
+            const body = game.bodyHash();
+            out.fold(std.mem.asBytes(&body));
+            out.ticks += 1;
+        }
+        return out;
+    }
+
+    fn fold(self: *Digest, bytes: []const u8) void {
+        for (bytes) |b| self.body = (self.body ^ b) *% 0x100000001b3;
+    }
+};
+
+test "court: the warden's animation moves no body: every script keeps its digest, tick for tick" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    // Taken from the code before M35 Step 9 put the warden on a machine: every tick's world, and every
+    // event but `warden_step`, which comes from whichever clip leads.
+    for ([_]struct { script: *const play.Script, ticks: usize, digest: u64 }{
+        .{ .script = &play.win, .ticks = 2441, .digest = 0x2495783980aedff1 },
+        .{ .script = &play.caught, .ticks = 92, .digest = 0x757a204cc05d1b02 },
+        .{ .script = &play.fell, .ticks = 185, .digest = 0x6b4fdba4db5b669e },
+        .{ .script = &play.soundtrack, .ticks = 42023, .digest = 0x806953eeb8f10db8 },
+    }) |case| {
+        var env = try TestEnv.init(gpa);
+        defer env.deinit(gpa);
+        env.game.stride = 1.6;
+        const digest = try Digest.of(&env.game, case.script);
+        try testing.expect(digest.warden_steps > 0);
+        try testing.expectEqual(case.ticks, digest.ticks);
+        try testing.expectEqual(case.digest, digest.body);
+    }
 }

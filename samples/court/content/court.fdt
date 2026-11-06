@@ -127,11 +127,11 @@ gate court:gate.main {
 @schema warden {
     model id
     set id
-    # The clip for each kind of link. The agent names it, since a link is only a place.
-    link_clips { jump string drop string ladder string }
+    # What it plays against the set's rig (`docs/design/animation-states.md` §14). Which clip a link
+    # crosses with, and how its clips fade, are the machine's.
+    machine id
     waypoints [{ x f32 y f32 z f32 }]
     speed f32
-    cross_fade f32
     radius f32
     height f32
     pause f32
@@ -139,6 +139,8 @@ gate court:gate.main {
     sight_range f32 (default 7)
     sight_angle f32 (default 0.6)
     lose_seconds f32 (default 2)
+    # In a chase, how near the player its arms reach, metres: before `catch_distance` ends it.
+    reach_distance f32 (default 2.5)
 }
 # M34: what the warden's clips mean. Its body stays on the crowd's wish, so `stride`'s travel is only
 # read for the rate that keeps its feet on the floor. A foot landing is an event, and the court hears
@@ -168,13 +170,40 @@ foundry:animation_set court:warden.set {
     additive [ { clip "pant" } { clip "look" } ]
     rises [ { clip "climb" rise 0.3 } ]
 }
+# M35: what the warden does with its clips (`docs/design/animation-states.md` §10, §14). The court
+# says five things a tick: its ground `speed`, the `link` it crosses (its kind plus one, so 1 is a
+# jump) and how far across, `near` in a chase within reach, and `winded` in a chase. Walk and run
+# share a foot, and cross at 1.8 and 1.6 m/s, so a patrol at 1 m/s walks and a chase at 2.4 runs.
+foundry:animation_machine court:warden.machine {
+    params [ { name "speed" } { name "link" } { name "link_t" } { name "near" } { name "winded" } ]
+    layers [
+        { name "body" entry "idle"
+            states [
+                { name "idle" clip "idle" }
+                { name "walk" clip "stride" speed_param "speed" }
+                { name "run" clip "run" speed_param "speed" }
+                { name "jump" clip "jump" seek_param "link_t" }
+            ]
+            transitions [
+                { from "*" to "jump" fade 0.1 when [ { param "link" is 1 } ] }
+                { from "jump" to "idle" fade 0.2 when [ { param "link" is 0 } ] }
+                { from "idle" to "walk" fade 0.25 phase "keep" when [ { param "speed" at_least 0.05 } ] }
+                { from "walk" to "run" fade 0.3 phase "keep" when [ { param "speed" at_least 1.8 } ] }
+                { from "run" to "walk" fade 0.3 phase "keep" when [ { param "speed" below 1.6 } ] }
+                { from "walk" to "idle" fade 0.25 when [ { param "speed" below 0.05 } ] }
+        ] }
+        { name "arms" mask "upper" weight_param "near" weight_fade 0.3 entry "reach"
+            states [ { name "reach" clip "reach" } ] }
+        { name "breath" mode "additive" weight_param "winded" weight_fade 1.5 entry "pant"
+            states [ { name "pant" clip "pant" } ] }
+    ]
+}
 warden court:warden.main {
     model court:models.warden
     set court:warden.set
-    link_clips { jump "jump" drop "drop" ladder "climb" }
+    machine court:warden.machine
     waypoints [ { x -2 y 0.004 z 2.5 } { x 2 y 0.004 z 2.5 } ]
     speed 1.0
-    cross_fade 0.25
     radius 0.22
     height 1.7
     pause 1

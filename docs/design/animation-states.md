@@ -1288,3 +1288,103 @@ on.
 - `MissingMachine`, held by its test.
 
 **Bar:** 2,811/2,821 (ten skips), 132/132 steps, `pacer_back` being a new one. `fdt-check` first refused the two new machines' layout, which `fpack fmt` fixed. The samples' content changed, so `court` and `room` were staged with `dist` on macOS, ReleaseSafe on Metal, and both exited 0.
+
+## Resolution — Step 9: the court: the warden on a machine (2026-11-06)
+
+§14 is built:
+- the warden plays `court:warden.machine` through an `anim.Stack` it holds, and is still no
+  entity;
+- the court tells the machine five things a tick;
+- walk and run cross-fade on one foot;
+- the arms reach on `upper` when it is near, and the chest heaves while it chases.
+
+**The machine** is §10's as written, in `court.fdt`:
+- **Body:** `idle`, `walk` on `stride`, `run` on `run`, and `jump` seeked by `link_t`.
+  - `"*"` goes to `jump` when `link is 1`, and `jump` goes back to `idle` when it is 0.
+  - Walk becomes run at `speed at_least 1.8`, and run returns to walk `below 1.6`, both with
+    `phase "keep"`.
+- **Arms:** override on `upper`, weighted by `near`, fading over 0.3 s.
+- **Breath:** additive `pant`, weighted by `winded`, fading over 1.5 s.
+
+At 1 m/s on patrol the warden walks `stride` at 1.67. At 2.4 m/s in a chase it runs `run` at 1.29,
+where M34 played `stride` at 4.0.
+
+**`warden.zig`.**
+- `finishTick`'s choice of clip, rate and seek is gone. It sets:
+  - `speed` to the ground speed;
+  - `link` to the kind plus one, or 0, and `link_t` to how far across;
+  - `near` in a chase within `reach_distance`;
+  - `winded` in a chase.
+- Then it advances the machine, reports with `addStack`, and evaluates through it into two scratch
+  poses.
+- `set` ignores a parameter a mod's machine lacks, since the values are always finite.
+
+**This sharpens the design: the tick it lands keeps `link`.** The crowd's last tick of a crossing no
+longer says it is on a link. So that tick keeps the `link` it had and puts `link_t` at 1. The jump
+reaches its end, and its `land` event fires on the tick the crowd lets go, as M34's
+hand-finished seek did. A mutation dropping it fails the crossing test at all three speeds.
+
+**The warden's record.**
+- **Gone:** `link_clips` and `cross_fade`. Which clip crosses a link and how clips fade are the
+  machine's, so a field that did nothing would be misleading.
+- **Added:** `machine`, an ID, which is required, and `reach_distance`, defaulting to 2.5 m, so the arms
+  come up about half a second before `catch_distance`'s 1.2 m ends the chase.
+- `noon` restates the record, so it changes with it.
+- **The court's start is unchanged.** `Game` acquires the machine with the rig. `bind` leaves the
+  warden unanimated if either is missing, says so, and a test holds it. A reset cuts to `idle`
+  with no state, so the first tick adopts `idle`.
+
+**This sharpens the design: the court's digest is now a test.**
+- M34 compared a digest by hand. `Game.bodyHash` is now `hashTick` without the walk weight.
+- `game_tests.zig` folds it, with every event but `warden_step`, over each tick of four scripts,
+  from fresh games, with no recording, so the soundtrack's ten minutes fit.
+- Each value was taken from the code before this step, in Debug and ReleaseSafe alike, and holds
+  after it:
+
+| Script | Ticks | Digest | `warden_step`s |
+| --- | --- | --- | --- |
+| `win` | 2,441 | `2495783980aedff1` | 106 |
+| `caught` | 92 | `757a204cc05d1b02` | 3 |
+| `fell` | 185 | `6b4fdba4db5b669e` | 16 |
+| `soundtrack` | 42,023 | `806953eeb8f10db8` | 1,270 |
+
+So no route moved and every event but a footfall keeps its tick. The footfalls now come from
+whichever clip leads, and a chase's from `run`.
+
+**Tests.**
+- A chase runs on `run` with its footfalls. Its arms stay down out of reach and come up within it,
+  and its breath is targeted from the first tick.
+- A second of chase brings the breath two-thirds in. After the chase it fades at 1/1.5 a second.
+- The feet keep up on whichever clip leads, at `channel.speed × motionSpeed(clip)` within 1e-4: a
+  patrol on `stride` and a chase on `run`.
+- A restart forgets a crossing and the machine's place.
+- A record without a machine is refused. A replay plays the same stack, byte for byte.
+- M34's own cap test is gone: the machine clamps a rate itself, and Step 3's tests hold that.
+
+**From the relocated ReleaseSafe install on Metal, windowed:**
+- `win`, `caught`, `fell` and `soundtrack` each matched a fresh simulation on every tick: 2,442,
+  92, 192 and 42,036 hashes.
+- No sound was dropped: 171, 7, 16 and 1,428 played. The music had no missed start, no underrun
+  and no late start.
+
+**Budgets, p95 there:**
+
+| What | Reading | Budget |
+| --- | --- | --- |
+| The court's whole tick (`character`) | 0.131 ms | 0.25 ms |
+| `render.skin`, the warden | 0.071–0.083 ms | 0.25 ms |
+
+**Guards verified by mutation:**
+- the landing tick keeping `link`;
+- `near`'s distance;
+- `winded`;
+- the walk-to-run threshold, in content;
+- the record's required machine;
+- `bind`'s machine check.
+
+The last of those survived at first, because a warden with no machine is silent further down. Its
+test now checks what `bind` says.
+
+**Not yet:** the owner's play, which is this step's last clause. Windows is Step 10.
+
+**Bar:** 2,813/2,823 (ten skips), 132/132 steps. `fdt-check` first refused the machine's layout, which `fpack fmt` fixed. `court` and `room` stage with `dist` on macOS, ReleaseSafe on Metal.
