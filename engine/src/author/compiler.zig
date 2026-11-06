@@ -345,6 +345,9 @@ fn checkMeanings(
         } else if (view.schema_id.eql(asset.animation_set.schema.id)) blk: {
             asset.animation_set.check(fields) catch |err| break :blk .{ "animation set", asset.animation_set.describe(err) };
             continue;
+        } else if (view.schema_id.eql(asset.animation_machine.schema.id)) blk: {
+            asset.animation_machine.check(fields) catch |err| break :blk .{ "animation machine", asset.animation_machine.describe(err) };
+            continue;
         } else continue;
         ok = false;
         if (declarationOf(docs, view.id)) |origin| {
@@ -507,6 +510,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.nav_mesh.nav_mesh_name,
     asset.nav_mesh.nav_area_name,
     asset.animation_set.name,
+    asset.animation_machine.name,
     scene.schemas.entity_name,
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,

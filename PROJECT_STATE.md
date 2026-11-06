@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 3 is complete; stop before Step 4** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 4 is `asset`: `foundry:animation_set` v2 and `foundry:animation_machine`, built by `Rigs`. No M35 record exists yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 4 is complete; stop before Step 5** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 5 is `scene`: `foundry:animator` v2, saving a machine's place, its layers and parameters. No sample uses a machine yet. The PC holds no Foundry clone.
+
+**M35 Step 4 is done (2026-11-06): the set's version 2 and `foundry:animation_machine`.**
+- **A correction to §9, by I8:** version 2's `sync`, `additive` and `rises` are lists beside `clips`, not fields inside it. A field added inside a list item would have refused every version 1 package. `masks` joins them, and a version 1 set builds the rig it did.
+- `foundry:animation_machine` is a new record. A condition is `{ param … }` or `{ quantity "laps" | "finished" … }` with exactly one of `at_least`, `below` or `is`. `fpack` refuses every one-record mistake, each by name.
+- `Rigs.acquireMachine(set, machine)` builds a machine against the set's rig, holds that rig, and rebuilds it at `contentChanged` under the same handle. A machine compiled from text runs with no renderer.
+- Bar 2,791/2,801 (ten skips), 131/131 steps.
+
 
 **M35 Step 3 is done (2026-11-06): the machine.**
 - `anim.Machine` is params, layers, states, transitions and conditions, validated against a rig with 33 refusals, each named.

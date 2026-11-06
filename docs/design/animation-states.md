@@ -308,6 +308,12 @@ repairs what a raw write left, as M34's does.
 
 ## 9. `foundry:animation_set` version 2
 
+> **2026-11-06, Step 4:** `sync`, `additive`, `reference` and `rise` are **not fields of
+> `clips[]`**, as written below, but three lists beside it: `sync [ { clip group } ]`,
+> `additive [ { clip reference } ]` and `rises [ { clip rise } ]`. A field added inside a list item
+> is not additive in the registry, so the shape below would have refused every version 1
+> package. Step 4's Resolution has the reason and the shape.
+
 Version 2 appends fields, so every v1 set means what it meant:
 
 ```fdt
@@ -869,3 +875,92 @@ expected to be Zig's own.
 are untouched.
 
 **Bar:** 2,777/2,787 (ten skips), 131/131 steps. `anim-test` is 117/117 in Debug and in ReleaseSafe, 15 of them new.
+
+## Resolution — Step 4: the set's version 2 and `foundry:animation_machine` (2026-11-06)
+
+`asset` now covers §9 and §10:
+- `engine/src/asset/animation_set.zig` is at version 2.
+- `engine/src/asset/animation_machine.zig` is new.
+- `Rigs` builds both into the rigs and machines of Steps 1 to 3.
+- Tests are in each file, and in `engine/tests/animation_rigs.zig` over the real compiler, store
+  and registry, with no renderer.
+
+**A correction to §9, by I8. The version 2 fields are lists beside `clips`, not fields inside it.**
+- `data.Registry`'s additive check compares a nested type's fields whole (`FieldType.eql`).
+  `clips[]`'s item cannot gain `sync`, `additive`, `reference` or `rise` without making version 2
+  a different schema, which would refuse every package compiled against version 1.
+- So version 2 appends four optional top-level fields, each `since = 2`:
+  `masks [ { name joints [ { joint weight } ] } ]`, `sync [ { clip group } ]`,
+  `additive [ { clip reference } ]` and `rises [ { clip rise } ]`.
+- The three per-clip lists share one shape, `{ clip … }`, because `data.fpk.List` reads nested items
+  and has no string reader, so `sync`'s group cannot be a list of names.
+- §9 has a dated note pointing here, and §12's character records are written to this shape in
+  Step 7.
+- A test compiles a set against `schema_v1` and loads it under version 2: every new list reads as
+  absent.
+
+**The set's checks.**
+- `check` now refuses, on one record: `TooManyMasks`, `DuplicateMask`, `EmptyMask`,
+  `TooManyMaskJoints`, `InvalidMaskWeight`, `DuplicateSync`, `SyncOnOneShot` (a listed `loop false`),
+  `DuplicateAdditive`, `AdditiveWithMotion` (a listed `motion true`), `AdditiveStart` (a named
+  `start`), `DuplicateRise` and `InvalidRise`.
+- `Rigs.build` refuses what needs the model: `UnknownClip` for any list's clip, the new
+  `UnknownReference`, and `UnknownJoint` for a mask's joint. `anim`'s `AdditiveStart` covers a
+  default start that is additive.
+
+**Rigs.**
+- `applyVersion2` runs on the clips already built, before `Rig.validate`:
+  - a group's name hash goes into `RigClip.sync`, and a rise into `rise`;
+  - for each additive clip, its reference clip (its own, or the named one) is checked by
+    `Clip.validate` and then sampled at 0 into one block of `joints × count` transforms the rig
+    borrows;
+  - each mask is filled by `anim.fillMask` from its joints, by name.
+- A version 1 set builds exactly the rig it did: no masks, no group, no rise, nothing additive. All
+  ten M34 rig tests pass unchanged.
+
+**`foundry:animation_machine`.** Version 1, as §10 writes it, with one form §10 had not settled.
+- A condition is `{ quantity … param … }` plus exactly one of `at_least`, `below` or `is`.
+  `quantity` defaults to `"param"`, so the common case reads `{ param "speed" at_least 0.05 }`.
+  `{ quantity "laps" at_least 1.5 }` cannot be mistaken for a parameter called `laps`.
+- `check` refuses everything one record shows, each by name with a diagnostic:
+  - `EmptyName`, `TooManyParams`, `DuplicateParam`, `InvalidValue`;
+  - `NoLayers`, `TooManyLayers`, `UnknownMode`, `MaskOnBase`, `WeightOnBase`, `AdditiveBase`;
+  - `UnknownParam`, `InvalidFade`;
+  - `NoStates`, `TooManyStates`, `DuplicateState`, `NoEntry`, `InvalidSpeed`, `SpeedAndSeek`;
+  - `TooManyTransitions`, `UnknownState`, `UnknownPhase`;
+  - `TooManyConditions`, `UnknownQuantity`, `MisplacedParam`, `NoComparison`.
+- `decode` builds an `anim.Machine` into an arena the caller owns, hashing every name and keeping
+  labels.
+- `fpack` runs `check`, so a bad machine is refused at compile, naming the record. The schema
+  registers with the set's `registerAll`, so `app` and the compiler both have it.
+  `engine_schema_names` lists it.
+
+**`Rigs` builds machines:**
+- `acquireMachine(set, machine)`, `releaseMachine`, `getMachine` and `lookupMachine`.
+- A machine is keyed by the pair, counted, holds its set's rig, and borrows from its own arena.
+- `contentChanged` rebuilds the rigs first, then every machine against its rebuilt rig, keeping
+  handles. A machine that no longer builds, or whose rig is gone, answers null, says so once, and
+  mends when its content does.
+- Refusals: `MissingMachine`, `NotAMachine`, and every `anim.Machine.ValidateError`. Those that need
+  the rig are tested from text: `UnknownClip`, `UnknownMask`, `AdditiveMismatch`, `MotionOffBase`
+  and `NoMotionSpeed`. A set that does not build refuses with its own error.
+- A failing allocator at every index leaks nothing, for a version 2 rig and its machine together.
+
+**The exit.** `demo:machine`, compiled from text, builds against a version 2 rig with no renderer.
+Driven by `speed` and `near`, it runs the walk at twice its rate for 2.4 m/s over 1.2 m/s, and fades
+the additive layer in under the `legs` mask.
+
+**Guards verified by mutation:**
+- the group applied;
+- the reference resolved;
+- machines rebuilt at `contentChanged`;
+- a machine holding its rig;
+- the compiler's machine check;
+- the set's `SyncOnOneShot`;
+- the condition's `MisplacedParam`;
+- `Machine.validate` run at build (two tests).
+
+**Not yet:** `foundry:animator` version 2 and the machine lookup in `RigSource`, which are Step 5.
+No sample record names version 2 or a machine until Step 7.
+
+**Bar:** 2,791/2,801 (ten skips), 131/131 steps. `asset-test` is 236/236 and `rigs-test` 20/20, ten of them new. No sample's content changed, so no `dist` staging.

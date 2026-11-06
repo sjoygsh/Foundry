@@ -32,8 +32,11 @@ pub const skeletonLoader = skeleton.skeletonLoader;
 pub const animationLoader = animation.animationLoader;
 /// `foundry:animation_set`, what a clip means (ADR-0071). Here for `tilemap`'s reason.
 pub const animation_set = @import("animation_set.zig");
+/// `foundry:animation_machine`, what a figure does with its clips (ADR-0072).
+pub const animation_machine = @import("animation_machine.zig");
 /// Rigs built from those sets, below any renderer, so that a tick can use one.
 pub const rigs = @import("rigs.zig");
+pub const MachineHandle = rigs.MachineHandle;
 pub const RigHandle = rigs.RigHandle;
 pub const Rigs = rigs.Rigs;
 pub const collision_mesh = @import("collision_mesh.zig");
@@ -154,6 +157,7 @@ test {
     _ = animation;
     _ = animation_set;
     _ = rigs;
+    _ = animation_machine;
     _ = @import("animation_asset_tests.zig");
     _ = collision_mesh;
     _ = image;

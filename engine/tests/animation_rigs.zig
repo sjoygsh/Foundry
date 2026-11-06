@@ -439,3 +439,261 @@ test "out of memory at any allocation leaks nothing, and a retry succeeds" {
     }
     try testing.expect(fail > 3);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Version 2 and machines (`docs/design/animation-states.md` §9, §10, M35 Step 4)
+
+const v2_set =
+    \\foundry:animation_set demo:set {
+    \\    model demo:hero
+    \\    start "walk"
+    \\    motion_joint "pelvis"
+    \\    clips [ { name "walk" motion true } ]
+    \\    masks [ { name "legs" joints [ { joint "leg" weight 0.5 } { joint "foot" } ] } ]
+    \\    sync [ { clip "walk" group "feet" } ]
+    \\    additive [ { clip "idle" reference "walk" } ]
+    \\    rises [ { clip "walk" rise 0.3 } ]
+    \\}
+;
+
+const machine_text =
+    \\foundry:animation_machine demo:machine {
+    \\    params [ { name "speed" } { name "near" } ]
+    \\    layers [
+    \\        { name "body" entry "walk"
+    \\          states [ { name "walk" clip "walk" speed_param "speed" } ] }
+    \\        { name "breath" mode "additive" mask "legs" weight_param "near" weight_fade 0.5 entry "idle"
+    \\          states [ { name "idle" clip "idle" } ] }
+    \\    ]
+    \\}
+;
+
+test "a version 2 set builds masks, groups, additive clips and rises into its rig" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.build();
+    const handle = try s.rigs.acquire(id("demo:set"));
+    defer s.rigs.release(handle);
+    const rig = s.rigs.get(handle).?;
+    try rig.validate();
+
+    const legs = rig.mask(anim.clipName("legs")).?;
+    try testing.expectEqualStrings("legs", legs.label);
+    try testing.expectEqualSlices(f32, &.{ 0, 0.5, 1 }, legs.weights);
+
+    const walk = rig.find(anim.clipName("walk")).?;
+    try testing.expectEqual(anim.clipName("feet"), walk.sync);
+    try testing.expectEqual(@as(f32, 0.3), walk.rise);
+    try testing.expectEqual(@as(u32, 2), rig.lapsFor(anim.clipName("walk"), 0.6));
+
+    const idle = rig.find(anim.clipName("idle")).?;
+    try testing.expect(idle.additive);
+    // Its reference is the walk's first frame, sampled once: the pelvis at its first key.
+    try testing.expectEqual(@as(usize, 3), idle.reference.len);
+    try testing.expectEqual(@as(f32, 0), idle.reference[0].translation.z);
+    try testing.expect(!walk.additive and walk.reference.len == 0);
+}
+
+test "a version 1 set still builds the rig it did" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(full_set);
+    try s.build();
+    const handle = try s.rigs.acquire(id("demo:set"));
+    defer s.rigs.release(handle);
+    const rig = s.rigs.get(handle).?;
+    try testing.expectEqual(@as(usize, 0), rig.masks.len);
+    for (rig.clips) |clip| {
+        try testing.expectEqual(@as(u64, 0), clip.sync);
+        try testing.expectEqual(@as(f32, 0), clip.rise);
+        try testing.expect(!clip.additive and clip.reference.len == 0);
+    }
+}
+
+test "every version 2 refusal that needs the model is named, and leaves nothing behind" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    const head = "foundry:animation_set demo:set { model demo:hero start \"walk\" ";
+    try s.expectRefused(error.UnknownClip, head ++ "sync [ { clip \"run\" group \"g\" } ] }");
+    try s.expectRefused(error.UnknownClip, head ++ "additive [ { clip \"run\" } ] }");
+    try s.expectRefused(error.UnknownClip, head ++ "rises [ { clip \"run\" rise 1 } ] }");
+    try s.expectRefused(error.UnknownReference, head ++ "additive [ { clip \"idle\" reference \"run\" } ] }");
+    try s.expectRefused(error.UnknownJoint, head ++ "masks [ { name \"m\" joints [ { joint \"tail\" } ] } ] }");
+    // The model's first clip is the start when none is named, and the base plays no difference.
+    try s.expectRefused(error.AdditiveStart, "foundry:animation_set demo:set { model demo:hero additive [ { clip \"idle\" } ] }");
+    try testing.expectEqual(@as(u32, 0), s.rigs.entries.count());
+    _ = s.assets.evictUnused(gpa);
+    try testing.expectEqual(@as(u32, 0), s.assets.count());
+}
+
+test "a machine compiled from text builds against a rig and runs, with no renderer" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    const handle = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    defer s.rigs.releaseMachine(handle);
+    const machine = s.rigs.getMachine(handle).?;
+    try testing.expect(machine == s.rigs.lookupMachine(id("demo:set"), id("demo:machine")).?);
+    const rig = s.rigs.lookup(id("demo:set")).?;
+    try machine.validate(rig.*);
+    try testing.expectEqual(@as(usize, 2), machine.layers.len);
+
+    var stack: anim.Stack = .{};
+    var step: anim.Step = .{};
+    // 0.6 m in half a second is 1.2 m/s, so at 2.4 m/s the walk runs at twice its rate.
+    try anim.machine.set(&stack, machine.*, anim.clipName("speed"), 2.4);
+    try anim.machine.set(&stack, machine.*, anim.clipName("near"), 1);
+    for (0..30) |_| anim.machine.advance(&stack, rig.*, machine.*, 1.0 / 60.0, &step);
+    try testing.expectEqual(anim.clipName("walk"), stack.layers[0].state);
+    const base = &stack.layers[0].player;
+    try testing.expectApproxEqAbs(@as(f32, 2), base.channels[base.newest].speed, 1e-5);
+    try testing.expectEqual(@as(f32, 1), stack.layers[1].weight);
+    try testing.expect(stack.layers[1].player.playing(anim.clipName("idle")));
+}
+
+test "every machine refusal that needs the rig is named, and leaves nothing behind" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    try testing.expectError(error.MissingMachine, s.rigs.acquireMachine(id("demo:set"), id("demo:nothing")));
+    try testing.expectError(error.NotAMachine, s.rigs.acquireMachine(id("demo:set"), id("demo:set")));
+    try testing.expectError(error.MissingSet, s.rigs.acquireMachine(id("demo:nothing"), id("demo:machine")));
+
+    const cases = [_]struct { anyerror, []const u8 }{
+        .{ error.UnknownClip, "layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"run\" } ] } ] }" },
+        .{ error.UnknownMask, "layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"walk\" } ] } { name \"u\" mask \"arms\" mode \"additive\" entry \"s\" states [ { name \"s\" clip \"idle\" } ] } ] }" },
+        .{ error.AdditiveMismatch, "layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"idle\" } ] } ] }" },
+        .{ error.MotionOffBase, "layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"walk\" } ] } { name \"u\" entry \"s\" states [ { name \"s\" clip \"walk\" } ] } ] }" },
+        .{ error.NoMotionSpeed, "params [ { name \"p\" } ] layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"walk\" } ] } { name \"u\" mode \"additive\" entry \"s\" states [ { name \"s\" clip \"idle\" speed_param \"p\" } ] } ] }" },
+    };
+    for (cases) |case| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, "foundry:animation_machine demo:machine { ");
+        try text.appendSlice(gpa, case[1]);
+        try s.write("machine.fdt", text.items);
+        try s.build();
+        try testing.expectError(case[0], s.rigs.acquireMachine(id("demo:set"), id("demo:machine")));
+    }
+
+    // The set itself does not build: nothing to check a machine against.
+    try s.write("machine.fdt", machine_text);
+    try s.set("foundry:animation_set demo:set { model demo:hero start \"gone\" }");
+    try s.build();
+    try testing.expectError(error.UnknownClip, s.rigs.acquireMachine(id("demo:set"), id("demo:machine")));
+
+    try testing.expectEqual(@as(u32, 0), s.rigs.machines.count());
+    try testing.expectEqual(@as(u32, 0), s.rigs.entries.count());
+}
+
+test "a bad machine is refused at compile, naming the record" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", "foundry:animation_machine demo:machine { layers [ { name \"b\" entry \"t\" states [ { name \"s\" clip \"walk\" } ] } ] }");
+    try testing.expectError(error.ContentInvalid, s.build());
+    var found = false;
+    for (s.diags.items.items) |diagnostic| {
+        if (std.mem.indexOf(u8, diagnostic.message, "animation machine 'demo:machine'") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "the same pair is one machine, counted, and it holds its rig" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    const a = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    const b = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    try testing.expectEqual(a, b);
+    try testing.expectEqual(@as(u32, 1), s.rigs.machines.count());
+    // The rig a game acquired itself goes with its own release; the machine still holds one.
+    const rig = try s.rigs.acquire(id("demo:set"));
+    s.rigs.release(rig);
+    try testing.expect(s.rigs.lookup(id("demo:set")) != null);
+    s.rigs.releaseMachine(a);
+    try testing.expect(s.rigs.getMachine(b) != null);
+    s.rigs.releaseMachine(b);
+    try testing.expectEqual(@as(u32, 0), s.rigs.machines.count());
+    try testing.expectEqual(@as(u32, 0), s.rigs.entries.count());
+}
+
+test "a reload keeps a machine's handle, follows its record, and a broken one mends" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    const handle = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    defer s.rigs.releaseMachine(handle);
+
+    try s.write("machine.fdt",
+        \\foundry:animation_machine demo:machine {
+        \\    params [ { name "speed" } ]
+        \\    layers [ { name "body" entry "walk" states [ { name "walk" clip "walk" speed 2 } ] } ]
+        \\}
+    );
+    try s.reload();
+    const machine = s.rigs.getMachine(handle).?;
+    try testing.expectEqual(@as(usize, 1), machine.layers.len);
+    try testing.expectEqual(@as(f32, 2), machine.layers[0].states[0].speed);
+
+    // A machine its rig no longer supports answers null, as does one whose rig is gone.
+    try s.write("machine.fdt", "foundry:animation_machine demo:machine { layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"run\" } ] } ] }");
+    try s.reload();
+    try testing.expect(s.rigs.getMachine(handle) == null);
+    try s.write("machine.fdt", machine_text);
+    try s.set("foundry:animation_set demo:set { model demo:hero start \"gone\" }");
+    try s.reload();
+    try testing.expect(s.rigs.getMachine(handle) == null);
+
+    try s.set(v2_set);
+    try s.reload();
+    try testing.expectEqual(@as(usize, 2), s.rigs.getMachine(handle).?.layers.len);
+}
+
+test "out of memory building a version 2 rig or a machine leaks nothing, and a retry succeeds" {
+    const s = try Stack.init();
+    defer s.deinit();
+    // A third joint, so a mask has a subtree to take.
+    try s.writeAssets(3, 0.5);
+    try s.set(v2_set);
+    try s.write("machine.fdt", machine_text);
+    try s.build();
+    var fail: usize = 0;
+    while (true) : (fail += 1) {
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail });
+        var rigs = Rigs.init(failing.allocator(), &s.assets);
+        defer rigs.deinit();
+        const handle = rigs.acquireMachine(id("demo:set"), id("demo:machine")) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        rigs.releaseMachine(handle);
+        break;
+    }
+    try testing.expect(fail > 6);
+}

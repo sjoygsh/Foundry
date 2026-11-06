@@ -26,6 +26,20 @@
 //! (does the model have this clip, is this joint a root) is `rigs.zig`'s, when a rig is built,
 //! since a mod may override any of them.
 //!
+//! **Version 2** (`animation-states.md` §9) adds four lists beside `clips`:
+//!
+//! ```fdt
+//!     masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]
+//!     sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
+//!     additive [ { clip "pant" } { clip "look" reference "idle" } ]
+//!     rises [ { clip "climb" rise 0.3 } ]
+//! ```
+//!
+//! **They are lists of their own, and not fields of `clips[]`, because a nested type can't grow
+//! additively.** The registry compares a list item's fields whole, so a field added inside one would
+//! refuse every package compiled against version 1 (I8). A list beside it is an ordinary optional
+//! field.
+//!
 //! **Every name here is on authors' disks** (CLAUDE.md §7).
 
 const std = @import("std");
@@ -61,20 +75,59 @@ const clip_type: FieldType = .{ .nested = &.{
     .{ .name = "events", .type = .{ .list = &event_type }, .presence = .optional },
 } };
 
+const mask_joint_type: FieldType = .{ .nested = &.{
+    .{ .name = "joint", .type = .string },
+    .{ .name = "weight", .type = .f32, .presence = .{ .default = .{ .float = 1 } } },
+} };
+
+const mask_type: FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "joints", .type = .{ .list = &mask_joint_type } },
+} };
+
+const sync_type: FieldType = .{ .nested = &.{
+    .{ .name = "clip", .type = .string },
+    .{ .name = "group", .type = .string },
+} };
+
+const additive_type: FieldType = .{ .nested = &.{
+    .{ .name = "clip", .type = .string },
+    .{ .name = "reference", .type = .string, .presence = .optional },
+} };
+
+const rise_type: FieldType = .{ .nested = &.{
+    .{ .name = "clip", .type = .string },
+    .{ .name = "rise", .type = .f32 },
+} };
+
 pub const schema: Schema = .{
     .id = SchemaId.fromStringUnchecked(name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = "model", .type = .id },
         .{ .name = "start", .type = .string, .presence = .optional },
         .{ .name = "motion_joint", .type = .string, .presence = .optional },
         .{ .name = "clips", .type = .{ .list = &clip_type }, .presence = .optional },
+        .{ .name = "masks", .type = .{ .list = &mask_type }, .presence = .optional, .since = 2 },
+        .{ .name = "sync", .type = .{ .list = &sync_type }, .presence = .optional, .since = 2 },
+        .{ .name = "additive", .type = .{ .list = &additive_type }, .presence = .optional, .since = 2 },
+        .{ .name = "rises", .type = .{ .list = &rise_type }, .presence = .optional, .since = 2 },
     },
 };
 
+/// Version 1, as M34 compiled it: what an older package was written against.
+pub const schema_v1: Schema = .{ .id = schema.id, .version = 1, .fields = schema.fields[0..4] };
+
+/// Masks one set may hold, and joints one mask may name.
+pub const max_masks: usize = anim.max_masks;
+pub const max_mask_joints: usize = anim.rig.max_mask_entries;
+
 pub fn registerAll(allocator: Allocator, registry: *Registry) (data.schema.RegisterError || Allocator.Error)!void {
     _ = try registry.register(allocator, schema);
+    try machine.registerAll(allocator, registry);
 }
+
+const machine = @import("animation_machine.zig");
 
 pub const Refusal = error{
     NoModel,
@@ -87,6 +140,19 @@ pub const Refusal = error{
     EventOutOfRange,
     UnsortedEvents,
     MissingMotionJoint,
+    // Version 2.
+    TooManyMasks,
+    DuplicateMask,
+    EmptyMask,
+    TooManyMaskJoints,
+    InvalidMaskWeight,
+    DuplicateSync,
+    SyncOnOneShot,
+    DuplicateAdditive,
+    AdditiveWithMotion,
+    AdditiveStart,
+    DuplicateRise,
+    InvalidRise,
 };
 
 pub const DecodeError = Refusal || data.fpk.ReadError;
@@ -104,6 +170,18 @@ pub fn describe(err: DecodeError) []const u8 {
         error.EventOutOfRange => "has an event outside its clip: 'at' is from 0 to under 1, or exactly 1 on a clip that does not loop",
         error.UnsortedEvents => "has a clip whose events are not in order of 'at'",
         error.MissingMotionJoint => "has a clip with motion, and no motion_joint",
+        error.TooManyMasks => "has more masks than a set may hold, 8",
+        error.DuplicateMask => "names one mask twice",
+        error.EmptyMask => "has a mask that names no joint",
+        error.TooManyMaskJoints => "has a mask naming more than 32 joints",
+        error.InvalidMaskWeight => "has a mask weight that is not from 0 to 1",
+        error.DuplicateSync => "puts one clip in a sync group twice",
+        error.SyncOnOneShot => "puts a clip that does not loop in a sync group; a group keeps laps in step",
+        error.DuplicateAdditive => "lists one clip as additive twice",
+        error.AdditiveWithMotion => "makes a clip with motion additive; motion is the base layer's",
+        error.AdditiveStart => "starts on an additive clip; a figure begins on its base layer",
+        error.DuplicateRise => "gives one clip a rise twice",
+        error.InvalidRise => "has a rise that is not above 0",
         else => "is malformed",
     };
 }
@@ -171,8 +249,133 @@ pub fn eventAt(list: List, index: u32) DecodeError!anim.Event {
     return .{ .at = @floatCast(at), .id = id };
 }
 
+pub const MaskJoint = struct { joint: []const u8, weight: f32 };
+pub const Mask = struct { name: []const u8, joints: List };
+pub const Sync = struct { clip: []const u8, group: []const u8 };
+pub const Additive = struct { clip: []const u8, reference: ?[]const u8 };
+pub const Rise = struct { clip: []const u8, rise: f32 };
+
+pub fn masks(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "masks") orelse return null);
+}
+
+pub fn maskAt(list: List, index: u32) DecodeError!Mask {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const joints = (try fields.listAt(indexOf(fields, "joints") orelse return error.EmptyMask)) orelse return error.EmptyMask;
+    return .{ .name = try requiredName(fields, "name"), .joints = joints };
+}
+
+pub fn maskJointAt(list: List, index: u32) DecodeError!MaskJoint {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const weight: f32 = if (indexOf(fields, "weight")) |at| @floatCast((try fields.floatAt(at)) orelse 1) else 1;
+    return .{ .joint = try requiredName(fields, "joint"), .weight = weight };
+}
+
+pub fn syncs(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "sync") orelse return null);
+}
+
+pub fn syncAt(list: List, index: u32) DecodeError!Sync {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    return .{ .clip = try requiredName(fields, "clip"), .group = try requiredName(fields, "group") };
+}
+
+pub fn additives(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "additive") orelse return null);
+}
+
+pub fn additiveAt(list: List, index: u32) DecodeError!Additive {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    return .{ .clip = try requiredName(fields, "clip"), .reference = try optionalName(fields, "reference") };
+}
+
+pub fn rises(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "rises") orelse return null);
+}
+
+pub fn riseAt(list: List, index: u32) DecodeError!Rise {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const rise = (try fields.floatAt(indexOf(fields, "rise") orelse return error.InvalidRise)) orelse return error.InvalidRise;
+    return .{ .clip = try requiredName(fields, "clip"), .rise = @floatCast(rise) };
+}
+
+fn requiredName(fields: Fields, field: []const u8) DecodeError![]const u8 {
+    return (try optionalName(fields, field)) orelse error.EmptyName;
+}
+
+/// The listed meaning of `clip_name`, or null for a clip the set does not list.
+fn listedClip(list: ?List, clip_name: []const u8) DecodeError!?Clip {
+    const l = list orelse return null;
+    for (0..l.len) |i| {
+        const clip = try clipAt(l, @intCast(i));
+        if (std.mem.eql(u8, clip.name, clip_name)) return clip;
+    }
+    return null;
+}
+
 /// Everything one record can show. It allocates nothing, so a package's compile can run it.
 pub fn check(fields: Fields) DecodeError!void {
+    try checkClips(fields);
+    try checkVersion2(fields);
+}
+
+fn checkVersion2(fields: Fields) DecodeError!void {
+    const listed = try clips(fields);
+    if (try masks(fields)) |list| {
+        if (list.len > max_masks) return error.TooManyMasks;
+        for (0..list.len) |i| {
+            const mask = try maskAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try maskAt(list, @intCast(earlier))).name, mask.name)) return error.DuplicateMask;
+            }
+            if (mask.joints.len == 0) return error.EmptyMask;
+            if (mask.joints.len > max_mask_joints) return error.TooManyMaskJoints;
+            for (0..mask.joints.len) |j| {
+                const joint = try maskJointAt(mask.joints, @intCast(j));
+                // Written so a NaN is refused.
+                if (!(joint.weight >= 0 and joint.weight <= 1)) return error.InvalidMaskWeight;
+            }
+        }
+    }
+    if (try syncs(fields)) |list| {
+        for (0..list.len) |i| {
+            const entry = try syncAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try syncAt(list, @intCast(earlier))).clip, entry.clip)) return error.DuplicateSync;
+            }
+            if (try listedClip(listed, entry.clip)) |clip| {
+                if (!clip.loop) return error.SyncOnOneShot;
+            }
+        }
+    }
+    if (try additives(fields)) |list| {
+        const first = try start(fields);
+        for (0..list.len) |i| {
+            const entry = try additiveAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try additiveAt(list, @intCast(earlier))).clip, entry.clip)) return error.DuplicateAdditive;
+            }
+            if (try listedClip(listed, entry.clip)) |clip| {
+                if (clip.motion) return error.AdditiveWithMotion;
+            }
+            if (first) |name_| {
+                if (std.mem.eql(u8, name_, entry.clip)) return error.AdditiveStart;
+            }
+        }
+    }
+    if (try rises(fields)) |list| {
+        for (0..list.len) |i| {
+            const entry = try riseAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try riseAt(list, @intCast(earlier))).clip, entry.clip)) return error.DuplicateRise;
+            }
+            // Written so a NaN is refused.
+            if (!(entry.rise > 0) or !std.math.isFinite(entry.rise)) return error.InvalidRise;
+        }
+    }
+}
+
+fn checkClips(fields: Fields) DecodeError!void {
     _ = try model(fields);
     _ = try start(fields);
     const joint = try motionJoint(fields);
@@ -325,4 +528,105 @@ test "the two limits are refused one past them" {
     for (0..max_events + 1) |_| try event_text.appendSlice(gpa, " { at 0 event t:e }");
     try event_text.appendSlice(gpa, " ] } ] }");
     try expectRefused(error.TooManyEvents, event_text.items);
+}
+
+test "version 2: masks, sync groups, additive clips and rises read with their defaults" {
+    var c: Compiled = undefined;
+    try c.init(
+        \\foundry:animation_set t:set {
+        \\    model t:model
+        \\    motion_joint "pelvis"
+        \\    clips [ { name "stride" motion true } { name "turn" loop false } ]
+        \\    masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]
+        \\    sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
+        \\    additive [ { clip "pant" } { clip "look" reference "idle" } ]
+        \\    rises [ { clip "climb" rise 0.3 } ]
+        \\}
+    );
+    defer c.deinit();
+    const fields = c.fields();
+    try check(fields);
+    const mask = try maskAt((try masks(fields)).?, 0);
+    try testing.expectEqualStrings("upper", mask.name);
+    try testing.expectEqual(@as(f32, 0.5), (try maskJointAt(mask.joints, 0)).weight);
+    try testing.expectEqual(@as(f32, 1), (try maskJointAt(mask.joints, 1)).weight);
+    try testing.expectEqualStrings("chest", (try maskJointAt(mask.joints, 1)).joint);
+    const run = try syncAt((try syncs(fields)).?, 1);
+    try testing.expectEqualStrings("run", run.clip);
+    try testing.expectEqualStrings("feet", run.group);
+    const additive = (try additives(fields)).?;
+    try testing.expect((try additiveAt(additive, 0)).reference == null);
+    try testing.expectEqualStrings("idle", (try additiveAt(additive, 1)).reference.?);
+    try testing.expectEqual(@as(f32, 0.3), (try riseAt((try rises(fields)).?, 0)).rise);
+}
+
+test "version 2: every refusal is named, at its boundary" {
+    const head = "foundry:animation_set t:set { model t:m ";
+    const cases = [_]struct { DecodeError, []const u8 }{
+        .{ error.DuplicateMask, "masks [ { name \"a\" joints [ { joint \"j\" } ] } { name \"a\" joints [ { joint \"j\" } ] } ] }" },
+        .{ error.EmptyMask, "masks [ { name \"a\" joints [ ] } ] }" },
+        .{ error.EmptyName, "masks [ { name \"a\" joints [ { joint \"\" } ] } ] }" },
+        .{ error.InvalidMaskWeight, "masks [ { name \"a\" joints [ { joint \"j\" weight 1.5 } ] } ] }" },
+        .{ error.InvalidMaskWeight, "masks [ { name \"a\" joints [ { joint \"j\" weight -0.5 } ] } ] }" },
+        .{ error.DuplicateSync, "sync [ { clip \"a\" group \"g\" } { clip \"a\" group \"h\" } ] }" },
+        .{ error.SyncOnOneShot, "clips [ { name \"a\" loop false } ] sync [ { clip \"a\" group \"g\" } ] }" },
+        .{ error.EmptyName, "sync [ { clip \"a\" group \"\" } ] }" },
+        .{ error.DuplicateAdditive, "additive [ { clip \"a\" } { clip \"a\" } ] }" },
+        .{ error.AdditiveWithMotion, "motion_joint \"p\" clips [ { name \"a\" motion true } ] additive [ { clip \"a\" } ] }" },
+        .{ error.AdditiveStart, "start \"a\" additive [ { clip \"a\" } ] }" },
+        .{ error.EmptyName, "additive [ { clip \"a\" reference \"\" } ] }" },
+        .{ error.DuplicateRise, "rises [ { clip \"a\" rise 0.3 } { clip \"a\" rise 0.4 } ] }" },
+        .{ error.InvalidRise, "rises [ { clip \"a\" rise 0 } ] }" },
+        .{ error.InvalidRise, "rises [ { clip \"a\" rise -1 } ] }" },
+    };
+    for (cases) |case| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, head);
+        try text.appendSlice(gpa, case[1]);
+        try expectRefused(case[0], text.items);
+    }
+
+    var too_many: std.ArrayList(u8) = .empty;
+    defer too_many.deinit(gpa);
+    try too_many.appendSlice(gpa, head ++ "masks [");
+    for (0..max_masks + 1) |i| try too_many.print(gpa, " {{ name \"m{d}\" joints [ {{ joint \"j\" }} ] }}", .{i});
+    try too_many.appendSlice(gpa, " ] }");
+    try expectRefused(error.TooManyMasks, too_many.items);
+
+    var joints: std.ArrayList(u8) = .empty;
+    defer joints.deinit(gpa);
+    try joints.appendSlice(gpa, head ++ "masks [ { name \"m\" joints [");
+    for (0..max_mask_joints + 1) |_| try joints.appendSlice(gpa, " { joint \"j\" }");
+    try joints.appendSlice(gpa, " ] } ] }");
+    try expectRefused(error.TooManyMaskJoints, joints.items);
+}
+
+test "version 2 is additive: a set compiled against version 1 reads under it, with nothing listed" {
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, schema_v1);
+    var package = try data.Package.init(gpa, "t:content", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    var doc = try data.parser.parse(gpa, "t.fdt", "foundry:animation_set t:set { model t:model clips [ { name \"stride\" motion true } ] motion_joint \"p\" }", .{ .namespace = "t" }, &diags);
+    defer doc.deinit(gpa);
+    try package.addDocument(gpa, &doc, &registry, &diags);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try data.fpk.write(gpa, &package, &registry, &bytes);
+
+    // The engine now registers version 2, and the old package still loads into it.
+    try registerAll(gpa, &registry);
+    var store: data.Store = .init(gpa, .default);
+    defer store.deinit(gpa);
+    _ = try store.add(gpa, "t.fpk", bytes.items, &registry, &diags);
+    const fields = store.lookup(ContentId.fromString("t:set")).?.fields;
+    try check(fields);
+    try testing.expect((try masks(fields)) == null);
+    try testing.expect((try syncs(fields)) == null);
+    try testing.expect((try additives(fields)) == null);
+    try testing.expect((try rises(fields)) == null);
+    try testing.expect((try clipAt((try clips(fields)).?, 0)).motion);
 }

@@ -12,6 +12,9 @@
 //! next `acquire` or `contentChanged`, which a game calls at the seam where it already rebuilds
 //! what depends on content, after the registry's reload and before the next tick. A handle lasts
 //! until released.
+//!
+//! **Machines are built here too** (`animation-states.md` §10): a `foundry:animation_machine`
+//! against the rig of a set, checked by `anim.Machine.validate`, rebuilt with its rig.
 
 const std = @import("std");
 const anim = @import("anim");
@@ -19,6 +22,7 @@ const core = @import("core");
 const data = @import("data");
 
 const animation = @import("animation.zig");
+const machine_mod = @import("animation_machine.zig");
 const registry_mod = @import("registry.zig");
 const schemas = @import("schemas.zig");
 const set_mod = @import("animation_set.zig");
@@ -48,6 +52,20 @@ pub const BuildError = Allocator.Error || set_mod.DecodeError || anim.Rig.Valida
     UnknownClip,
     /// A clip was made for a different skeleton.
     JointCountMismatch,
+    /// An additive clip's `reference` is not a clip of the model.
+    UnknownReference,
+};
+
+const MachineTag = opaque {};
+
+/// A machine, by handle (I1), built against one set's rig.
+pub const MachineHandle = core.Handle(MachineTag);
+
+pub const MachineError = BuildError || machine_mod.DecodeError || anim.Machine.ValidateError || error{
+    MissingMachine,
+    NotAMachine,
+    /// The set's rig does not build, so there is nothing to check the machine against.
+    RigUnavailable,
 };
 
 /// Everything one rig owns besides its asset handles. A rebuild makes a new one and swaps it in.
@@ -58,6 +76,11 @@ const Built = struct {
     tracks: []anim.Track = &.{},
     events: []anim.Event = &.{},
     labels: []u8 = &.{},
+    /// Version 2's: masks, their weights and names, and additive clips' reference poses.
+    masks: []anim.Mask = &.{},
+    weights: []f32 = &.{},
+    mask_labels: []u8 = &.{},
+    references: []core.math.Transform = &.{},
     rig: anim.Rig = undefined,
 
     fn release(self: *Built, gpa: Allocator, assets: *Registry) void {
@@ -68,8 +91,25 @@ const Built = struct {
         gpa.free(self.tracks);
         gpa.free(self.events);
         gpa.free(self.labels);
+        gpa.free(self.masks);
+        gpa.free(self.weights);
+        gpa.free(self.mask_labels);
+        gpa.free(self.references);
         self.* = .{};
     }
+};
+
+const MachineKey = struct { set: u64, machine: u64 };
+
+const MachineEntry = struct {
+    set: ContentId,
+    machine: ContentId,
+    /// Held while the machine is, so its rig lives as long.
+    rig: RigHandle,
+    refs: u32,
+    /// Null while the machine does not build. Its arena holds everything the machine borrows.
+    built: ?std.heap.ArenaAllocator,
+    machine_value: anim.Machine = .{ .layers = &.{} },
 };
 
 const Entry = struct {
@@ -84,6 +124,8 @@ pub const Rigs = struct {
     assets: *Registry,
     entries: core.HandlePool(RigTag, Entry) = .empty,
     by_id: std.AutoHashMapUnmanaged(u64, RigHandle) = .empty,
+    machines: core.HandlePool(MachineTag, MachineEntry) = .empty,
+    by_pair: std.AutoHashMapUnmanaged(MachineKey, MachineHandle) = .empty,
 
     /// Records are read from `assets`' own store, so the two can never disagree about which
     /// packages are loaded.
@@ -92,6 +134,12 @@ pub const Rigs = struct {
     }
 
     pub fn deinit(self: *Rigs) void {
+        var machines = self.machines.iterator();
+        while (machines.next()) |entry| {
+            if (entry.value.built) |*arena| arena.deinit();
+        }
+        self.machines.deinit(self.gpa);
+        self.by_pair.deinit(self.gpa);
         var it = self.entries.iterator();
         while (it.next()) |entry| {
             if (entry.value.built) |*built| built.release(self.gpa, self.assets);
@@ -139,10 +187,82 @@ pub const Rigs = struct {
         return self.get(self.by_id.get(set.hash) orelse return null);
     }
 
-    /// Rebuilds every rig from what is loaded now, keeping handles. Call it after the registry's
-    /// reload. A rig that no longer builds answers null, and is said once. It can't keep what it
-    /// had, because what it borrowed may be gone. It is tried again at the next call.
+    /// The machine `machine` builds against `set`'s rig. The same pair is one machine, counted, and
+    /// it holds the rig. A refusal leaves nothing behind.
+    pub fn acquireMachine(self: *Rigs, set: ContentId, machine: ContentId) MachineError!MachineHandle {
+        const key: MachineKey = .{ .set = set.hash, .machine = machine.hash };
+        if (self.by_pair.get(key)) |handle| {
+            const entry = self.machines.get(handle).?;
+            if (entry.built == null) try self.buildMachine(entry);
+            entry.refs += 1;
+            return handle;
+        }
+        const rig = try self.acquire(set);
+        errdefer self.release(rig);
+        var entry: MachineEntry = .{ .set = set, .machine = machine, .rig = rig, .refs = 1, .built = null };
+        try self.buildMachine(&entry);
+        errdefer entry.built.?.deinit();
+        try self.by_pair.ensureUnusedCapacity(self.gpa, 1);
+        const handle = try self.machines.add(self.gpa, entry);
+        self.by_pair.putAssumeCapacity(key, handle);
+        return handle;
+    }
+
+    pub fn releaseMachine(self: *Rigs, handle: MachineHandle) void {
+        const entry = self.machines.get(handle) orelse return;
+        entry.refs -= 1;
+        if (entry.refs != 0) return;
+        if (entry.built) |*arena| arena.deinit();
+        const rig = entry.rig;
+        _ = self.by_pair.remove(.{ .set = entry.set.hash, .machine = entry.machine.hash });
+        _ = self.machines.remove(handle);
+        self.release(rig);
+    }
+
+    /// The machine, or null while it does not build. Borrowed as a rig is.
+    pub fn getMachine(self: *const Rigs, handle: MachineHandle) ?*const anim.Machine {
+        const entry = self.machines.getConst(handle) orelse return null;
+        return if (entry.built != null) &entry.machine_value else null;
+    }
+
+    /// The machine of a set and a machine record, for what names both by content ID, as
+    /// `foundry:animator` does. Null for a pair nobody acquired.
+    pub fn lookupMachine(self: *const Rigs, set: ContentId, machine: ContentId) ?*const anim.Machine {
+        return self.getMachine(self.by_pair.get(.{ .set = set.hash, .machine = machine.hash }) orelse return null);
+    }
+
+    fn buildMachine(self: *Rigs, entry: *MachineEntry) MachineError!void {
+        const record = self.assets.store.lookup(entry.machine) orelse return error.MissingMachine;
+        if (!record.schema_id.eql(machine_mod.schema.id)) return error.NotAMachine;
+        const rig = self.get(entry.rig) orelse return error.RigUnavailable;
+        var arena: std.heap.ArenaAllocator = .init(self.gpa);
+        errdefer arena.deinit();
+        const machine = try machine_mod.decode(arena.allocator(), record.fields);
+        try machine.validate(rig.*);
+        entry.built = arena;
+        entry.machine_value = machine;
+    }
+
+    /// Rebuilds every rig from what is loaded now, keeping handles, and then every machine against
+    /// its rebuilt rig. Call it after the registry's reload. A rig or machine that no longer builds
+    /// answers null, and is said once. It can't keep what it had, because what it borrowed may be
+    /// gone. It is tried again at the next call.
     pub fn contentChanged(self: *Rigs) Allocator.Error!void {
+        try self.rebuildRigs();
+        var it = self.machines.iterator();
+        while (it.next()) |entry| {
+            const slot = self.machines.get(entry.id).?;
+            const had = slot.built != null;
+            if (slot.built) |*arena| arena.deinit();
+            slot.built = null;
+            self.buildMachine(slot) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                if (had) log.warn("animation machine {f} for set {f} no longer builds ({t}); it is gone until it does", .{ slot.machine, slot.set, err });
+            };
+        }
+    }
+
+    fn rebuildRigs(self: *Rigs) Allocator.Error!void {
         var it = self.entries.iterator();
         while (it.next()) |entry| {
             const had = entry.value.built != null;
@@ -245,16 +365,84 @@ pub const Rigs = struct {
 
         const start_name = (try set_mod.start(fields)) orelse stringField((try model_clips.nestedAt(0)).?, "name").?;
         if (!hasClip(model_clips, start_name)) return error.UnknownClip;
+        const anim_skeleton: anim.Skeleton = .{ .parents = skeleton.parents, .rest = skeleton.rest, .inverse_bind = skeleton.inverse_bind, .root = skeleton.root };
+        try anim_skeleton.validate();
+        try self.applyVersion2(&built, fields, anim_skeleton, skeleton);
         built.rig = .{
-            .skeleton = .{ .parents = skeleton.parents, .rest = skeleton.rest, .inverse_bind = skeleton.inverse_bind, .root = skeleton.root },
+            .skeleton = anim_skeleton,
             .clips = built.clips,
             .start = anim.clipName(start_name),
             .motion_joint = if (try set_mod.motionJoint(fields)) |joint| try jointNamed(skeleton, joint) else anim.no_parent,
+            .masks = built.masks,
         };
         try built.rig.validate();
         return built;
     }
+
+    /// Version 2's lists, applied to clips already built: sync groups, rises, additive clips with
+    /// their reference poses sampled once, and masks filled from their joints' subtrees.
+    fn applyVersion2(self: *Rigs, built: *Built, fields: data.fpk.Fields, anim_skeleton: anim.Skeleton, skeleton: *const skeleton_mod.Skeleton) BuildError!void {
+        const gpa = self.gpa;
+        const joints = anim_skeleton.jointCount();
+        if (try set_mod.syncs(fields)) |list| for (0..list.len) |i| {
+            const entry = try set_mod.syncAt(list, @intCast(i));
+            (try clipOf(built.clips, entry.clip)).sync = anim.clipName(entry.group);
+        };
+        if (try set_mod.rises(fields)) |list| for (0..list.len) |i| {
+            const entry = try set_mod.riseAt(list, @intCast(i));
+            (try clipOf(built.clips, entry.clip)).rise = entry.rise;
+        };
+        if (try set_mod.additives(fields)) |list| {
+            built.references = try gpa.alloc(core.math.Transform, list.len * joints);
+            for (0..list.len) |i| {
+                const entry = try set_mod.additiveAt(list, @intCast(i));
+                const clip = try clipOf(built.clips, entry.clip);
+                const reference = if (entry.reference) |name_| (clipOf(built.clips, name_) catch return error.UnknownReference) else clip;
+                // Sampled before `Rig.validate`, so the one clip sampled is validated first.
+                try reference.clip.validate(joints);
+                const pose = built.references[i * joints ..][0..joints];
+                anim.sample(anim_skeleton, reference.clip, 0, .{ .local = pose });
+                clip.additive = true;
+                clip.reference = pose;
+            }
+        }
+        const list = (try set_mod.masks(fields)) orelse return;
+        built.masks = try gpa.alloc(anim.Mask, list.len);
+        built.weights = try gpa.alloc(f32, list.len * joints);
+        var label_bytes: usize = 0;
+        for (0..list.len) |i| label_bytes += (try set_mod.maskAt(list, @intCast(i))).name.len;
+        built.mask_labels = try gpa.alloc(u8, label_bytes);
+        var next_label: usize = 0;
+        for (built.masks, 0..) |*out, i| {
+            const mask = try set_mod.maskAt(list, @intCast(i));
+            if (mask.joints.len > anim.rig.max_mask_entries) return error.TooManyMaskJoints;
+            var entries: [anim.rig.max_mask_entries]anim.MaskEntry = undefined;
+            for (0..mask.joints.len) |j| {
+                const joint = try set_mod.maskJointAt(mask.joints, @intCast(j));
+                entries[j] = .{ .joint = try jointNamed(skeleton, joint.joint), .weight = joint.weight };
+            }
+            const weights = built.weights[i * joints ..][0..joints];
+            anim.fillMask(anim_skeleton, entries[0..mask.joints.len], weights) catch |err| return switch (err) {
+                error.UnknownJoint => error.UnknownJoint,
+                error.InvalidMaskWeight => error.InvalidMaskWeight,
+                error.TooManyMaskEntries => error.TooManyMaskJoints,
+            };
+            const label = built.mask_labels[next_label..][0..mask.name.len];
+            next_label += label.len;
+            @memcpy(label, mask.name);
+            out.* = .{ .name = anim.clipName(mask.name), .weights = weights, .label = label };
+        }
+    }
 };
+
+/// The built clip a set names, or `UnknownClip`. A walk: a set lists few.
+fn clipOf(clips: []anim.RigClip, clip_name: []const u8) BuildError!*anim.RigClip {
+    const hash = anim.clipName(clip_name);
+    for (clips) |*clip| {
+        if (clip.name == hash) return clip;
+    }
+    return error.UnknownClip;
+}
 
 fn lessByName(_: void, a: anim.RigClip, b: anim.RigClip) bool {
     return a.name < b.name;
