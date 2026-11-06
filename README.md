@@ -184,7 +184,8 @@ clips by what a record says the clips mean, step and land on events, are moved b
 clips, and save in mid-stride. It runs on macOS, Windows and Linux (X11
 and Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M35's design on the long roadmap
+**What comes next** is M35, Animation logic II, whose design is proposed
+([`animation-states.md`](docs/design/animation-states.md)), on the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to

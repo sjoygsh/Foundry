@@ -540,6 +540,8 @@ complete, and none names a contract the code does not have.
 
 ## 15. What stays open, deliberately
 
+> **2026-11-06:** M35's rows are designed in [`animation-states.md`](animation-states.md) (proposed).
+
 Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 
 | Item | Owner | Note |

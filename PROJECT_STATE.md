@@ -1,7 +1,10 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M34 is complete (2026-11-06, tag `m34`, pushed); stop before M35's design** ([`docs/design/animation-logic.md`](docs/design/animation-logic.md), ADR-0071). M35 is Animation logic II: state machines, layers, masks and additive poses. Nothing of it is designed. The PC holds no Foundry clone.
+**Current handoff: M35's design is proposed** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072); awaiting acceptance of §19. Stop before Step 1. The PC holds no Foundry clone.
+
+**M35's design is proposed (2026-11-06): Animation logic II.** Eleven steps. A clip can play backward, clips of different lengths stay in step through a sync group, and a seek is fitted over laps. `anim.Stack` holds three layers, each a `Player`, with per-joint masks and additive poses. `anim.Machine` runs states and transitions from up to eight saved parameters. `foundry:animation_machine` is a new record that the figure names, and the set does not. `foundry:animation_set` and `foundry:animator` move to version 2 by appending fields, so v1 sets and saves still load. The pacer and the warden move onto machines: the pacer's pins must hold and the court's digests must, while the warden walks, runs, reaches and pants. §19 row 15 asks whether blend spaces go to M36.
+
 
 **M34 is complete (2026-11-06, tag `m34`): Animation logic I.** Playback is `anim.Player`, a value `foundry:animator` saves with a world. `foundry:animation_set` says what a clip means, root motion is a wish, and events are IDs on the tick. The pacer saves in mid-stride, the warden steps, jumps and lands on its clips, and the owner played it. It runs on Metal and on Windows/Vulkan with every pin equal.
 - The close fixed the Debug court's reload crash (`hud.zig:122`): its text and theme are read again at the content seam.
