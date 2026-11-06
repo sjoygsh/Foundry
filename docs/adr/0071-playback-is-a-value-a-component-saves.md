@@ -90,8 +90,14 @@ channel alone, in time order.
 ## Revisit if
 
 - M35 needs per-channel state that four nested channels cannot hold within additive versioning.
+  **2026-11-06, at M35's close: it did not fire.** `foundry:animator` v2 appends two layers, three
+  layer states, eight parameters and a machine as top-level fields, and a v1 save loads and continues
+  (`animation-states.md` §8, Step 5).
 - `animation.advance` over a real game's animators passes its budget on the i3, which M100's
-  parallel systems would then have to answer.
+  parallel systems would then have to answer. **2026-11-06, at M35's close: not on the i3,** where
+  32 two-layer machines read 0.039–0.065 ms p95 against 0.10. The M5 reads 0.17–0.23 ms in its
+  paced frame, against 0.030 ms for the same work in a tight loop. What the Mac's frame adds is
+  M100's, with this revisit.
 - A game needs an event to carry data often enough that every game's table is the same table.
 - A rig's build time at load is measured as a problem, which would argue for validating at `fpack`.
 - A game needs a pose that isn't a function of a player, such as a pose held from a ragdoll. M54

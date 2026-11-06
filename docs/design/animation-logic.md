@@ -540,7 +540,12 @@ complete, and none names a contract the code does not have.
 
 ## 15. What stays open, deliberately
 
-> **2026-11-06:** M35's rows are designed in [`animation-states.md`](animation-states.md) (proposed).
+> **2026-11-06:** M35's rows are designed in [`animation-states.md`](animation-states.md).
+
+> **2026-11-06, at M35's close:** M35 is complete (tag `m35`). State machines, layers, masks and additive poses (ADR-0072),
+> sync groups, a clip played backward and a ladder's climb fitted to its height (`rise` and
+> `Rig.lapsFor`) are all built and played in both samples. Those four rows are done. The 32-animator
+> row stays M100's: two-layer machines read 0.039–0.065 ms p95 on the i3, and 0.17–0.23 ms on the M5.
 
 Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 

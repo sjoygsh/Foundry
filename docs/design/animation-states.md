@@ -1,7 +1,8 @@
 # Design: M35 — Animation logic II: state machines, layers, masks and additive poses
 
-**Status:** Accepted 2026-11-06, when the owner asked for Step 1, with §19 as written (row 15 included:
-blend spaces go to M36's row at the close). Each step's Resolution follows §19.
+**Status:** **Complete 2026-11-06 (ADR-0072), tag `m35`.** Accepted 2026-11-06, when the owner asked
+for Step 1, with §19 as written (row 15 included: blend spaces go to M36's row). Each step's
+Resolution follows §19; Step 11's closes it.
 **Date:** 2026-11-06
 **Baseline:** `1ff0360`, tag `m34`. M0–M34 are complete.
 **Decisions:**
@@ -278,6 +279,11 @@ the pacer with no code, and M111's editor will have a record to edit.
 
 ## 8. `foundry:animator` version 2 (`scene`)
 
+> **2026-11-06, at M35's close:** the fields are as Step 5's Resolution has them, not as the table below: `l1` and `l2` are
+> each a layer's player, `s0`–`s2` each a layer's weight, target, state and ticks, then `p0`–`p7` and
+> `machine`. That follows `anim.Stack`'s layout, players first, because a `Player` ends in padding. A
+> save grows by 664 bytes an animator, from 208 to 872, not about 450. The revisit still does not fire.
+
 **The component grows by appending fields,** so a version 1 record or save loads with the new ones
 at their defaults, which is a stack with only a base layer and no machine:
 
@@ -404,6 +410,10 @@ foundry:animation_machine court:warden.machine {
 | `layers[].transitions` | list, at most 64 | `from` (a state or `"*"`), `to`, `fade` (default 0), `phase` (default restart), `when` |
 | `when` | list, at most 4 | `param` or `laps` or `finished`, then `at_least`, `below` or `is`, with an f32 |
 
+> **2026-11-06, at M35's close:** a condition names its quantity as a field: `{ param "speed" at_least 0.05 }`,
+> `{ quantity "laps" at_least 1.5 }` or `{ quantity "finished" is 1 }`, where `quantity` defaults to
+> `"param"`. `docs/modding/content-mods.md` §10 has it as shipped.
+
 **`fpack` checks one record:** names unique, every `from`, `to`, `entry` and `param` resolved within
 it, the limits, the modes, a base with no mask or weight. **A rig checks the rest** when
 `Rigs.machine(set, machine_id)` builds it: clips, masks, additive and motion rules, `motion_speed`.
@@ -464,6 +474,10 @@ M34's seven, so every existing clip, mesh and skeleton keeps its bytes, which St
   both layers, so §16's cost is of a machine.
 
 ## 14. The court
+
+> **2026-11-06, at M35's close:** the warden's record lost `link_clips` and `cross_fade`, since the machine now chooses
+> clips and their fades, and gained a required `machine` and `reach_distance` (2.5 m). `noon`
+> restates it. On the landing tick the court keeps `link` and sets `link_t` to 1 (Step 9).
 
 - **The warden plays `court:warden.machine`** (§10) through an `anim.Stack` it holds directly. It
   is still not an entity, and the court still saves nothing.
@@ -1502,3 +1516,60 @@ staging tests still run the linked case, which is that skip's check.
 
 **Bar** on the Mac, after the staging fix: 2,813/2,823 (ten skips), 132/132 steps. Every command
 exits 0.
+
+## Resolution — Step 11: the close (2026-11-06)
+
+**Resolved, as Step 11 named them:**
+- `animation-logic.md` §15 has a dated note. Its rows for state machines, sync groups, a clip
+  played backward and the ladder are done. Its 32-animator row stays M100's, with this milestone's
+  readings. `animation3d.md` §14's row for machines, layers, masks and additive poses says done.
+- **ADR-0071:**
+  - Its first "Revisit if" has a dated note that §8 kept within additive versioning.
+  - Its second has the readings: the i3 does not fire it, and the M5's paced-frame cost goes to
+    M100.
+- **ADR-0072** says implemented, and its budget revisit has the same note.
+- **CLAUDE.md:**
+  - §4.1's row says implemented.
+  - §4.3's `anim` line names `Stack` and `Machine`.
+  - Its `asset` line names set v2's lists and `foundry:animation_machine`, and its `scene` line the
+    animator's v2.
+  - §9's row adds M35.
+- **`content-mods.md` §10** gains masks, sync groups, additive clips and rises, and a section on
+  machines. Its example is `pacer_back`, as shipped. Its old last sentence said the warden names
+  its clips for each kind of link, which is no longer true, so it now introduces the machines.
+- **The roadmap:**
+  - M35's line says complete.
+  - M48's gains M35's machines, parameters and layers.
+  - M36's gains blend spaces, since §19's row 15 was accepted.
+- **AGENTS.md** gives M35's costs and the commands that read them, and names
+  `scripts/m35/windows.ps1`. The bar's commands did not change. The design index and README say M35
+  is complete.
+
+**Contract discrepancies, each with a dated note where it stands:**
+- **§8.** The fields are laid out as Step 5 built them, players first. A save grows by 664 bytes an
+  animator, not about 450.
+- **§9.** The version 2 lists sit beside `clips` (Step 4's note, already there).
+- **§10.** A condition names its quantity as a field.
+- **§14.** The warden's record lost `link_clips` and `cross_fade`, and gained `machine` and
+  `reach_distance`.
+
+**What the close did not have.** Both points are recorded here as they stand.
+- **The owner's play.** Step 9 handed over a build, and the owner asked for the close without
+  reporting a play. So §1's last clause, that "a person has watched and played it", has its build but no
+  recorded verdict. Nothing in the samples is changed by its absence. If a play reports a problem, the fix
+  is M36's, since that milestone touches the same figures.
+- **Two budget readings.** They went to the owner at Step 10 without an answer, so they are recorded
+  as read:
+  - The 32 animators miss on the M5's paced frame. Neither ADR's revisit fires, since both are
+    written against the i3, where the animators pass. What the Mac's frame adds is M100's (§18's
+    row).
+  - The court's short endings read up to 0.321 ms p95 on the i3. Their samples are 80 and 178
+    frames, while `win`'s 2,427 frames read within budget. The frame-time work these call for is
+    M100's too.
+
+**§18 stands as written,** with row 15 accepted, so blend spaces are M36's.
+
+**Bar:** nothing outside documents changed after Step 10's bar, which was 2,813/2,823 (ten skips),
+132/132 steps, with every command exiting 0. Every link added here resolves.
+
+Tagged `m35`. Pushed at the owner's request, with the PC's clone and scratch deleted by exact name.

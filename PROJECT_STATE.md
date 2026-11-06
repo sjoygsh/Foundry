@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 10 is committed. Stop before Step 11, which closes M35** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 9 still waits on the owner's play, its exit's last clause. **Open for the owner:** the 32 animators pass on the i3 (0.039–0.065 ms p95) but miss on the M5 (0.17–0.23 ms), against 0.10 ms; and the court's short endings read 0.154–0.321 ms p95 on the i3, against 0.25 ms. The PC holds `src\Foundry-m35` and `m35\` scratch, to delete by exact name at the close.
+**Current handoff: M35 is complete (2026-11-06, tag `m35`, pushed)** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Stop before M36's design, Animation logic III: foot placement, look-at and blend spaces. The owner never reported a play of Step 9's court build. The 32 animators miss on the M5's paced frame, and the i3's short court endings sit on the 0.25 ms line; both go to M100. The PC and the Mac hold no M35 scratch.
+
+**M35 Step 11 is done (2026-11-06): the close.**
+- Each dated note is in place: `animation-logic.md` §15, `animation3d.md` §14, ADR-0071's two revisits, ADR-0072, and §8, §10 and §14 of the design.
+- CLAUDE.md §4.1, §4.3 and §9, AGENTS.md's costs, the roadmap's M35, M36 (blend spaces) and M48 lines, the design index and the README all name M35 complete.
+- `content-mods.md` §10 gains masks, sync groups, additive clips, rises and machines, written from `pacer_back`.
+- Nothing outside documents changed after Step 10's bar (2,813/2,823, ten skips, 132/132 steps).
 
 **M35 Step 10 is done (2026-11-06): Windows/Vulkan.**
 - `scripts/m35/windows.ps1`, from M34's, ran on the Arc A750 and the i3 from a fresh clone, with M35's commits by bundle. The owner asked for normal priority with the CPU check off, and dropped the soundtrack replay there (it replays on the Mac, and its digest passed in `court-test`).

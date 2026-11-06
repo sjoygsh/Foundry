@@ -498,7 +498,7 @@ complete, and nothing names a contract the code does not have.
 | An engine-declared animation component in `scene`, saved with a world | A second consumer of playback state exists, or M26's sample must save a pose. **M26 did not fire it**: the court keeps the warden's clock itself and saves no pose. It is M34's |
 | Animation in the public ABI | M25's design decides what `FoundryApi_v6` publishes |
 | Root motion | A game whose character speed must come from its clip |
-| State machines, layers, masks, additive poses, events | A game needs any of them; each is game logic over `sample` and `blend` first |
+| State machines, layers, masks, additive poses, events | A game needs any of them; each is game logic over `sample` and `blend` first. **Done:** events in M34 (ADR-0071), and machines, layers, masks and additive poses in M35 (ADR-0072, [`animation-states.md`](animation-states.md), 2026-11-06) |
 | Inverse kinematics (foot placement, look-at) | A game needs feet on M23's steps to look right |
 | Cubic-spline keys | Real assets are refused for it often enough that baking on export is a burden |
 | Morph targets | A game needs faces or blend shapes |

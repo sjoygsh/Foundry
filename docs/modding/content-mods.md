@@ -646,7 +646,84 @@ figure's rig. That figure is left unanimated and the rest of the game runs.
 stages it beside the game. It is the set above: `stride` at twice its speed, so the sandbox's pacer
 walks a square twice as wide, because each side lasts the same time. Run the sandbox with
 `FOUNDRY_SANDBOX3D_PACKAGES=pacer_quick:content` to see it. Which clip plays when is the game's:
-the court's warden names its sets and its clips for each kind of link in `court:warden.main`.
+a figure names a machine, below, that says so.
+
+### Masks, additive clips, sync groups and rises
+
+Since M35 a set's version 2 adds four lists beside `clips`. A version 1 set means what it did.
+
+```
+    masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]
+    sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
+    additive [ { clip "pant" } { clip "look" } ]
+    rises [ { clip "climb" rise 0.3 } ]
+```
+
+- **A mask** weights joints from 0 to 1. Each entry covers its joint and the joints below it, in list
+  order, and `weight` is 1 unless given. A set has at most 8 masks.
+- **A sync group** keeps clips of different lengths in step: a clip faded to from another in its
+  group starts at the same fraction of its cycle, so the feet stay on the floor.
+- **An additive clip** is played as a difference from its first frame, or from `reference`, a clip
+  of the same model. It adds to what is below it, so a breath or a glance goes over any walk.
+- **A rise** is how far a clip climbs in one lap, in metres. A climb across a ladder plays as many
+  laps as the ladder's height needs.
+
+### Machines
+
+What a figure does with its clips is a `foundry:animation_machine` record, named by the figure.
+It drives up to three layers from up to eight named parameters the game sets each tick. The
+sandbox's pacer names `sandbox3d:pacer.machine`. `samples/sandbox3d/testdata/mods/pacer_back` is a
+complete mod that overrides it to walk every other side backward:
+
+```
+foundry:animation_machine sandbox3d:pacer.machine {
+    params [ { name "look" default 1 } ]
+    layers [
+        { name "body" entry "turn"
+            states [
+                { name "stride" clip "stride" }
+                { name "turn" clip "turn" }
+                { name "back" clip "stride" speed -1 }
+                { name "turn_back" clip "turn" }
+            ]
+            transitions [
+                { from "turn" to "stride" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "stride" to "turn_back" when [ { quantity "laps" at_least 1.5 } ] }
+                { from "turn_back" to "back" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "back" to "turn" when [ { quantity "laps" at_least 1.5 } ] }
+        ] }
+        { name "look" mode "additive" weight_param "look" weight_fade 1 entry "look"
+            states [ { name "look" clip "look" } ] }
+    ]
+}
+```
+
+- **A layer** is `override`, the default, or `additive`. The first is the base, and it takes no
+  `mask` and no weight. A later layer may name a set's `mask`, and `weight_param` makes its weight
+  follow a parameter, faded over `weight_fade` seconds.
+- **A state** names a clip, and a `speed` from −16 to 16, 1 unless given. A negative speed plays the
+  clip backward, its travel and events reversed. `speed_param` makes the rate follow a parameter, so
+  a stride keeps pace with the ground. `seek_param` instead sets the clip to the parameter's fraction,
+  as a jump follows how far across a gap the figure is. A layer has at most 32 states.
+- **A transition** goes `from` a state, or `"*"` for any, `to` another, over `fade` seconds. Its
+  `phase` is `restart`, the default, or `keep`, which carries the time over: as the same fraction of
+  the cycle when the clips share a sync group, and as the same seconds otherwise. Transitions are tried in the order listed, those from `"*"` first, and at most one is taken
+  a tick. A layer has at most 64.
+- **`when`** holds up to four conditions, all of which must hold. Each is a `param`, or a `quantity`
+  of `"laps"` (cycles played in the state) or `"finished"` (1 once a one-shot is over), compared
+  `at_least`, `below` or `is` against a number.
+- **An override replaces the whole machine,** like a set.
+
+`fpack` refuses a mistake inside one record: a duplicate name, a `to`, `entry` or `param` that the
+record does not have, a base with a mask, or a limit passed. A clip, mask or additive clip the set
+does not have is named when the figure's rig is built, and that figure falls back to its base player
+while the rest of the game runs. A figure's machine, its layers and its parameters are saved with a
+world, so a save taken mid-fade continues where it was. Run the sandbox with
+`FOUNDRY_SANDBOX3D_PACKAGES=pacer_back:content`, and the pacer walks its square mirrored, with no code.
+
+The court's warden names `court:warden.machine`: it walks and runs by its speed, reaches with its
+upper body when close, and pants while it chases. A mod overriding that machine changes how the warden
+moves, but not where it goes.
 
 ## 11. Hot reload
 

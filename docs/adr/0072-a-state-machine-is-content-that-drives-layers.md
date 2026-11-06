@@ -1,6 +1,6 @@
 # ADR-0072: A state machine is content that drives layers of players
 
-**Status:** Accepted 2026-11-06, when the owner requested M35 Step 1
+**Status:** Accepted 2026-11-06, when the owner requested M35 Step 1; implemented in M35 (2026-11-06, tag `m35`)
 **Date:** 2026-11-06
 **Informed by:** ADR-0010, ADR-0013, ADR-0041, ADR-0058, ADR-0070, ADR-0071,
 `docs/design/animation-states.md`
@@ -76,6 +76,8 @@ pose is sampled when the rig is built. Both are what a set says about a skeleton
 - A sample needs a fourth layer or a ninth parameter, which is a schema version of
   `foundry:animator`.
 - 32 two-layer machines pass 0.10 ms p95 on the i3, which M100's parallel systems would then answer.
+  **2026-11-06, at M35's close: not fired.** The i3 reads 0.039–0.065 ms; the M5's paced frame reads
+  0.17–0.23 ms, which goes to M100 with ADR-0071's second revisit.
 - Games keep writing the same parameter logic, a debounce or a timer, often enough that a
   condition should carry it.
 - M111's editor needs something a machine record cannot express, such as a nested machine.
