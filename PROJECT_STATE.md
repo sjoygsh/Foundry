@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 2 is complete; stop before Step 3** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 3 is `anim.Machine`: states, transitions and parameters stepping a `Stack`. No machine or record of M35 exists yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 3 is complete; stop before Step 4** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 4 is `asset`: `foundry:animation_set` v2 and `foundry:animation_machine`, built by `Rigs`. No M35 record exists yet. The PC holds no Foundry clone.
+
+**M35 Step 3 is done (2026-11-06): the machine.**
+- `anim.Machine` is params, layers, states, transitions and conditions, validated against a rig with 33 refusals, each named.
+- A tick puts the parameters in the machine's order by name, then for each layer: its target weight, at most one transition (`"*"` first), its rate from a parameter over the clip's motion speed, then a run or a seek.
+- A layer with no state adopts the one its newest clip plays, so a save from before machines carries on.
+- `laps` uses the pacer's own `ticks × dt ≥ v × duration`.
+- The warden's three-layer machine replays byte-identically from parameters alone. Its pin has two values, by which `sin` the binary calls, as `tests.zig`'s does.
+- Bar 2,777/2,787 (ten skips), 131/131 steps.
+
 
 **M35 Step 2 is done (2026-11-06): layers, masks and additive poses.**
 - `anim.Stack` is three layers, each a `Player` with a weight that fades toward a target. A layer's mode, mask and fade are a `Spec` the caller passes, and are never saved.

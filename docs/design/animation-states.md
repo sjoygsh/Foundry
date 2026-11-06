@@ -785,3 +785,87 @@ test:
 or the samples changed.
 
 **Bar:** 2,762/2,772 (ten skips), 131/131 steps. `anim-test` is 102/102, 15 of them new.
+
+## Resolution — Step 3: the machine (2026-11-06)
+
+`anim.Machine` now covers §7. It is in `engine/src/anim/machine.zig`, with tests in
+`machine_tests.zig`.
+
+**The values.**
+- `Machine` is `params` (`ParamDef`: a name hash, a default and a label) and `layers`
+  (`MachineLayer`). Each layer has its `Spec` from Step 2, `weight_param`, `entry`, `states` and
+  `transitions`.
+- `State` names its clip and has `speed`, `speed_param` and `seek_param`. A `Transition` goes
+  `from` a state or `any_state` (0), `to` a state, with `fade`, `phase` and up to four
+  `Condition`s.
+- A condition compares a `param`, `laps` or `finished` with a constant by `at_least`, `below` or
+  `is`.
+- `Stack` gains `params: [8]Param`, each a name hash and a value, appended after the layers as
+  Step 2 said it would be.
+
+**This sharpens the design: the tick's counts are fields of `Step`, not of `Stack`.** The counts
+are `transitions`, `reentered` and `params_dropped`. They are this tick's, and are not saved.
+
+**The calls.**
+- `machine.set(stack, machine, name, value)` refuses `UnknownParam` and `InvalidParam`.
+- `get` gives what the next tick will see: what was set or saved, or the default.
+- `advance` and `evaluate` take the stack, the rig and the machine.
+
+**A tick.**
+1. `advance` first puts the parameters in the machine's order, by name. A saved value is kept, a
+   missing one takes its default, and a name the machine lacks is dropped and counted.
+2. Then, layer by layer, `choose` does §7's first three steps:
+   - It sets the layer's target from its `weight_param`, or to 1 without one.
+   - It takes a transition: a state of zero adopts the state its newest clip plays, an unknown
+     state re-enters `entry` with a cut and is counted, and otherwise `pick` chooses one.
+   - It sets the rate: `speed × param ÷ motionSpeed(clip)`, clamped to ±16.
+3. Then `Stack.advanceLayer` runs the layer, or seeks it to its `seek_param`. That is Step 2's
+   `advance` split into one call per layer. `state_ticks` then counts the tick.
+
+**`laps at_least v` is `ticks × dt ≥ v × duration`, in `f32`.** That is the pacer's own arithmetic,
+which gives Step 8 a chance of keeping its pins. A test at 0.25 s ticks holds the exact boundary,
+where six quarter-seconds are a lap and a half.
+
+**Other choices made here:**
+- `set` into a stack whose eight slots all hold names the machine lacks puts them in order first,
+  dropping them. That drop is not counted, since no tick saw it.
+- A clip a validated machine plays is one its layer may play, so `enter`'s `play` cannot be refused
+  and is `catch unreachable`.
+
+**Validate** refuses each of the following by name, and a case each holds it:
+- parameters: `TooManyParams`, `UnnamedParam`, `DuplicateParam`, `InvalidParam`, `UnknownParam`;
+- layers: Step 2's spec refusals, and `WeightOnBase`;
+- states: `NoStates`, `TooManyStates`, `UnnamedState`, `DuplicateState`, `NoEntry`, `UnknownClip`,
+  `AdditiveMismatch`, `MotionOffBase`, `InvalidSpeed`, `SpeedAndSeek`, `NoMotionSpeed`;
+- transitions and conditions: `TooManyTransitions`, `UnknownState`, `InvalidFade`,
+  `TooManyConditions`, `InvalidCondition`.
+
+That is 33 cases in all. `SpeedAndSeek` and `InvalidCondition` (a constant that is not finite) are
+added to §7's list. `UnknownMask` comes from the specs.
+
+**The exit.** The warden's machine as §10 writes it has three layers, five parameters, a body of
+idle, walk, run and jump, upper-body arms and an additive breath. It was run 1,200 ticks from
+parameters alone: patrol, chase, closing, winded and a link crossing. Twice in one process, the
+bytes matched.
+
+**This sharpens the design: the replay pin has two values.** Debug gives `0xe375a980ccac95f3` and
+ReleaseSafe on the Mac `0x1b215b3c40e011e8`. The run is identical in state, motion and events, and
+the pose first differs on tick 292 in the last bit of the chest's `w`. There the arms' weight is
+fading, so the chest goes through `slerp`. It is the difference `tests.zig` already records: an
+optimised build for Apple silicon binds `@sin` to the system's. Step 10 reads the x86_64 value,
+expected to be Zig's own.
+
+**Guards verified by mutation:**
+- `"*"` never into its own state (two tests);
+- `"*"` before the state's own (three);
+- one transition a tick (two);
+- state zero adopting the newest clip;
+- re-entry counted;
+- dropped parameters counted;
+- `laps at_least`'s `>=`. This survived its first mutation at 60 Hz, where `90 × dt` is not exactly
+  1.5 in `f32`, so the 0.25 s boundary test was added, and it then failed under the mutation.
+
+**Not yet:** the records and `Rigs.machine`, which are Step 4. `scene`, the panel and the samples
+are untouched.
+
+**Bar:** 2,777/2,787 (ten skips), 131/131 steps. `anim-test` is 117/117 in Debug and in ReleaseSafe, 15 of them new.

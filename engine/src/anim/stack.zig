@@ -92,8 +92,20 @@ pub fn validateSpecs(rig: Rig, specs: []const Spec) SpecError!void {
     }
 }
 
+/// A machine's inputs (§7, Step 3). More is a schema version of `foundry:animator`.
+pub const max_params = 8;
+
+/// One saved parameter, by name, so a machine that gains, loses or reorders one keeps the rest.
+pub const Param = extern struct {
+    /// `clipName` of the machine's name for it; zero is an empty slot.
+    name: u64 = 0,
+    value: f32 = 0,
+};
+
 pub const Stack = extern struct {
     layers: [max_layers]Layer = .{ .{ .weight = 1, .target = 1 }, .{}, .{} },
+    /// A machine's parameters, in its order once it has run (`machine.zig`).
+    params: [max_params]Param = @splat(.{}),
 
     /// The base layer's player, which is all a one-layer stack is.
     pub fn base(self: *Stack) *Player {
@@ -122,18 +134,22 @@ pub const Stack = extern struct {
     pub fn advance(self: *Stack, rig: Rig, specs: []const Spec, dt: f32, step: *Step) void {
         step.* = .{};
         const count = @min(specs.len, max_layers);
-        for (0..count) |i| {
-            const layer = &self.layers[i];
-            self.repair(rig, specs, i, dt, step);
-            if (i != 0 and !layer.player.hasClip()) continue;
-            var own: Step = undefined;
-            layer.player.advance(rig, dt, &own);
-            step.lost +|= own.lost;
-            step.dropped +|= own.dropped;
-            if (i == 0) step.motion = own.motion;
-            if (layer.weight > 0) {
-                for (own.fired()) |event| step.emit(event);
-            }
+        for (0..count) |i| self.advanceLayer(rig, specs, i, dt, null, step);
+    }
+
+    /// One layer's tick, adding to `step`: run, or seek to `seek` of its newest clip's lap. A
+    /// machine calls this a layer at a time (`machine.zig`).
+    pub fn advanceLayer(self: *Stack, rig: Rig, specs: []const Spec, i: usize, dt: f32, seek: ?f32, step: *Step) void {
+        const layer = &self.layers[i];
+        self.repair(rig, specs, i, dt, step);
+        if (i != 0 and !layer.player.hasClip()) return;
+        var own: Step = undefined;
+        if (seek) |fraction| layer.player.seek(rig, fraction, dt, &own) else layer.player.advance(rig, dt, &own);
+        step.lost +|= own.lost;
+        step.dropped +|= own.dropped;
+        if (i == 0) step.motion = own.motion;
+        if (layer.weight > 0) {
+            for (own.fired()) |event| step.emit(event);
         }
     }
 

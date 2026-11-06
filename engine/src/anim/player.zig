@@ -86,6 +86,11 @@ pub const Step = struct {
     dropped: u32 = 0,
     /// The body's move this tick, for the game to carry out (`motion.zig`).
     motion: Motion = .{},
+    /// A machine's tick (`machine.zig`): transitions taken, layers whose state was gone and began
+    /// their entry again, and saved parameters the machine no longer has.
+    transitions: u32 = 0,
+    reentered: u32 = 0,
+    params_dropped: u32 = 0,
 
     pub fn fired(step: *const Step) []const ContentId {
         return step.events[0..step.event_count];

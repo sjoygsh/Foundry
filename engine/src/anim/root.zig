@@ -28,6 +28,7 @@
 //! Design: `docs/design/animation3d.md`
 
 pub const clip = @import("clip.zig");
+pub const machine = @import("machine.zig");
 pub const motion = @import("motion.zig");
 pub const player = @import("player.zig");
 pub const pose = @import("pose.zig");
@@ -74,7 +75,16 @@ pub const max_step_events = player.max_step_events;
 
 pub const Report = report.Report;
 
+pub const Condition = machine.Condition;
+pub const Machine = machine.Machine;
+pub const MachineLayer = machine.MachineLayer;
+pub const MachineState = machine.State;
+pub const ParamDef = machine.ParamDef;
+pub const Transition = machine.Transition;
+pub const max_params = machine.max_params;
+
 pub const Layer = stack.Layer;
+pub const Param = stack.Param;
 pub const LayerMode = stack.Mode;
 pub const LayerSpec = stack.Spec;
 pub const Stack = stack.Stack;
@@ -100,6 +110,7 @@ pub const validateInfluences = skinning.validateInfluences;
 
 test {
     _ = clip;
+    _ = machine;
     _ = motion;
     _ = player;
     _ = pose;
@@ -109,6 +120,7 @@ test {
     _ = stack;
     _ = skinning;
     _ = @import("direction_tests.zig");
+    _ = @import("machine_tests.zig");
     _ = @import("stack_tests.zig");
     _ = @import("player_tests.zig");
     _ = @import("step_tests.zig");
