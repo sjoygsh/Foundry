@@ -3,7 +3,8 @@
 
 Run from any directory. The 1-second walk cycle's ~0.6 m stride agrees with
 walker.main's 0.6 m/s; feet stay in model space (no root motion). M34's clips,
-`stride` among them, come from scripts/m34/clips.py.
+`stride` among them, come from scripts/m34/clips.py, and M35's after them from
+scripts/m35/clips.py.
 """
 import json
 import math
@@ -15,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT/"scripts/m34"))
 sys.dont_write_bytecode = True
 import clips  # noqa: E402
+import importlib.util  # noqa: E402
+
+_m35 = importlib.util.spec_from_file_location("m35_clips", ROOT/"scripts/m35/clips.py")
+m35_clips = importlib.util.module_from_spec(_m35)
+_m35.loader.exec_module(m35_clips)
 
 OUT = ROOT / "samples/sandbox3d/content/models"
 
@@ -124,6 +130,8 @@ def generate():
         animations.append({"name":name,"samplers":samplers,"channels":channels})
     # After `idle` and `walk`, so those two and the mesh keep their bytes.
     animations.extend(clips.animations(accessor))
+    # After M34's seven, so those keep their bytes (`animation-states.md` §12).
+    animations.extend(m35_clips.animations(accessor))
     document = {"asset":{"version":"2.0","generator":"Foundry M24"},
                 "scene":0,"scenes":[{"nodes":[0,19]}],"nodes":nodes,
                 "skins":[{"joints":list(range(19)),"skeleton":0,"inverseBindMatrices":bind}],

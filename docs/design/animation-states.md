@@ -1104,3 +1104,67 @@ and no sample's content changed.
 **Not yet:** the clips that Step 7 generates. No sample names a machine yet.
 
 **Bar:** 2,805/2,815 (ten skips), 131/131 steps. `anim-test` 119/119, `debug-test` 41/41, `scene-test` 136/136. No sample's content changed.
+
+## Resolution — Step 7: the clips (2026-11-06)
+
+§12 is built:
+- `scripts/m35/clips.py` generates `run`, `reach`, `pant` and `look`.
+- `scripts/m24/make_character.py` (the walker) and `scripts/m26/make_court.py` (the warden) append
+  them after M34's seven.
+- Both sets name them at version 2.
+
+**The generator.**
+- `scripts/m34/clips.py` gains `build(accessor, clips)`, the track writer `animations` already ran.
+  Both generators reproduced the committed models byte for byte after that change, before M35's
+  clips were added.
+- M35's script loads M34's module under another name, since both files are `clips.py`, and writes
+  through the same `build`: the same joints, axes and nine even keys.
+- Each buffer's first 26,380 bytes are unchanged. Only appended accessors follow them.
+
+**The clips, as §12 describes them:**
+- `run` lasts 0.7 s and travels 1.3 m in a lap, so its motion speed is 1.857 m/s. The body is lowest
+  where each foot lands, at 0 and 0.5.
+- `reach` has tracks on the spine and the joints above it only, which a test walks up the skeleton
+  to check.
+- `pant` and `look` begin at rest, so each one's reference is its own first frame. That is the
+  default, and neither set names a `reference`.
+  - For `pant`, rest is `idle`'s chest: the chest isn't animated in `idle`, and its shoulders are
+    at 0 there.
+  - `look` turns the neck by 0.2 and the head by 0.5 rad, left (+Y), back, right and back.
+
+**The sets.** `sandbox3d:walker.set` and `court:warden.set` gain the same five things:
+- `run` as a clip with motion and two footfalls;
+- `masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]`, so the
+  waist is feathered and the chest, neck, head and arms are whole;
+- `sync` putting `stride` and `run` in `"feet"`;
+- `additive` for `pant` and `look`;
+- `rises` giving `climb` 0.3 m a lap.
+
+**Bytes.**
+- `clip0` to `clip6`, `mesh0` and `skeleton0` compile to exactly what they did, in both models,
+  compared against a snapshot taken before the step.
+- The pins in `walker_tests.zig` and the court's `walk_tests.zig` now cover all nine files, up from
+  four, and the four new files as well. The two models' files are still identical to each other.
+- The walker's `655e865f98779129`, the player's `cb99ccfcf2b6d6c3`, the pacer's pins and the
+  court's digests all hold. No sample plays a new clip yet.
+
+**Tests.** A rig test on the real compiled content of each sample checks:
+- eleven clips;
+- `run`'s duration, speed, events and group, the same as `stride`'s;
+- `reach` confined to the upper body;
+- `upper`'s weights by joint;
+- `pant` and `look` additive, each with a reference at rest;
+- `lapsFor(climb, 3 m)` as ten laps.
+
+**Guards verified by mutation:**
+- removing `rises` from the court's set;
+- taking `run` out of the group in the sandbox's set;
+- an unfeathered waist;
+- dropping `look` from the additive list;
+- a wrong pin on `clip7`.
+
+The sandbox's mutations failed `sandbox3d-test`, and the court's failed `court-test`.
+
+**Not yet:** the pacer's machine (Step 8) and the warden's (Step 9).
+
+**Bar:** 2,807/2,817 (ten skips), 131/131 steps. `sandbox3d-test` and `court-test` gain one test each. The samples' content changed, so `court` and `room` were staged with `dist` on macOS, ReleaseSafe on Metal, and both exited 0.

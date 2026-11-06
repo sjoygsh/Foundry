@@ -2,6 +2,8 @@
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
+const anim = @import("anim");
+const app = @import("app");
 const asset = @import("asset");
 const platform = @import("platform");
 const walk_mod = @import("walk.zig");
@@ -171,18 +173,77 @@ fn fieldOffset(fields: []const data.schema.Field, index: usize) usize {
     unreachable;
 }
 
-test "warden: M34's clips are appended, and old bytes stay" {
+test "warden: M34's and M35's clips are appended, and old bytes stay" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
     const os = try platform.os.Os.init(gpa, .{});
     defer os.deinit();
-    // What `idle`, `walk`, the mesh and the skeleton compile to, from before M34 appended its clips
-    // (`animation-logic.md` §9). The warden and the walker share them.
-    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "mesh0.fmesh", "skeleton0.fskel" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb }) |name, pin| {
+    // What every clip before M35's, the mesh and the skeleton compile to, from before M35 appended its
+    // four (`animation-states.md` §12). The walker and the warden share them, and both models have
+    // M35's four after them.
+    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "clip2.fanim", "clip3.fanim", "clip4.fanim", "clip5.fanim", "clip6.fanim", "mesh0.fmesh", "skeleton0.fskel", "clip7.fanim", "clip8.fanim", "clip9.fanim", "clip10.fanim" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0x677f6e68ba41d452, 0xd6ea268c1b779558, 0x713aa9b4e2b9b0de, 0xa6f9a2d5f8bffd30, 0x84900a520fa63575, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb, 0x142f09c2287a2525, 0xdc62c95899a438d9, 0x39e40914d0fd57e7, 0x43a9fdfc1d1ae389 }) |name, pin| {
         const path = try std.fs.path.join(gpa, &.{ options.generated, "models/warden", name });
         defer gpa.free(path);
         const bytes = try os.readFile(gpa, path, 1024 * 1024);
         defer gpa.free(bytes);
         try testing.expectEqual(pin, std.hash.Fnv1a_64.hash(bytes));
     }
+}
+
+test "warden: M35's clips build a version 2 rig: a run in step with the stride, an upper mask, two additive clips and a climb's rise" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const engine = try app.Engine.init(gpa, .{ .headless = true, .workers = 0, .content_dir = options.generated, .content = &.{
+        .{ .base_dir = std.fs.path.dirname(options.core_package).?, .file = std.fs.path.basename(options.core_package), .root = "core-assets" },
+        .{ .base_dir = std.fs.path.dirname(options.package).?, .file = std.fs.path.basename(options.package), .root = "court-assets" },
+    } });
+    defer engine.deinit();
+    var rigs = asset.Rigs.init(gpa, &engine.assets);
+    defer rigs.deinit();
+    const handle = try rigs.acquire(core.ContentId.fromString("court:warden.set"));
+    defer rigs.release(handle);
+    const rig = rigs.get(handle).?;
+    try testing.expectEqual(@as(usize, 11), rig.clips.len);
+
+    // `run` covers its 1.3 m in 0.7 s, and keeps a foot in step with the stride's.
+    const run = rig.find(anim.clipName("run")).?;
+    try testing.expect(run.motion and run.loop);
+    try testing.expectApproxEqAbs(@as(f32, 0.7), run.clip.duration, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.3 / 0.7), rig.motionSpeed(anim.clipName("run")), 1e-4);
+    try testing.expectEqual(@as(usize, 2), run.events.len);
+    try testing.expectEqual(anim.clipName("feet"), run.sync);
+    try testing.expectEqual(anim.clipName("feet"), rig.find(anim.clipName("stride")).?.sync);
+
+    // `reach` touches the upper body alone: no track below the spine.
+    const skeleton = rig.skeleton;
+    const spine: u16 = 1;
+    for (rig.find(anim.clipName("reach")).?.clip.tracks) |track| {
+        var joint = track.joint;
+        while (joint != spine) {
+            joint = skeleton.parents[joint];
+            try testing.expect(joint != anim.no_parent);
+        }
+    }
+
+    // `upper` is the spine at half and everything from the chest up at full; the legs are out.
+    const upper = rig.mask(anim.clipName("upper")).?;
+    try testing.expectEqualStrings("upper", upper.label);
+    for ([_]u16{ 0, 1, 2, 4, 5, 8, 9, 13, 14, 16 }, [_]f32{ 0, 0.5, 1, 1, 1, 1, 1, 0, 0, 0 }) |joint, weight| {
+        try testing.expectEqual(weight, upper.weights[joint]);
+    }
+
+    // `pant` and `look` are differences from their own first frames, which are at rest.
+    for ([_][]const u8{ "pant", "look" }) |name| {
+        const entry = rig.find(anim.clipName(name)).?;
+        try testing.expect(entry.additive and !entry.motion);
+        try testing.expectEqual(skeleton.jointCount(), entry.reference.len);
+        for (entry.reference, skeleton.rest) |reference, at_rest| {
+            try testing.expectApproxEqAbs(@as(f32, 0), reference.translation.sub(at_rest.translation).length(), 1e-6);
+            try testing.expectApproxEqAbs(@as(f32, 1), @abs(reference.rotation.dot(at_rest.rotation)), 1e-6);
+        }
+    }
+
+    // A climb rises 0.3 m a lap, so 3 m is ten laps.
+    try testing.expectEqual(@as(f32, 0.3), rig.find(anim.clipName("climb")).?.rise);
+    try testing.expectEqual(@as(u32, 10), rig.lapsFor(anim.clipName("climb"), 3));
 }

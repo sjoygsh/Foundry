@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 6 is complete; stop before Step 7** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 7 is the clips: `scripts/m35/clips.py` appends `run`, `reach`, `pant` and `look` to the walker and the warden. No sample uses a machine yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 7 is complete; stop before Step 8** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 8 is `sandbox3d`'s pacer on a machine, with the look layer, saves mid-turn and from v1, the `pacer_back` mod, the climber's `lapsFor`, and 32 animators. No sample plays a new clip yet. The PC holds no Foundry clone.
+
+**M35 Step 7 is done (2026-11-06): the clips.**
+- `scripts/m35/clips.py` generates `run` (0.7 s, 1.3 m a lap), `reach` (the upper body only), and the additive `pant` and `look`. The walker and the warden append them after M34's seven, through M34's `build`.
+- `clip0` to `clip6`, `mesh0` and `skeleton0` keep their bytes in both models, and the sample pins now cover all nine.
+- Both sets are now version 2: an `upper` mask feathered at the waist, `stride` and `run` in `feet`, `pant` and `look` additive, and `climb` rising 0.3 m a lap. A rig test on each sample's compiled content holds this.
+- Bar 2,807/2,817 (ten skips), 131/131 steps. `court` and `room` stage on macOS.
+
 
 **M35 Step 6 is done (2026-11-06): layers in the panel.**
 - `anim.Report` rows hold up to three layers and eight parameters. `Report.addStack` fills each layer's label, mode, mask, weight, state and ticks, its channels, and each parameter's next value. It also counts the tick's transitions, re-entries and dropped parameters.

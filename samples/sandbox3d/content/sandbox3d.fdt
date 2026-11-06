@@ -43,7 +43,18 @@ foundry:animation_set sandbox3d:walker.set {
         { name "turn" loop false motion true }
         { name "jump" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
         { name "drop" loop false events [ { at 1.0 event sandbox3d:event.land } ] }
+        { name "run" motion true events [
+            { at 0.0 event sandbox3d:event.footfall }
+            { at 0.5 event sandbox3d:event.footfall }
+        ] }
     ]
+    # Version 2 (`animation-states.md` §9, §12): the upper body from the spine, feathered at the
+    # waist; walk and run on the same foot; a breath and a glance added over the pose; a climb's
+    # height a lap.
+    masks [ { name "upper" joints [ { joint "spine" weight 0.5 } { joint "chest" } ] } ]
+    sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
+    additive [ { clip "pant" } { clip "look" } ]
+    rises [ { clip "climb" rise 0.3 } ]
 }
 @schema walker {
     model id

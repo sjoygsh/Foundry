@@ -119,8 +119,14 @@ def climb():
 
 def animations(accessor):
     """The glTF animations, written through a generator's own `accessor`."""
+    return build(accessor, (stride(), turn(), jump(), drop(), climb()))
+
+
+def build(accessor, clips):
+    """Each `(name, duration, rotations, translation)` as a glTF animation, keyed at KEYS + 1 even
+    times. M35's generator (`scripts/m35/clips.py`) writes its clips through this too."""
     out = []
-    for name, duration, rotations, translation in (stride(), turn(), jump(), drop(), climb()):
+    for name, duration, rotations, translation in clips:
         times = accessor([(i/KEYS*duration,) for i in range(KEYS+1)], 1, "f", 5126, "SCALAR", True)
         samplers, channels = [], []
 
