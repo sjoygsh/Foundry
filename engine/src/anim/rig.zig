@@ -48,7 +48,15 @@ pub const RigClip = struct {
     events: []const Event = &.{},
     /// What the model calls it, for a person: the panel prints it, and a hash is no use to anyone.
     label: []const u8 = "",
+    /// `clipName` of its sync group, or zero for none. Clips of one group are kept at one fraction
+    /// (`animation-states.md` §4). Only a looping clip has a lap to share.
+    sync: u64 = 0,
+    /// Metres one lap climbs, for `lapsFor`, or zero for none (§5).
+    rise: f32 = 0,
 };
+
+/// The most laps `lapsFor` answers. A crossing that long is a hostile package or a mistake.
+pub const max_fitted_laps: u32 = 256;
 
 /// Borrowed: `clips` and everything it points to belong to the caller.
 pub const Rig = struct {
@@ -77,6 +85,9 @@ pub const Rig = struct {
         MotionJointNotRoot,
         /// The skeleton's root matrix cannot be undone, so a pose cannot lose a model-space move.
         SingularRoot,
+        /// A one-shot has no lap to keep in step.
+        SyncOnOneShot,
+        InvalidRise,
     };
 
     /// Refuses every way an untrusted rig can be wrong. A rig that passes is safe for a player to
@@ -94,6 +105,9 @@ pub const Rig = struct {
             if (!std.math.isFinite(entry.speed) or entry.speed <= 0 or entry.speed > player.max_speed) return error.InvalidSpeed;
             try entry.clip.validate(rig.skeleton.jointCount());
             try validateEvents(entry);
+            if (entry.sync != 0 and !entry.loop) return error.SyncOnOneShot;
+            // Written so a NaN is refused.
+            if (!(entry.rise >= 0) or !std.math.isFinite(entry.rise)) return error.InvalidRise;
             if (entry.motion and rig.motion_joint == skeleton_mod.no_parent) return error.MissingMotionJoint;
         }
         if (rig.find(rig.start) == null) return error.UnknownStart;
@@ -124,6 +138,16 @@ pub const Rig = struct {
     pub fn motionSpeed(rig: Rig, name: u64) f32 {
         const entry = rig.find(name) orelse return 0;
         return motion.groundSpeed(rig, entry);
+    }
+
+    /// How many laps of `name` fit a climb of `height` metres: its `rise` into the height, rounded,
+    /// from 1 to `max_fitted_laps`. A clip with no rise, or a height that is not a number, is 1.
+    pub fn lapsFor(rig: Rig, name: u64, height: f32) u32 {
+        const entry = rig.find(name) orelse return 1;
+        if (!entry.loop or !(entry.rise > 0) or !std.math.isFinite(height)) return 1;
+        const laps = @round(@abs(height) / entry.rise);
+        if (!(laps >= 1)) return 1;
+        return if (laps >= @as(f32, @floatFromInt(max_fitted_laps))) max_fitted_laps else @intFromFloat(laps);
     }
 
     /// The clip called `name`, or null: a reload or a removed mod can leave a player holding a

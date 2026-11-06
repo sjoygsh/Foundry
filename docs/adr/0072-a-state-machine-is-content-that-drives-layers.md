@@ -1,6 +1,6 @@
 # ADR-0072: A state machine is content that drives layers of players
 
-**Status:** Proposed 2026-11-06
+**Status:** Accepted 2026-11-06, when the owner requested M35 Step 1
 **Date:** 2026-11-06
 **Informed by:** ADR-0010, ADR-0013, ADR-0041, ADR-0058, ADR-0070, ADR-0071,
 `docs/design/animation-states.md`

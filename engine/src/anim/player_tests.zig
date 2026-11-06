@@ -209,7 +209,8 @@ test "time: a change of speed moves no pose, and speed 0 holds" {
     run(&player, 100);
     try t.expectEqual(held, poseX(&player));
 
-    try t.expectError(error.InvalidSpeed, player.setSpeed(rig, -1));
+    // Backward is a speed (`animation-states.md` §3); past 16 either way is not.
+    try t.expectError(error.InvalidSpeed, player.setSpeed(rig, -17));
     try t.expectError(error.InvalidSpeed, player.setSpeed(rig, std.math.nan(f32)));
 }
 
@@ -400,12 +401,12 @@ test "untrusted: bad values empty a channel and never assert" {
     const bad = [_]Channel{
         .{ .clip = name_up, .speed = nan, .weight = 1 },
         .{ .clip = name_up, .speed = 1000, .weight = 1 },
-        .{ .clip = name_up, .speed = -1, .weight = 1 },
+        .{ .clip = name_up, .speed = -17, .weight = 1 },
         .{ .clip = name_up, .speed = 1, .weight = nan },
         .{ .clip = name_up, .speed = 1, .weight = 2 },
         .{ .clip = name_up, .speed = 1, .weight = -1 },
         .{ .clip = name_up, .speed = 1, .weight = 1, .anchor = inf },
-        .{ .clip = name_up, .speed = 1, .weight = 1, .anchor = -1 },
+        .{ .clip = name_up, .speed = 1, .weight = 1, .anchor = -inf },
     };
     for (bad) |channel| {
         var player: Player = .{};

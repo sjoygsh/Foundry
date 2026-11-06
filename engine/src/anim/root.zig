@@ -92,6 +92,7 @@ test {
     _ = rig;
     _ = skeleton;
     _ = skinning;
+    _ = @import("direction_tests.zig");
     _ = @import("player_tests.zig");
     _ = @import("step_tests.zig");
     _ = @import("tests.zig");

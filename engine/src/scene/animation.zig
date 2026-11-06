@@ -590,7 +590,8 @@ test "a save with bad values is refused, by each of them" {
         }.edit,
         struct {
             fn edit(a: *Animator) void {
-                a.c2.anchor = -1;
+                // A negative anchor is a loop played backward (`animation-states.md` §3).
+                a.c2.anchor = std.math.inf(f64);
             }
         }.edit,
         struct {

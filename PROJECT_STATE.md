@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35's design is proposed** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072); awaiting acceptance of §19. Stop before Step 1. The PC holds no Foundry clone.
+**Current handoff: M35 Step 1 is complete; stop before Step 2** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 2 is `anim.Stack`: layers, masks and additive poses. No layer, machine or record of M35 exists yet. The PC holds no Foundry clone.
+
+**M35 Step 1 is done (2026-11-06): backward, in step, and fitted.** The owner accepted §19 as written, including row 15, which puts blend spaces in M36's row at the close.
+- A channel's speed runs from −16 to 16. A one-shot played backward starts at its end, events fire on the mirrored span, and travel reverses: a stride played backward retraces its path within 1e-5.
+- `RigClip.sync` keeps clips of one group at one fraction through a fade, with the newest leading. A group on a one-shot is refused.
+- `seekLaps` fits a looping clip over n laps, as one lap n times as long, so `seek` is unchanged. `Rig.lapsFor` divides a height by a clip's `rise`.
+- Every M34 pin holds. Two M34 tests changed with the contract, because a negative speed and anchor are now valid.
+- Bar 2,747/2,757 (ten skips), 131/131 steps.
+
 
 **M35's design is proposed (2026-11-06): Animation logic II.** Eleven steps. A clip can play backward, clips of different lengths stay in step through a sync group, and a seek is fitted over laps. `anim.Stack` holds three layers, each a `Player`, with per-joint masks and additive poses. `anim.Machine` runs states and transitions from up to eight saved parameters. `foundry:animation_machine` is a new record that the figure names, and the set does not. `foundry:animation_set` and `foundry:animator` move to version 2 by appending fields, so v1 sets and saves still load. The pacer and the warden move onto machines: the pacer's pins must hold and the court's digests must, while the warden walks, runs, reaches and pants. §19 row 15 asks whether blend spaces go to M36.
 

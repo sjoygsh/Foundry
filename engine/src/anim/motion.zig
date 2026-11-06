@@ -90,9 +90,22 @@ pub fn hold(rig: Rig, entry: *const RigClip, pose: Pose) void {
     joint.rotation = turned(joint.rotation, start.rotation, frame.axis).conjugate().mul(joint.rotation).normalize();
 }
 
-/// The move from `from` to `to`, unfolded seconds of `entry` at its own rate. Nothing for a span
-/// that does not run forward.
+/// The move from `from` to `to`, unfolded seconds of `entry` at its own rate. A span that runs
+/// backward is the forward span undone (`animation-states.md` §3): the body turns back by the yaw,
+/// then walks back along the translation, so a stride played backward retraces its path.
 pub fn travel(rig: Rig, entry: *const RigClip, from: f64, to: f64) Motion {
+    if (to < from) return undo(forward(rig, entry, to, from));
+    return forward(rig, entry, from, to);
+}
+
+/// The move that takes a body back from where `motion` left it: in the frame it ended in, the
+/// translation turned back by the yaw and reversed, and the yaw reversed.
+fn undo(motion: Motion) Motion {
+    const back = Quat.fromAxisAngle(.up, -motion.yaw);
+    return .{ .translation = back.rotate(motion.translation).scale(-1), .yaw = -motion.yaw };
+}
+
+fn forward(rig: Rig, entry: *const RigClip, from: f64, to: f64) Motion {
     if (!(to > from)) return .{};
     const frame = frameOf(rig).?;
     const duration: f64 = entry.clip.duration;

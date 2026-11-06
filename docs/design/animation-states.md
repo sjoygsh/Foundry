@@ -1,6 +1,7 @@
 # Design: M35 — Animation logic II: state machines, layers, masks and additive poses
 
-**Status:** Proposed 2026-11-06; awaiting the owner's acceptance of §19. No step has begun.
+**Status:** Accepted 2026-11-06, when the owner asked for Step 1, with §19 as written (row 15 included:
+blend spaces go to M36's row at the close). Each step's Resolution follows §19.
 **Date:** 2026-11-06
 **Baseline:** `1ff0360`, tag `m34`. M0–M34 are complete.
 **Decisions:**
@@ -658,3 +659,58 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 20 | The owner's watch and play is the exit condition's last clause, at Step 9 | §16 |
 
 Once these are accepted, nothing blocks Step 1.
+
+## Resolution — Step 1: backward, in step, and fitted (2026-11-06)
+
+`anim.Player` and `anim.Rig` now cover §3, §4 and §5. New tests are in
+`engine/src/anim/direction_tests.zig`.
+
+**Backward (§3).**
+- `validSpeed` takes −16 to 16, and `saneChannel` accepts any finite anchor.
+- `.restart` with a negative speed puts a one-shot at its end. `fold` clamps a one-shot at both
+  ends, and `finished` reads the channel's sign.
+- `fire` hands a span running backward to `fireBackward`, which fires `(to, from]`, latest first.
+  A loop starts from the lap `from` is in, so an event exactly on `from` fires. A one-shot's 0
+  fires on arrival, as its 1 does going forward.
+- `motion.travel` with `to < from` is `undo(forward(to, from))`: the translation turned back by the
+  yaw and reversed, and the yaw reversed. The walk and the curving `ring` both retrace 150 forward
+  ticks within 1e-5 on every tick back.
+- Two M34 tests changed with the contract. `setSpeed(-1)` is now valid, so the refusal is tested at
+  −17. The untrusted list's `speed -1` and `anchor -1` became `-17` and `-inf`.
+- `scene`'s refusal of a bad save tested `anchor = -1`, which is now a loop played backward, so it
+  is now refused at infinity. The deserializer itself did not change.
+
+**In step (§4).**
+- `RigClip.sync` is a group's name hash. `.keep` copies the newest clip's fraction within a group
+  (`keptFor`), and its seconds outside one, so nothing M34 made changes.
+- `follow` runs at the top of `finish`, after times move and before events and travel. Each
+  follower moves as many laps as the leader did, plus the difference to the leader's fraction,
+  taken the short way round. So its travel is its own, and a follower that ran ahead steps back
+  rather than lapping.
+- **This sharpens the design: a rig refuses a group on a one-shot** (`SyncOnOneShot`). A fraction
+  needs a lap, and there was no consumer for a synced one-shot.
+
+**Fitted (§5).**
+- **This also sharpens the design: `seekLaps(n)` treats n laps as one lap n times as long.** It
+  stays in the long lap it is in, so at n = 1 it is M34's `seek` exactly, and a test compares their
+  bytes. `seek` is now `seekLaps(…, 1, …)`. A one-shot has one lap, and a count of 0 is 1.
+- A seek's backward rule now covers the newest channel's followers too: a backward seek neither
+  fires nor travels.
+- `RigClip.rise` is metres a lap, with 0 for none and a NaN, infinity or negative refused
+  (`InvalidRise`).
+- `Rig.lapsFor` rounds |height| ÷ rise, from 1 to `max_fitted_laps` (256). A loop with no rise, a
+  one-shot, an unknown clip or a height that is not finite all answer 1.
+
+**Guards verified by mutation.** Each of these was broken once, and each broken version failed a
+test:
+- the mirrored span's `<=` (the loop's count at 0.25 s ticks);
+- the undo's turn sign (the retrace);
+- the fraction phase (two sync tests);
+- the leader's lock (two);
+- the short way round, `@round` against `@floor` (two);
+- the seek's backward-travel skip (M34's backward-seek test).
+
+**Not yet:** layers, masks, additive poses and the machine, which are Steps 2 and 3. Nothing in
+`asset`, `scene` or the samples changed, and no record names `sync` or `rise` until Step 4.
+
+**Bar:** 2,747/2,757 (ten skips), 131/131 steps. `anim-test` is 87/87, 16 of them new.
