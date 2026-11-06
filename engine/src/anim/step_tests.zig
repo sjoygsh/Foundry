@@ -613,12 +613,15 @@ test "report: a row per player, the rest counted, names cut short" {
 
     const row = &report.rows[0];
     try t.expectEqualStrings("a figure", row.label());
-    try t.expectEqual(@as(u8, 2), row.channel_count);
+    try t.expect(!row.machine);
+    try t.expectEqual(@as(u8, 1), row.layer_count);
+    const base = &row.layers[0];
+    try t.expectEqual(@as(u8, 2), base.channel_count);
     try t.expectEqual(@as(u32, 1), row.events);
-    try t.expectEqualStrings("stride", row.channels[0].label());
-    try t.expectEqualStrings("a walk with a name longe", row.channels[1].label());
-    try t.expectApproxEqAbs(dt * 2, row.channels[0].time, 1e-5);
-    try t.expectEqual(@as(f32, 2), row.channels[1].speed);
+    try t.expectEqualStrings("stride", base.channels[0].label());
+    try t.expectEqualStrings("a walk with a name longe", base.channels[1].label());
+    try t.expectApproxEqAbs(dt * 2, base.channels[0].time, 1e-5);
+    try t.expectEqual(@as(f32, 2), base.channels[1].speed);
 }
 
 test "report: a clip the rig lacks is left out rather than guessed at" {
@@ -627,7 +630,7 @@ test "report: a clip the rig lacks is left out rather than guessed at" {
     player.channels[0] = .{ .clip = 7, .speed = 1, .weight = 1 };
     const step: Step = .{ .lost = 1, .dropped = 2 };
     report.add(&player, rig, "lost", &step);
-    try t.expectEqual(@as(u8, 0), report.rows[0].channel_count);
+    try t.expectEqual(@as(u8, 0), report.rows[0].layers[0].channel_count);
     try t.expectEqual(@as(u32, 1), report.lost);
     try t.expectEqual(@as(u32, 2), report.dropped);
 }

@@ -7,6 +7,7 @@ const core = @import("core");
 const clip_mod = @import("clip.zig");
 const machine_mod = @import("machine.zig");
 const player_mod = @import("player.zig");
+const report_mod = @import("report.zig");
 const rig_mod = @import("rig.zig");
 const skeleton_mod = @import("skeleton.zig");
 const stack_mod = @import("stack.zig");
@@ -128,7 +129,7 @@ const clips = blk: {
     break :blk out;
 };
 const upper_weights = [_]f32{ 0, 1, 1, 0 };
-const masks = [_]Mask{.{ .name = upper, .weights = &upper_weights }};
+const masks = [_]Mask{.{ .name = upper, .weights = &upper_weights, .label = "upper" }};
 const rig: Rig = .{ .skeleton = skeleton, .clips = &clips, .start = c_idle, .motion_joint = pelvis, .masks = &masks };
 
 // The warden's machine, as §10 writes it.
@@ -538,4 +539,60 @@ test "replay: a three-layer machine run from parameters alone is byte-identical,
     const zig_sin: u64 = 0xe375a980ccac95f3;
     const apple_sin: u64 = 0x1b215b3c40e011e8;
     try t.expect(first == zig_sin or first == apple_sin);
+}
+
+test "report: a figure's layers, states and parameters by name, and the tick's counts" {
+    var stack: Stack = .{};
+    var step: Step = .{};
+    machine_mod.advance(&stack, rig, warden, dt, &step);
+    try machine_mod.set(&stack, warden, p_speed, 1.2);
+    try machine_mod.set(&stack, warden, p_near, 1);
+    for (0..10) |_| machine_mod.advance(&stack, rig, warden, dt, &step);
+    // The tick that takes the walk counts its transition.
+    try machine_mod.set(&stack, warden, p_speed, 2.4);
+    machine_mod.advance(&stack, rig, warden, dt, &step);
+    try t.expectEqual(@as(u32, 1), step.transitions);
+
+    var report: report_mod.Report = .{};
+    report.addStack(&stack, rig, warden, "warden", &step);
+    try t.expectEqual(@as(u32, 1), report.players);
+    try t.expectEqual(@as(u32, 1), report.transitions);
+    const row = &report.rows[0];
+    try t.expect(row.machine);
+    try t.expectEqualStrings("warden", row.label());
+    try t.expectEqual(@as(u32, 1), row.transitions);
+
+    try t.expectEqual(@as(u8, 3), row.layer_count);
+    try t.expectEqualStrings("body", row.layers[0].label());
+    try t.expectEqualStrings("run", row.layers[0].stateLabel());
+    try t.expectEqual(@as(u64, 1), row.layers[0].state_ticks);
+    try t.expectEqual(@as(f32, 1), row.layers[0].weight);
+    // Idle and walk are still fading out under the run.
+    try t.expectEqual(@as(u8, 3), row.layers[0].channel_count);
+    try t.expectEqualStrings("arms", row.layers[1].label());
+    try t.expectEqualStrings("upper", row.layers[1].maskLabel());
+    try t.expectEqual(stack.layers[1].weight, row.layers[1].weight);
+    try t.expectEqualStrings("reach", row.layers[1].channels[0].label());
+    // The state was written with no label, and prints none rather than a hash.
+    try t.expectEqualStrings("", row.layers[1].stateLabel());
+    try t.expectEqualStrings("breath", row.layers[2].label());
+    try t.expectEqual(stack_mod.Mode.additive, row.layers[2].mode);
+    try t.expectEqual(@as(f32, 0), row.layers[2].weight);
+
+    try t.expectEqual(@as(u8, 5), row.param_count);
+    try t.expectEqualStrings("speed", row.params[0].label());
+    try t.expectEqual(@as(f32, 2.4), row.params[0].value);
+    try t.expectEqualStrings("near", row.params[3].label());
+    try t.expectEqual(@as(f32, 1), row.params[3].value);
+    try t.expectEqualStrings("winded", row.params[4].label());
+    try t.expectEqual(@as(f32, 0), row.params[4].value);
+
+    // A state the machine lacks is counted by the report, and printed with no name.
+    stack.layers[2].state = clipName("gone");
+    machine_mod.advance(&stack, rig, warden, dt, &step);
+    stack.layers[0].state = clipName("gone");
+    var lost: report_mod.Report = .{};
+    lost.addStack(&stack, rig, warden, "warden", &step);
+    try t.expectEqual(@as(u32, 1), lost.reentered);
+    try t.expectEqualStrings("", lost.rows[0].layers[0].stateLabel());
 }

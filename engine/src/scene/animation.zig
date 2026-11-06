@@ -350,6 +350,7 @@ pub fn advance(world: *World, rigs: RigSource, dt: f32, options: Options) Alloca
             summary.unresolved += 1;
             continue;
         };
+        var steered: ?*const anim.Machine = null;
         if (animator.machine.isNone()) {
             animator.player().advance(rig.*, dt, &step);
         } else {
@@ -360,6 +361,7 @@ pub fn advance(world: *World, rigs: RigSource, dt: f32, options: Options) Alloca
                 continue;
             };
             anim.machine.advance(animator.stack(), rig.*, machine.*, dt, &step);
+            steered = machine;
             summary.transitions +|= step.transitions;
             summary.reentered +|= step.reentered;
             summary.params_dropped +|= step.params_dropped;
@@ -372,7 +374,12 @@ pub fn advance(world: *World, rigs: RigSource, dt: f32, options: Options) Alloca
         }
         if (options.report) |report| {
             var label: [32]u8 = undefined;
-            report.add(animator.constPlayer(), rig.*, std.fmt.bufPrint(&label, "entity {d}.{d}", .{ entity.index, entity.generation }) catch "entity", &step);
+            const name = std.fmt.bufPrint(&label, "entity {d}.{d}", .{ entity.index, entity.generation }) catch "entity";
+            if (steered) |machine| {
+                report.addStack(animator.constStack(), rig.*, machine.*, name, &step);
+            } else {
+                report.add(animator.constPlayer(), rig.*, name, &step);
+            }
         }
         if (rig.motion_joint == anim.no_parent) continue;
         const motion: *RootMotion = @ptrCast(@alignCast((world.getComponent(entity, types.root_motion) orelse continue).ptr));
@@ -980,6 +987,24 @@ test "a report lists a world's animators" {
     _ = try advance(&f.world, rigSource(&fake), tick, .{ .report = &report });
     try testing.expectEqual(@as(u32, 1), report.players);
     try testing.expectEqualStrings("entity 0.1", report.rows[0].label());
+    try testing.expect(!report.rows[0].machine);
+}
+
+test "a report lists a figure a machine steers by its layers and parameters" {
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const entity = try f.spawnWith(set_machine, id_machine);
+    _ = try advance(&f.world, rigSource(&fake), tick, .{});
+    try anim.machine.set(stack(&f.world, entity).?, machine_value, p_speed, 1);
+    var report: anim.Report = .{};
+    _ = try advance(&f.world, rigSource(&fake), tick, .{ .report = &report });
+    try testing.expectEqual(@as(u32, 1), report.transitions);
+    const row = &report.rows[0];
+    try testing.expect(row.machine);
+    try testing.expectEqual(@as(u8, 2), row.layer_count);
+    try testing.expectEqual(@as(u8, 2), row.param_count);
+    try testing.expectEqual(@as(f32, 1), row.params[0].value);
 }
 
 test "out of memory while adding root motion leaves the tick undone" {

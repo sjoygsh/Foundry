@@ -122,7 +122,7 @@ test "pacer: walks a square of 0.9 m that its clips decide, and closes it" {
     try testing.expectApproxEqAbs(@as(f32, -1), world.cols[0][2], 1e-4);
     const report = &f.figure.report;
     try testing.expectEqual(@as(u32, 1), report.players);
-    try testing.expectEqualStrings("turn", report.rows[0].channels[0].label());
+    try testing.expectEqualStrings("turn", report.rows[0].layers[0].channels[0].label());
 }
 
 test "pacer: a mod that doubles stride's speed doubles the square, with no code" {

@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 5 is complete; stop before Step 6** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 6 is `debug`: layers, states and parameters in the animation panel. No sample uses a machine yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 6 is complete; stop before Step 7** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 7 is the clips: `scripts/m35/clips.py` appends `run`, `reach`, `pant` and `look` to the walker and the warden. No sample uses a machine yet. The PC holds no Foundry clone.
+
+**M35 Step 6 is done (2026-11-06): layers in the panel.**
+- `anim.Report` rows hold up to three layers and eight parameters. `Report.addStack` fills each layer's label, mode, mask, weight, state and ticks, its channels, and each parameter's next value. It also counts the tick's transitions, re-entries and dropped parameters.
+- `Report.add` is unchanged for callers, and the panel prints a bare player exactly as M34 did. A missing label prints `?` or `layer <i>`, never a hash. The panel still has no write path.
+- `scene.animation.advance` reports a figure that has a machine through `addStack`.
+- Bar 2,805/2,815 (ten skips), 131/131 steps.
+
 
 **M35 Step 5 is done (2026-11-06): `foundry:animator` version 2.**
 - Fourteen fields are appended, each `since 2`: the players of layers 1 and 2, every layer's weight, target, state and ticks, eight parameters, and `machine`. A version 1 save loads with a base layer alone and carries on as M34's did.

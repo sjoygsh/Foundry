@@ -1052,3 +1052,55 @@ type table cancels. ADR-0071 names no size among its revisits.
 and no sample's content changed.
 
 **Bar:** 2,802/2,812 (ten skips), 131/131 steps. `scene-test` is 135/135, nine of them new, `anim-test` 118/118 and `rigs-test` 21/21. No sample's content changed, so no `dist` staging.
+
+## Resolution — Step 6: layers in the panel (2026-11-06)
+
+§11 is now built:
+- `anim.Report`, in `engine/src/anim/report.zig`, holds a figure's layers;
+- the overlay's animation panel, in `engine/src/debug/animation_panel.zig`, prints them;
+- `scene.animation.advance` fills them for a figure a machine steers.
+
+**The report.**
+- A `Row` now holds up to three `LayerRow`s and eight `ParamRow`s, with a `machine` flag.
+- A `LayerRow` is the layer's label, mode, mask label, weight, state label, ticks in that state, and
+  its channels, as M34's row had them.
+- `Report.add` is unchanged for a caller. It fills one layer with no names, and the flag stays
+  false.
+- `Report.addStack(stack, rig, machine, name, step)` fills every layer of the machine. For each
+  parameter it takes the value the next tick will see, from `machine.get`, and it adds the tick's
+  `transitions`, `reentered` and `params_dropped` to the report's counts.
+- The report is still values with no pointers. The panel's no-write-path test still holds it.
+
+**This sharpens the design: a label that is missing prints as nothing, never as a hash.**
+- A state the machine lacks, a state written with no label, or a mask with none prints as `?`, or
+  is left out.
+- A layer with no label prints as `layer <i>`.
+- Labels come from content (`asset`'s `decode` keeps them), so a machine built from `.fdt` prints
+  every name.
+
+**The panel.**
+- A bare player's row prints exactly as M34's did, and the test checks that no layer, state or
+  transition text appears for one.
+- A steered row prints:
+  - each layer as `  body  override  weight 1.00  state run (12 tick(s))`, with `  mask upper`
+    when it has a mask;
+  - its channels, indented once more;
+  - then one `  speed = 2.40` line for each parameter.
+- The header adds the tick's transitions, and a warning each for re-entered layers and dropped
+  parameters. All three come from `Step`'s counts.
+- Counts out of range read no further than the arrays.
+
+**`scene`.** `advance` with a report calls `addStack` for an animator its machine steered, and
+`add` otherwise. `sandbox3d`'s pacer test reads its channel through `layers[0]`.
+
+**Guards verified by mutation:**
+- the panel's bare-row branch;
+- the state label from the machine;
+- a parameter's value from the stack rather than its default;
+- the re-entry count;
+- a layer's weight from the stack;
+- `scene` passing the machine to `addStack`.
+
+**Not yet:** the clips that Step 7 generates. No sample names a machine yet.
+
+**Bar:** 2,805/2,815 (ten skips), 131/131 steps. `anim-test` 119/119, `debug-test` 41/41, `scene-test` 136/136. No sample's content changed.

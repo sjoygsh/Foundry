@@ -6,6 +6,11 @@
 //! path: it holds a const pointer to a value with no pointers in it, so nothing it could reach leads
 //! back to a player.
 //!
+//! A figure a machine steers prints its layers, each with its mode, mask, weight and state, and the
+//! machine's parameters, all by the names content gave them (`animation-states.md` §11). Watching a
+//! parameter cross a threshold and the state change on that tick is what it is for. A bare player
+//! prints as it did in M34.
+//!
 //! Joints drawn in the world are a view, and M111's preview owns those.
 
 const std = @import("std");
@@ -29,6 +34,9 @@ pub const State = struct {
         try view.line("{d} player(s)  {d} event(s) this tick", .{ r.players, r.events });
         if (r.dropped != 0) try view.line("WARNING: {d} event(s) dropped this tick", .{r.dropped});
         if (r.lost != 0) try view.line("WARNING: {d} channel(s) emptied this tick", .{r.lost});
+        if (r.transitions != 0) try view.line("{d} transition(s) this tick", .{r.transitions});
+        if (r.reentered != 0) try view.line("WARNING: {d} layer(s) in a state their machine lacks, begun again", .{r.reentered});
+        if (r.params_dropped != 0) try view.line("WARNING: {d} saved parameter(s) their machine lacks, dropped", .{r.params_dropped});
 
         const rows = r.rows[0..@min(r.row_count, r.rows.len)];
         for (rows) |*row| {
@@ -37,19 +45,47 @@ pub const State = struct {
             if (moved != 0 or row.motion.yaw != 0) {
                 try view.line("  moved {d:.4} m  turned {d:.4} rad", .{ moved, row.motion.yaw });
             }
-            for (row.channels[0..@min(row.channel_count, row.channels.len)]) |*channel| {
-                try view.line("  {s}  {d:.2} / {d:.2} s  weight {d:.2}  speed {d:.2}", .{
-                    channel.label(),
-                    channel.time,
-                    channel.duration,
-                    channel.weight,
-                    channel.speed,
+            const layers = row.layers[0..@min(row.layer_count, row.layers.len)];
+            if (!row.machine) {
+                if (layers.len != 0) try channels(view, &layers[0], "  ");
+                continue;
+            }
+            for (layers, 0..) |*layer, i| {
+                const called = layer.label();
+                const state = layer.stateLabel();
+                const mask = layer.maskLabel();
+                try view.line("  {s}{s}  {t}{s}{s}  weight {d:.2}  state {s} ({d} tick(s))", .{
+                    if (called.len == 0) "layer " else called,
+                    if (called.len == 0) &[_]u8{'0' + @as(u8, @intCast(i))} else "",
+                    layer.mode,
+                    if (mask.len == 0) "" else "  mask ",
+                    mask,
+                    layer.weight,
+                    if (state.len == 0) "?" else state,
+                    layer.state_ticks,
                 });
+                try channels(view, layer, "    ");
+            }
+            for (row.params[0..@min(row.param_count, row.params.len)]) |*param| {
+                try view.line("  {s} = {d:.2}", .{ param.label(), param.value });
             }
         }
         if (r.players > rows.len) try view.line("and {d} more", .{r.players - rows.len});
     }
 };
+
+fn channels(view: *View, layer: *const anim.report.LayerRow, indent: []const u8) !void {
+    for (layer.channels[0..@min(layer.channel_count, layer.channels.len)]) |*channel| {
+        try view.line("{s}{s}  {d:.2} / {d:.2} s  weight {d:.2}  speed {d:.2}", .{
+            indent,
+            channel.label(),
+            channel.time,
+            channel.duration,
+            channel.weight,
+            channel.speed,
+        });
+    }
+}
 
 // -- tests -----------------------------------------------------------------------------
 
@@ -124,14 +160,16 @@ test "a report's players, channels, events and motion are printed" {
     report.rows[0] = name(anim.report.Row, "warden");
     report.rows[0].events = 2;
     report.rows[0].motion = .{ .translation = .init(0, 0, -0.03), .yaw = 0.0125 };
-    report.rows[0].channel_count = 2;
-    report.rows[0].channels[0] = name(anim.report.ChannelRow, "walk");
-    report.rows[0].channels[0].time = 0.5;
-    report.rows[0].channels[0].duration = 1.25;
-    report.rows[0].channels[0].weight = 0.75;
-    report.rows[0].channels[0].speed = 1.5;
-    report.rows[0].channels[1] = name(anim.report.ChannelRow, "idle");
-    report.rows[0].channels[1].weight = 0.25;
+    report.rows[0].layer_count = 1;
+    const base = &report.rows[0].layers[0];
+    base.channel_count = 2;
+    base.channels[0] = name(anim.report.ChannelRow, "walk");
+    base.channels[0].time = 0.5;
+    base.channels[0].duration = 1.25;
+    base.channels[0].weight = 0.75;
+    base.channels[0].speed = 1.5;
+    base.channels[1] = name(anim.report.ChannelRow, "idle");
+    base.channels[1].weight = 0.25;
     report.rows[1] = name(anim.report.Row, "pacer");
     try h.describe(&report);
     for ([_][]const u8{
@@ -145,6 +183,54 @@ test "a report's players, channels, events and motion are printed" {
         "pacer  0 event(s)",
     }) |text| try testing.expect(overlay.findText(&h.ctx, text));
     try testing.expect(!overlay.findText(&h.ctx, "more"));
+    // A bare player's row has no layer, state or parameter lines.
+    try testing.expect(!overlay.findText(&h.ctx, "state"));
+    try testing.expect(!overlay.findText(&h.ctx, "override"));
+    try testing.expect(!overlay.findText(&h.ctx, "transition"));
+}
+
+test "a figure a machine steers prints its layers, states and parameters by name" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    var report: anim.Report = .{ .players = 1, .row_count = 1, .transitions = 1, .reentered = 2, .params_dropped = 3 };
+    const row = &report.rows[0];
+    row.* = name(anim.report.Row, "warden");
+    row.machine = true;
+    row.layer_count = 3;
+    row.layers[0] = name(anim.report.LayerRow, "body");
+    @memcpy(row.layers[0].state[0..3], "run");
+    row.layers[0].state_len = 3;
+    row.layers[0].state_ticks = 12;
+    row.layers[0].channel_count = 1;
+    row.layers[0].channels[0] = name(anim.report.ChannelRow, "run");
+    row.layers[0].channels[0].duration = 0.7;
+    row.layers[0].channels[0].weight = 1;
+    row.layers[0].channels[0].speed = 1.25;
+    row.layers[1] = name(anim.report.LayerRow, "arms");
+    @memcpy(row.layers[1].mask[0..5], "upper");
+    row.layers[1].mask_len = 5;
+    row.layers[1].weight = 0.5;
+    // No names: the panel says which layer, and that its state has none.
+    row.layers[2] = .{ .mode = .additive, .weight = 0 };
+    row.param_count = 2;
+    row.params[0] = name(anim.report.ParamRow, "speed");
+    row.params[0].value = 2.4;
+    row.params[1] = name(anim.report.ParamRow, "near");
+    row.params[1].value = 1;
+    try h.describe(&report);
+    for ([_][]const u8{
+        "1 transition(s) this tick",
+        "WARNING: 2 layer(s) in a state their machine lacks, begun again",
+        "WARNING: 3 saved parameter(s) their machine lacks, dropped",
+        "warden  0 event(s)",
+        "  body  override  weight 1.00  state run (12 tick(s))",
+        "    run  0.00 / 0.70 s  weight 1.00  speed 1.25",
+        "  arms  override  mask upper  weight 0.50  state ? (0 tick(s))",
+        "  layer 2  additive  weight 0.00  state ? (0 tick(s))",
+        "  speed = 2.40",
+        "  near = 1.00",
+    }) |text| try testing.expect(overlay.findText(&h.ctx, text));
 }
 
 test "a still player prints no move, and a tick that lost nothing warns of nothing" {
@@ -188,8 +274,17 @@ test "players past the rows are counted, and counts out of range read no further
     for (&report.rows) |*row| {
         row.* = name(anim.report.Row, "pacer");
         row.name_len = 200;
-        row.channel_count = 200;
-        for (&row.channels) |*channel| channel.name_len = 200;
+        row.machine = true;
+        row.layer_count = 200;
+        row.param_count = 200;
+        for (&row.params) |*param| param.name_len = 200;
+        for (&row.layers) |*layer| {
+            layer.name_len = 200;
+            layer.mask_len = 200;
+            layer.state_len = 200;
+            layer.channel_count = 200;
+            for (&layer.channels) |*channel| channel.name_len = 200;
+        }
     }
     try h.describe(&report);
     try testing.expect(overlay.findText(&h.ctx, "and 3 more"));
