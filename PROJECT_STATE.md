@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 9 is committed, and waits on the owner's play, which is its exit's last clause** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Then Step 10, Windows/Vulkan. **Still open for the owner:** the 32 animators read 0.173–0.231 ms p95 on the M5, against a 0.10 ms budget, which is §16's revisit of ADR-0071 (M100). The PC holds no Foundry clone.
+**Current handoff: M35 Step 10 is committed. Stop before Step 11, which closes M35** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 9 still waits on the owner's play, its exit's last clause. **Open for the owner:** the 32 animators pass on the i3 (0.039–0.065 ms p95) but miss on the M5 (0.17–0.23 ms), against 0.10 ms; and the court's short endings read 0.154–0.321 ms p95 on the i3, against 0.25 ms. The PC holds `src\Foundry-m35` and `m35\` scratch, to delete by exact name at the close.
+
+**M35 Step 10 is done (2026-11-06): Windows/Vulkan.**
+- `scripts/m35/windows.ps1`, from M34's, ran on the Arc A750 and the i3 from a fresh clone, with M35's commits by bundle. The owner asked for normal priority with the CPU check off, and dropped the soundtrack replay there (it replays on the Mac, and its digest passed in `court-test`).
+- Null 2,791/2,811 (20 skips), 128/128 steps. Vulkan 3,072/3,103 (31 skips), 232/232. ReleaseSafe pin suites 423/423.
+- `stage.zig`'s symlink test now skips where Windows refuses the link, as every other symlink test does. It had passed before only because the suite ran elevated.
+- Every pin equals the Mac's on x86_64: the tour's three saves, with and without `pacer_quick`, the player's and the walker's. `pacer_back` mirrors the square. Each validation log is clean, and every court ending replayed every tick.
+- The i3's p95: the 32 animators 0.039–0.065 ms (budget 0.10). The court's `win` 0.140–0.195 ms, its `caught` and `fell` 0.154–0.321 ms (budget 0.25). Skin 0.053–0.181 ms.
+- Bar on the Mac 2,813/2,823 (ten skips), 132/132 steps.
 
 **M35 Step 9 is done, pending the owner's play (2026-11-06): the warden on a machine.**
 - `court:warden.machine` is §10's as written:

@@ -1270,7 +1270,7 @@ one before it, so their corners and footfalls are spread out.
 | `render.skin`, one figure | 0.102–0.123 ms | 0.25 ms |
 | `animation.animators`: 32 animators, each the two-layer machine, no pose | **0.173–0.231 ms** | 0.10 ms |
 
-**The 32 animators pass their budget on the M5.** Their medians are 0.079–0.114 ms. M34's bare
+**The 32 animators miss their budget on the M5.** Their medians are 0.079–0.114 ms. M34's bare
 players read 0.042 ms p95 here. In a tight ReleaseSafe loop in `anim` alone, 32 machines take
 0.030 ms a tick against 0.018 ms for 32 bare players. So the machine's own work is not most of it.
 What the frame adds, plausibly cold caches over 872-byte animators and `scene`'s per-animator
@@ -1388,3 +1388,117 @@ test now checks what `bind` says.
 **Not yet:** the owner's play, which is this step's last clause. Windows is Step 10.
 
 **Bar:** 2,813/2,823 (ten skips), 132/132 steps. `fdt-check` first refused the machine's layout, which `fpack fmt` fixed. `court` and `room` stage with `dist` on macOS, ReleaseSafe on Metal.
+
+## Resolution — Step 10: Windows/Vulkan (2026-11-06)
+
+**What exists now:** `scripts/m35/windows.ps1`, from M34's.
+- `build` runs the native suites, then the pins at ReleaseSafe, and stages a relocated, read-only
+  ReleaseSafe install.
+- `desktop` runs both samples from that install in the desktop session:
+  - the tour with the pacer's three saves, with and without `pacer_quick`;
+  - the pacer's square, with and without `pacer_back`;
+  - three cost runs;
+  - the warden's three endings, under validation and off.
+
+**Run on** the Arc A750 and the i3-10105F. The source was a fresh clone at `m34`, with M35's commits
+brought by bundle, and this step's two changed files overlaid and hash-checked. Nothing was pushed.
+Every run went through a scheduled task. The owner asked for the PC's work to run at normal
+priority, with the 50% CPU check suspended, for the desktop runs and the latter half of the build.
+The parallelism stayed at `-j2`.
+
+**The soundtrack is not replayed on the PC.** The owner dropped it to save twelve minutes. Its
+42,023 ticks replay on the Mac (Step 9), and its digest is pinned in `court-test`, which passed on the
+PC at Debug and at ReleaseSafe.
+
+**A staging test was fixed.** `stage.zig`'s "missing, escaping or a symlink" test failed on the PC.
+It makes a symlink, and Windows grants that only to an elevated session. Earlier milestones ran the
+null suite over elevated SSH, so the failure never showed. Run from a normal-integrity task, it
+failed with `PermissionDenied`. The test now skips when the link is refused, which is how every
+other symlink test treats Windows. The linked case is the last of three, so the missing and escaping
+cases still run there. On the Mac all 33 staging tests pass, with no skip.
+
+**Suites:**
+
+| Suite | Steps | Tests |
+| --- | --- | --- |
+| Null | 128/128 | 2,791/2,811 (20 skips, one of them the staging test's linked case) |
+| Vulkan | 232/232 | 3,072/3,103 (31 skips) |
+| ReleaseSafe `anim-test`, `rigs-test`, `scene-test`, `sandbox3d-test`, `court-test` | 137/137 | 423/423 |
+
+**The pins on x86_64.** Every one holds. In the tests:
+- the stack replay, the player's and the clips' pins. Each accepts Zig's `sin` or Apple's. An x86_64
+  build calls only Zig's own, so the value it matched is Zig's;
+- the clip, mesh and skeleton bytes, all thirteen files;
+- `pacer_back`'s `59632bcff2461113`;
+- the court's four script digests.
+
+In the tour, windowed and relocated, and the same under Khronos validation with synchronization:
+
+| Tour | Mid-stride | Mid-turn | The M34 save |
+| --- | --- | --- | --- |
+| Base | `e46c09dc62b1eeac`, 5 corners, 18 footfalls | `222e0a9b12fd152c` | `47f67027ff3a12b0`, M34's pin, from 3,675 bytes |
+| `pacer_quick` | `9cdfec98342c5bea`, 31 footfalls | `b026642288afb59c` | carries on, `2435439a911e4171` |
+
+The player's `cb99ccfcf2b6d6c3` and the walker's `655e865f98779129` hold too. Every value equals the
+Mac's.
+
+**The pacer's square,** read at frames 200, 320, 440 and 560:
+- The three corners equal the Mac's exactly: (1.765, 1.685), (2.650, 1.685), (2.650, 0.800).
+- `pacer_back` gives (1.765, −0.085), (2.650, −0.085), (2.650, 0.800), the square mirrored, with and
+  without validation.
+- The first reading falls mid-side. By frame 200, the paced loop has run a tick or two more or fewer
+  than on the Mac, so it read z = 0.915 here against 0.925 there, and 0.685 or 0.675 against 0.665
+  mirrored. The script first expected the Mac's value exactly. It now expects only the side, and it
+  passed.
+
+**The court's endings** replayed every tick, under validation and off. No sound was dropped (171, 7
+and 16 played):
+
+| Run | Ending ticks | Replay |
+| --- | --- | --- |
+| `win`, off, ×3 | 1,225 and 2,442 | 2,447 matched, each time |
+| `win`, validation | 1,227 and 2,444 | 2,449 matched |
+| `caught` ×4, validation ×1 | 96–97 | 98–100 matched |
+| `fell` ×4, validation ×1 | 188–194 | 191–197 matched |
+
+As in M33 and M34, an ending moves by a few ticks from run to run, because the first mesh's arrival
+is a recorded input.
+
+**Every validation log** holds only the lines that prove it was live. That covers the two tours, the
+mirrored square and the three endings. The install was unchanged by the runs, and no scripted run
+wrote preferences.
+
+**§16's budgets, read on the i3:** p95 at ReleaseSafe, inside the paced 60 Hz loop, with no
+validation layer.
+
+| What | i3 | M5 (Steps 8–9) | Budget |
+| --- | --- | --- | --- |
+| `animation`: the pacer's advance, evaluate and skin matrices | 0.003–0.005 ms | 0.016–0.020 ms | 0.10 ms |
+| `render.skin`, one figure | 0.060–0.067 ms; the warden 0.053–0.181 ms | 0.102–0.123 ms; the warden 0.071–0.083 ms | 0.25 ms |
+| `animation.animators`: 32 two-layer machines, no pose | **0.039–0.065 ms** | 0.173–0.231 ms | 0.10 ms |
+| The court's whole tick (`character`), `win` | 0.140–0.195 ms | 0.131 ms | 0.25 ms |
+| The court's whole tick, `caught` and `fell` | **0.154–0.321 ms** | not read | 0.25 ms |
+
+The sandbox's numbers come from three cost runs, and the court's from all eight runs without
+validation.
+
+**The 32 animators pass on the i3,** the machine M34's budget was set on. M34 read 0.018–0.027 ms
+there for 32 bare players, so a machine costs about twice that. The M5's 0.17–0.23 ms is therefore
+the Mac's, not the machine's. The tight `anim` loop on the M5 took 0.030 ms, and the i3's paced loop
+reads within about twice that. What the Mac's frame adds is still not measured apart.
+
+**The court's short endings sit on the line.** `win`'s 2,427 frames read 0.140–0.195 ms, within
+budget. `caught`'s 80 frames and `fell`'s 178 are small samples, so their p95 is the worst four to
+nine frames:
+- `caught`: 0.243, 0.175, 0.154 and 0.202 ms;
+- `fell`: 0.321, 0.252, 0.194 and 0.243 ms.
+
+M34's worst there was 0.192 ms. The medians moved twofold between rounds (0.07 to 0.20 ms for `fell`),
+so the machine's own state is part of it. These runs were at normal priority, with the CPU check off. Both readings, the M5's animators and the i3's short endings, are put to the owner
+with this step.
+
+**Guards verified by breaking them:** none. The step adds a script and a test's skip. The Mac's
+staging tests still run the linked case, which is that skip's check.
+
+**Bar** on the Mac, after the staging fix: 2,813/2,823 (ten skips), 132/132 steps. Every command
+exits 0.

@@ -1,0 +1,261 @@
+# M35 Step 10: animation states on Windows/Vulkan (animation-states.md §15-§16, Step 10), from M34's.
+# `build` runs the native suites, the pins on x86_64 at ReleaseSafe, and stages a relocated,
+# read-only ReleaseSafe install; `desktop` runs in the desktop session, from a scheduled task, and
+# runs both samples from that install: the tour with the pacer's three saves, with and without
+# `pacer_quick`; the pacer's square with and without `pacer_back`; the cost runs §16's budgets are
+# read from; and the warden's three endings. The soundtrack's ten minutes replay on the Mac alone.
+param(
+    [Parameter(Mandatory=$true)][string]$Repo,
+    [Parameter(Mandatory=$true)][string]$Zig,
+    [Parameter(Mandatory=$true)][string]$Output,
+    [ValidateSet('build','desktop')][string]$Mode = 'build',
+    # Where a desktop run writes its logs, if not beside the install in $Output: so a second
+    # attempt keeps the first's evidence and reuses its install.
+    [string]$Evidence = '',
+    # Only these sample runs (by name), for a second attempt at one that was interrupted.
+    [string[]]$Only = @(),
+    # Use only when the owner explicitly suspends the standing CPU cutoff.
+    [switch]$IgnoreCpuLimit,
+    # Normal only when the owner explicitly asks for it; the PC is theirs to play on.
+    [ValidateSet('BelowNormal','Normal')][string]$Priority = 'BelowNormal'
+)
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$Repo = (Resolve-Path $Repo).Path
+$Zig = (Resolve-Path $Zig).Path
+$Output = [IO.Path]::GetFullPath($Output)
+$Install = $Output
+if ($Evidence) { $Output = [IO.Path]::GetFullPath($Evidence) }
+$current = [Diagnostics.Process]::GetCurrentProcess()
+$current.PriorityClass = $Priority
+function Assert-Idle {
+    if ($IgnoreCpuLimit) { return }
+    $cpu = ((Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 2).CounterSamples |
+        Measure-Object CookedValue -Maximum).Maximum
+    if ($cpu -gt 50) { throw 'PC exceeds the 50 percent cutoff' }
+}
+function Run-Child([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Directory, [int]$Minutes = 40, [switch]$AllowFail) {
+    $stdout = Join-Path $Output "$Name.out.log"
+    $stderr = Join-Path $Output "$Name.err.log"
+    # A rerun after a later failure keeps what already passed, and its evidence.
+    $passed = Join-Path $Output "$Name.passed"
+    if (Test-Path $passed) { Write-Output "$Name passed earlier"; return }
+    if ((Test-Path $stdout) -or (Test-Path $stderr)) { throw "Stale evidence: $Name" }
+    $start = @{ FilePath=$Exe; WorkingDirectory=$Directory; PassThru=$true;
+        RedirectStandardOutput=$stdout; RedirectStandardError=$stderr }
+    if ($Arguments) { $start.ArgumentList = $Arguments }
+    $began = [DateTime]::UtcNow
+    $child = Start-Process @start
+    try {
+        $null = $child.Handle
+        $child.PriorityClass = $Priority
+        $deadline = $began.AddMinutes($Minutes)
+        while (-not $child.WaitForExit(1000)) {
+            if ([DateTime]::UtcNow -gt $deadline) { throw "Deadline: $Name" }
+        }
+        $child.WaitForExit()
+        if ($child.ExitCode -ne 0) {
+            if (-not $AllowFail) { throw "$Name exited $($child.ExitCode); see $stderr" }
+            Write-Output "$Name exited $($child.ExitCode); its failures are read from $stderr"
+            return
+        }
+    } finally {
+        if (-not $child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Null }
+        $child.Dispose()
+    }
+    $line = "{0} passed in {1:n0} s" -f $Name, ([DateTime]::UtcNow - $began).TotalSeconds
+    Set-Content $passed $line
+    Write-Output $line
+}
+function Set-Layers([string]$Layers, [string]$Name) {
+    if ($Layers -eq 'validation') {
+        $env:VK_LOADER_LAYERS_DISABLE = '~implicit~'
+        $env:VK_INSTANCE_LAYERS = 'VK_LAYER_KHRONOS_validation'
+        $env:VK_LAYER_SETTINGS_PATH = $Output
+        @('khronos_validation.validate_sync = true',
+          'khronos_validation.report_flags = error,warn,info',
+          "khronos_validation.log_filename = $(Join-Path $Output "$Name.validation.log")") |
+            Set-Content (Join-Path $Output 'vk_layer_settings.txt') -Encoding ASCII
+    } else {
+        $env:VK_LOADER_LAYERS_DISABLE = '~all~'
+        Remove-Item Env:VK_INSTANCE_LAYERS -ErrorAction SilentlyContinue
+        Remove-Item Env:VK_LAYER_SETTINGS_PATH -ErrorAction SilentlyContinue
+    }
+}
+function Assert-Clean([string]$Layers, [string]$Name) {
+    if ($Layers -ne 'validation') { return }
+    $validation = Join-Path $Output "$Name.validation.log"
+    if (-not (Test-Path $validation)) { throw "Validation log absent: $Name" }
+    if (Select-String -Path $validation -Pattern 'Validation Error|Validation Warning|VUID-|SYNC-HAZARD' -Quiet) {
+        throw "Validation not clean: $Name"
+    }
+}
+function Expect-Lines([string]$Name, [string[]]$Patterns) {
+    $text = Get-Content (Join-Path $Output "$Name.err.log") -Raw
+    foreach ($pattern in $Patterns) {
+        if ($text -notmatch $pattern) { throw "Incomplete evidence: $Name lacks '$pattern'" }
+    }
+}
+function Hash-Tree([string]$Root) {
+    Get-ChildItem $Root -File -Recurse | ForEach-Object {
+        "$($_.FullName.Substring($Root.Length)) $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+    } | Sort-Object
+}
+Assert-Idle
+[IO.Directory]::CreateDirectory($Output) | Out-Null
+$env:PATH = "C:\VulkanSDK\1.4.357.0\Bin;$env:PATH"
+$env:VK_LOADER_LAYERS_DISABLE = '~implicit~'
+# Elevated SSH ignores the loader filter; disable the installed implicit layers themselves.
+$env:DISABLE_RTSS_LAYER = '1'
+$env:DISABLE_VK_LAYER_VALVE_steam_overlay_1 = '1'
+$env:DISABLE_VK_LAYER_VALVE_steam_fossilize_1 = '1'
+if ($Mode -eq 'build') {
+    # The Vulkan test binaries require validation, synchronization included, themselves (AGENTS.md).
+    Run-Child 'null-debug' $Zig @('build','test','-Dplatform=null','-Drhi=null','-j2','--summary','line') $Repo
+    Run-Child 'vulkan-debug' $Zig @('build','test','vulkan-test','-Drhi=vulkan','-j2','--summary','line') $Repo
+    # The pins on x86_64, optimized as a release is: the player's and the clips' in `anim`, the
+    # record's and the rigs', the world's save, and both samples' (§13).
+    Run-Child 'release' $Zig @('build','anim-test','rigs-test','scene-test','sandbox3d-test','court-test','-Drhi=vulkan','-Doptimize=ReleaseSafe','-j2','--summary','line') $Repo
+    Run-Child 'install' $Zig @('build','install','-Drhi=vulkan','-Doptimize=ReleaseSafe','-j2','--summary','line','--prefix',(Join-Path $Output 'stage')) $Repo
+    $relocated = Join-Path $Output 'relocated'
+    if (Test-Path $relocated) { throw 'Stale relocated install' }
+    Move-Item (Join-Path $Output 'stage') $relocated
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    & icacls $relocated /deny "${identity}:(OI)(CI)(WD,AD,WA,WEA,DC,DE)" /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Read-only ACL failed' }
+    Hash-Tree $relocated | Set-Content (Join-Path $Output 'installed.sha256')
+    Write-Output 'Native suites and relocated install finished.'
+    return
+}
+
+$relocated = Join-Path $Install 'relocated'
+$bin = Join-Path $relocated 'bin'
+foreach ($exe in @('sandbox3d.exe','court.exe')) {
+    if (-not (Test-Path (Join-Path $bin $exe))) { throw "Relocated $exe missing" }
+}
+foreach ($package in @('pacer_quick.fpk','pacer_back.fpk')) {
+    if (-not (Test-Path (Join-Path $relocated "content\$package"))) { throw "Relocated $package missing" }
+}
+$sandbox3d = Join-Path $bin 'sandbox3d.exe'
+$court = Join-Path $bin 'court.exe'
+$env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+# Private scratch user-data roots, not the player's ambient mods or preferences.
+$env:APPDATA = Join-Path $Output 'user'
+$env:FOUNDRY_SANDBOX3D_SAVE_DIR = Join-Path $Output 'sandbox3d-saves'
+$env:FOUNDRY_COURT_SAVE_DIR = Join-Path $Output 'preferences'
+foreach ($dir in @($env:APPDATA, $env:FOUNDRY_SANDBOX3D_SAVE_DIR, $env:FOUNDRY_COURT_SAVE_DIR)) {
+    [IO.Directory]::CreateDirectory($dir) | Out-Null
+}
+foreach ($name in @('FOUNDRY_SANDBOX3D_WORKERS','FOUNDRY_SANDBOX3D_LOAD','FOUNDRY_SANDBOX3D_WALK','FOUNDRY_SANDBOX3D_GENERATE',
+    'FOUNDRY_SANDBOX3D_OVERLAY','FOUNDRY_SANDBOX3D_WALKERS','FOUNDRY_SANDBOX3D_ANIMATORS','FOUNDRY_SANDBOX3D_KEYS',
+    'FOUNDRY_SANDBOX3D_NAV','FOUNDRY_SANDBOX3D_PACKAGES','FOUNDRY_SANDBOX3D_FRAMES','FOUNDRY_COURT_NAV','FOUNDRY_COURT_PACKAGES','FOUNDRY_COURT_WORKERS','FOUNDRY_COURT_FRAMES','FOUNDRY_COURT_OVERLAY','FOUNDRY_COURT_PLAY')) {
+    Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+}
+# A failed request, build or view is said, never silent; none may appear.
+function Expect-Quiet([string]$Name) {
+    $log = Join-Path $Output "$Name.err.log"
+    if (Select-String -Path $log -Pattern 'navigation: no build|did not start|the build failed|navigation view|navigation source .* omitted' -Quiet) {
+        throw "Navigation warned: $Name"
+    }
+}
+$failed = @()
+# The tour: the player, the walker and the pacer across a save and a load, each replayed (§10),
+# with the climber on its links; then with `pacer_quick`, which doubles the square with no code.
+# Each under synchronization validation too. Then three cost runs, 900 frames each: one walker,
+# its skin, and 32 animators with no pose (§13).
+$tour = @('tour: pass', 'tour: walker pass \(2100 ticks, 9 waypoints, idle/walk/cross-fade, replay [0-9a-f]{16}\)',
+    'tour: pacer pass \(600 ticks across a save and a load, 5 corners, \d+ footfalls, \d+ bytes, replay [0-9a-f]{16}\)',
+    'tour: pacer mid-turn pass \(600 ticks across the turn''s end and its fade, \d+ bytes, replay [0-9a-f]{16}\)')
+# The M34 save's pin is the base content's: with a package it carries on, and says so.
+$tourBase = @('tour: pacer M34 save pass \(600 ticks from a version 1 save, 3675 bytes, M34''s replay 47f67027ff3a12b0\)')
+$tourQuick = @('tour: pacer M34 save carries on')
+$cost = @('animators: 32 of the pacer''s machine, both layers, advanced with no pose', 'animation: 1 objects, \d+ frames, median [\d.]+ms p95 [\d.]+ms',
+    'render.skin: 1 objects, \d+ frames', 'animation.animators: 32 objects, \d+ frames, median [\d.]+ms p95 [\d.]+ms',
+    'stopped after 900 frames \(0 skipped\)')
+# The pacer's square at frames 200, 320, 440 and 560; `pacer_back` mirrors it with no code (§13).
+# Frame 200 falls mid-side, and how many ticks a paced frame loop has run by then varies by a tick
+# or two, so that first stand is only on its side; the three after it are corners, and exact.
+$pathBase = @('f5: the pacer stands at 1.7650,0.0040,0\.9\d{3}', 'f5: the pacer stands at 1.7650,0.0040,1.6850',
+    'f5: the pacer stands at 2.6500,0.0040,1.6850', 'f5: the pacer stands at 2.6500,0.0040,0.8000')
+$pathBack = @('f5: the pacer stands at 1.7650,0.0040,0\.6\d{3}', 'f5: the pacer stands at 1.7650,0.0040,-0.0850',
+    'f5: the pacer stands at 2.6500,0.0040,-0.0850', 'f5: the pacer stands at 2.6500,0.0040,0.8000')
+$sandboxRuns = @(
+    @('sandbox-tour','tour','','off'), @('sandbox-tour-quick','tour','pacer_quick:content','off'),
+    @('sandbox-tour-validation','tour','','validation'), @('sandbox-tour-quick-validation','tour','pacer_quick:content','validation'),
+    @('sandbox-path','path','','off'), @('sandbox-path-back','path','pacer_back:content','off'),
+    @('sandbox-path-back-validation','path','pacer_back:content','validation'),
+    @('sandbox-cost1','cost','','off'), @('sandbox-cost2','cost','','off'), @('sandbox-cost3','cost','','off')
+)
+foreach ($run in $sandboxRuns) {
+    $name, $kind, $packages, $layers = $run
+    if ($Only -and ($Only -notcontains $name)) { continue }
+    try {
+        Assert-Idle
+        Set-Layers $layers $name
+        Remove-Item Env:FOUNDRY_SANDBOX3D_WALK, Env:FOUNDRY_SANDBOX3D_FRAMES, Env:FOUNDRY_SANDBOX3D_ANIMATORS, Env:FOUNDRY_SANDBOX3D_KEYS -ErrorAction SilentlyContinue
+        if ($kind -eq 'tour') { $env:FOUNDRY_SANDBOX3D_WALK = 'tour' }
+        elseif ($kind -eq 'path') { $env:FOUNDRY_SANDBOX3D_FRAMES = '600'; $env:FOUNDRY_SANDBOX3D_KEYS = 'f5@200,f5@320,f5@440,f5@560' }
+        else { $env:FOUNDRY_SANDBOX3D_FRAMES = '900'; $env:FOUNDRY_SANDBOX3D_ANIMATORS = '32' }
+        if ($packages) { $env:FOUNDRY_SANDBOX3D_PACKAGES = $packages } else { Remove-Item Env:FOUNDRY_SANDBOX3D_PACKAGES -ErrorAction SilentlyContinue }
+        Run-Child $name $sandbox3d $null $relocated 10
+        if ($kind -eq 'tour') { Expect-Lines $name $tour; if ($packages) { Expect-Lines $name $tourQuick } else { Expect-Lines $name $tourBase } }
+        elseif ($kind -eq 'path') { if ($packages) { Expect-Lines $name $pathBack } else { Expect-Lines $name $pathBase } }
+        else { Expect-Lines $name $cost }
+        if ($packages) { Expect-Lines $name @("enabling '$packages'") }
+        Expect-Quiet $name
+        Assert-Clean $layers $name
+    } catch {
+        Write-Output "FAILED $name : $_"
+        $failed += $name
+    }
+}
+Remove-Item Env:FOUNDRY_SANDBOX3D_WALK, Env:FOUNDRY_SANDBOX3D_FRAMES, Env:FOUNDRY_SANDBOX3D_ANIMATORS, Env:FOUNDRY_SANDBOX3D_KEYS -ErrorAction SilentlyContinue
+Remove-Item Env:FOUNDRY_SANDBOX3D_PACKAGES -ErrorAction SilentlyContinue
+
+# The warden on its machine: walk, run, reach, breath and the jump, in the three endings under
+# validation and off; its tick and skin are §16's two court budgets.
+$env:FOUNDRY_COURT_PACKAGES = ''
+$warden = 'navigation: \d+ polygons, \d+ detail triangles, 2 links, 0 skipped; request to arrival [\d.]+ms'
+$ending = @($warden, 'replay: \d+ tick hashes matched a fresh simulation', 'stopped after \d+ frames \(0 skipped\)',
+    '0 dropped; 0 mixer command\(s\) and 0 event\(s\) dropped',
+    'cost character \(whole game tick and sound dispatch upper bound\): \d+ frames, median [\d.]+ms p95 [\d.]+ms',
+    'cost render.skin \(one warden\): \d+ frames, median [\d.]+ms p95 [\d.]+ms')
+$courtRuns = @(
+    @('court-validation-win','win','show','validation'), @('court-validation-caught','caught','show','validation'),
+    @('court-validation-fell','fell','show','validation'),
+    @('court-win','win','show','off'), @('court-caught','caught','show','off'), @('court-fell','fell','show','off'),
+    @('court-win2','win','show','off'), @('court-win3','win','show','off')
+)
+foreach ($run in $courtRuns) {
+    $name, $play, $nav, $layers = $run
+    if ($Only -and ($Only -notcontains $name)) { continue }
+    try {
+        Assert-Idle
+        Set-Layers $layers $name
+        $env:FOUNDRY_COURT_NAV = $nav
+        if ($play) {
+            $env:FOUNDRY_COURT_PLAY = $play
+            Remove-Item Env:FOUNDRY_COURT_FRAMES -ErrorAction SilentlyContinue
+        } else {
+            Remove-Item Env:FOUNDRY_COURT_PLAY -ErrorAction SilentlyContinue
+            $env:FOUNDRY_COURT_FRAMES = '300'
+        }
+        Run-Child $name $court $null $relocated 10
+        if ($play) {
+            $word = if ($play -eq 'win') { 'won' } else { $play }
+            Expect-Lines $name ($ending + "phase $word at tick \d+")
+        }
+        elseif ($nav -eq 'off') { Expect-Lines $name @('navigation: off; measuring the same frames with no build', 'navigation: frame work over \d+ frames from the request', 'stopped after 300 frames \(0 skipped\)') }
+        else { Expect-Lines $name @($warden, 'navigation: frame work over \d+ frames from the request', 'stopped after 300 frames \(0 skipped\)') }
+        Expect-Quiet $name
+        Assert-Clean $layers $name
+    } catch {
+        Write-Output "FAILED $name : $_"
+        $failed += $name
+    }
+}
+Remove-Item Env:FOUNDRY_COURT_PLAY, Env:FOUNDRY_COURT_FRAMES, Env:FOUNDRY_COURT_NAV, Env:FOUNDRY_COURT_PACKAGES -ErrorAction SilentlyContinue
+if (Compare-Object (Get-Content (Join-Path $Install 'installed.sha256')) (Hash-Tree $relocated)) { throw 'Install changed' }
+if (Get-ChildItem $env:FOUNDRY_COURT_SAVE_DIR) { throw 'Scripted run wrote preferences' }
+if ($failed) { throw "Sample runs failed: $($failed -join ', ')" }
+Write-Output 'Desktop proofs passed.'

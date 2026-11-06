@@ -1440,7 +1440,12 @@ test "an asset that is missing, escaping or a symlink refuses the release before
         try fx.write("secret.png", "not yours");
         try fx.write("src/textures/real.png", "png bytes");
         if (case.link) {
-            try fx.tmp.dir.symLink(testing.io, "real.png", "src/textures/linked.png", .{});
+            // Windows makes a symlink only with a privilege an ordinary session lacks. The linked
+            // case is the last, so the two before it have run, and the test skips the rest.
+            fx.tmp.dir.symLink(testing.io, "real.png", "src/textures/linked.png", .{}) catch |err| switch (err) {
+                error.PermissionDenied => return error.SkipZigTest,
+                else => return err,
+            };
         }
 
         var buf: [2048]u8 = undefined;
