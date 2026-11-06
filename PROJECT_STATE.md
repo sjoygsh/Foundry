@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-06
-**Current handoff: M35 Step 1 is complete; stop before Step 2** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 2 is `anim.Stack`: layers, masks and additive poses. No layer, machine or record of M35 exists yet. The PC holds no Foundry clone.
+**Current handoff: M35 Step 2 is complete; stop before Step 3** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Step 3 is `anim.Machine`: states, transitions and parameters stepping a `Stack`. No machine or record of M35 exists yet. The PC holds no Foundry clone.
+
+**M35 Step 2 is done (2026-11-06): layers, masks and additive poses.**
+- `anim.Stack` is three layers, each a `Player` with a weight that fades toward a target. A layer's mode, mask and fade are a `Spec` the caller passes, and are never saved.
+- A rig gains per-joint masks and additive clips with a reference pose. `fillMask` builds a mask from joints and their subtrees, in order, so a waist feathers.
+- Events come from every weighted layer, base first. Motion comes from the base alone. A clip on the wrong kind of layer is emptied and counted.
+- A stack of its base alone is its player, bit for bit, and an additive breath moves only the chest.
+- Bar 2,762/2,772 (ten skips), 131/131 steps.
+
 
 **M35 Step 1 is done (2026-11-06): backward, in step, and fitted.** The owner accepted §19 as written, including row 15, which puts blend spaces in M36's row at the close.
 - A channel's speed runs from −16 to 16. A one-shot played backward starts at its end, events fire on the mirrored span, and travel reverses: a stride played backward retraces its path within 1e-5.

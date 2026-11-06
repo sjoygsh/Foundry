@@ -714,3 +714,74 @@ test:
 `asset`, `scene` or the samples changed, and no record names `sync` or `rise` until Step 4.
 
 **Bar:** 2,747/2,757 (ten skips), 131/131 steps. `anim-test` is 87/87, 16 of them new.
+
+## Resolution — Step 2: layers, masks and additive poses (2026-11-06)
+
+`anim.Stack` now covers §6, without a machine. It is in `engine/src/anim/stack.zig`, with tests in
+`stack_tests.zig`.
+
+**The values.**
+- `Layer` is `extern`: a `Player`, a `weight`, a `target`, and the `state` and `state_ticks` that
+  Step 3 fills. `Stack` is three of them.
+- **Parameters are not in `Stack` yet.** They are Step 3's, and they are appended there, so the
+  layout §8 lays over grows once.
+
+**This sharpens the design: a layer's mode, mask and fade are a `Spec`, never held in the stack.**
+- What a layer is belongs to its machine. What a stack holds is only what changes and is saved.
+- `validateSpecs` refuses `NoLayers`, `TooManyLayers`, `AdditiveBase`, `MaskOnBase`, `UnknownMask`
+  and `InvalidFade`. Step 3's machine produces specs that have passed it.
+
+**The rig.**
+- `RigClip` gains `additive` and `reference`. `Rig` gains `masks` (`Mask`: a name hash, one weight
+  a joint and a label) and `mask(name)`.
+- `validate` adds `AdditiveWithMotion`, `InvalidReference`, `AdditiveStart`, `TooManyMasks`,
+  `UnnamedMask`, `DuplicateMask` and `InvalidMask`.
+  - `InvalidReference` covers a reference of the wrong length, a non-finite or non-unit joint, a
+    missing reference, and a reference on a clip that is not additive.
+  - `AdditiveStart` exists because a new player begins its start clip on the base.
+- `fillMask(skeleton, entries, out)` is how Step 4's `Rigs` will build a mask from a set's entries.
+  It refuses `UnknownJoint`, `InvalidMaskWeight` and `TooManyMaskEntries`.
+
+**The pose.**
+- `pose.difference` turns a sampled pose into `q_ref⁻¹·q`, `t − t_ref` and `s ÷ s_ref`. A reference
+  scale of 0 on an axis gives 1.
+- `blendMasked` and `addMasked` mix by `mask[joint] × weight`.
+- `Player.evaluate` takes the difference of an additive clip after sampling it, so its channels
+  blend as differences. A rig with no additive clip evaluates exactly as before.
+
+**A tick.**
+- `Stack.advance` repairs each layer in its spec. A layer above the base moves its weight toward
+  its target by `dt ÷ fade`, or at once with no fade. The base is held at weight 1, whatever a raw
+  write left. Then it empties and counts any clip its layer cannot play: an additive clip on an
+  override layer or the reverse, motion above the base, or above the base a clip that is gone or
+  insane.
+- **That last point sharpens the design.** A layer above the base is emptied by the stack, not by
+  its player. The player's own repair would begin the rig's start clip, which is the base's, so an
+  emptied upper layer would refill every tick. An empty layer is skipped.
+- Events go into one `Step`: the base's, then each layer with weight above zero, by layer. Motion
+  is the base's alone. `Step.emit` is now public for this.
+- `Stack.evaluate(rig, specs, scratch[2], out)` evaluates the base with `scratch[1]`. Each layer
+  with weight and a channel to show (`Player.hasWeight`) is evaluated into `scratch[0]` and mixed.
+- `Stack.play` refuses `UnknownLayer`, `ModeMismatch` and `MotionOffBase`, changing nothing.
+  `setTarget` clamps to [0, 1], a NaN is 0, and the base's target is ignored.
+
+**The exit.**
+- Over 600 ticks of a fade, an interrupted fade and a backward cut, a stack of its base alone
+  matches a `Player` in its bytes, events and motion each tick. Its pose under three specs, with
+  the upper layers empty, is the player's bit for bit.
+- An additive `pant` on the walk leaves every joint but the chest byte-identical, and lifts the
+  chest by its 0.1 m difference within 1e-5.
+
+**Guards verified by mutation:**
+- the mask's subtree (`fillMask`'s test);
+- the additive difference (three tests);
+- the motion-above-base refusal (the raw-write test);
+- silence at weight 0 (the events test);
+- the base held at 1, and an additive mask. Both survived their first mutation, so the tests "the
+  base always fires" and "a mask keeps a difference off the joints it leaves out" were added, and
+  each then failed under its mutation.
+
+**Not yet:** the machine, parameters and conditions, which are Step 3. Nothing in `asset`, `scene`
+or the samples changed.
+
+**Bar:** 2,762/2,772 (ten skips), 131/131 steps. `anim-test` is 102/102, 15 of them new.

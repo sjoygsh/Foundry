@@ -91,7 +91,7 @@ pub const Step = struct {
         return step.events[0..step.event_count];
     }
 
-    fn emit(step: *Step, id: ContentId) void {
+    pub fn emit(step: *Step, id: ContentId) void {
         if (step.event_count < max_step_events) {
             step.events[step.event_count] = id;
             step.event_count += 1;
@@ -248,6 +248,8 @@ pub const Player = extern struct {
             const into = if (total == 0) out else scratch;
             pose_mod.sample(rig.skeleton, entry.clip, at, into);
             if (entry.motion) motion_mod.hold(rig, entry, into);
+            // An additive clip blends as a difference (`animation-states.md` §6).
+            if (entry.additive) pose_mod.difference(into, entry.reference);
             if (total != 0) pose_mod.blend(out, scratch, channel.weight / (total + channel.weight), out);
             total += channel.weight;
         }
@@ -264,6 +266,25 @@ pub const Player = extern struct {
         if (entry.loop) return false;
         const at = self.time(rig, self.newest);
         return if (channel.speed < 0) at <= 0 else at >= entry.clip.duration;
+    }
+
+    /// Whether any channel holds a clip.
+    pub fn hasClip(self: *const Player) bool {
+        return self.liveCount() != 0;
+    }
+
+    /// Whether `evaluate` has a channel to show, rather than the rig's start clip.
+    pub fn hasWeight(self: *const Player, rig: Rig) bool {
+        for (self.channels) |channel| {
+            if (channel.weight > 0 and self.usable(rig, channel) != null) return true;
+        }
+        return false;
+    }
+
+    /// The clip a channel plays, if it can be played at all.
+    pub fn usableIn(rig: Rig, channel: Channel) ?*const RigClip {
+        if (channel.clip == 0 or !saneChannel(channel)) return null;
+        return rig.find(channel.clip);
     }
 
     /// Whether `name` is the newest clip.

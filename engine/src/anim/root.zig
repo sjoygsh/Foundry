@@ -34,6 +34,7 @@ pub const pose = @import("pose.zig");
 pub const report = @import("report.zig");
 pub const rig = @import("rig.zig");
 pub const skeleton = @import("skeleton.zig");
+pub const stack = @import("stack.zig");
 pub const skinning = @import("skin.zig");
 
 // The names reached for most often. A game sees them today and a mod may later, so renaming one
@@ -50,7 +51,10 @@ pub const max_joints = skeleton.max_joints;
 pub const no_parent = skeleton.no_parent;
 
 pub const Pose = pose.Pose;
+pub const addMasked = pose.addMasked;
 pub const blend = pose.blend;
+pub const blendMasked = pose.blendMasked;
+pub const difference = pose.difference;
 pub const clamp = pose.clamp;
 pub const modelMatrices = pose.modelMatrices;
 pub const sample = pose.sample;
@@ -70,7 +74,18 @@ pub const max_step_events = player.max_step_events;
 
 pub const Report = report.Report;
 
+pub const Layer = stack.Layer;
+pub const LayerMode = stack.Mode;
+pub const LayerSpec = stack.Spec;
+pub const Stack = stack.Stack;
+pub const max_layers = stack.max_layers;
+pub const validateSpecs = stack.validateSpecs;
+
 pub const Event = rig.Event;
+pub const Mask = rig.Mask;
+pub const MaskEntry = rig.MaskEntry;
+pub const fillMask = rig.fillMask;
+pub const max_masks = rig.max_masks;
 pub const Rig = rig.Rig;
 pub const RigClip = rig.RigClip;
 pub const clipName = rig.clipName;
@@ -91,8 +106,10 @@ test {
     _ = report;
     _ = rig;
     _ = skeleton;
+    _ = stack;
     _ = skinning;
     _ = @import("direction_tests.zig");
+    _ = @import("stack_tests.zig");
     _ = @import("player_tests.zig");
     _ = @import("step_tests.zig");
     _ = @import("tests.zig");

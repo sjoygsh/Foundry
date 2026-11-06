@@ -151,3 +151,74 @@ pub fn skinMatrices(skeleton: Skeleton, pose: Pose, out: []Mat4) void {
         matrix.* = Mat4.mul(matrix.*, inverse_bind);
     }
 }
+
+/// Turns a sampled pose into its difference from `reference`, joint by joint, in place: the rotation
+/// `q_ref⁻¹ · q`, the translation `t − t_ref` and the scale `s ÷ s_ref` (`animation-states.md` §6). A
+/// joint at its reference becomes the identity, so a clip that moves only the chest differs only
+/// there. A reference scale of 0 on an axis divides into 1 rather than into infinity.
+pub fn difference(pose: Pose, reference: []const Transform) void {
+    core.assert.always(pose.local.len == reference.len, "a difference needs a reference of {d} joints", .{pose.local.len});
+    for (pose.local, reference) |*joint, ref| {
+        joint.* = .{
+            .translation = joint.translation.sub(ref.translation),
+            .rotation = ref.rotation.conjugate().mul(joint.rotation).normalize(),
+            .scale = .init(ratio(joint.scale.x, ref.scale.x), ratio(joint.scale.y, ref.scale.y), ratio(joint.scale.z, ref.scale.z)),
+        };
+    }
+}
+
+fn ratio(value: f32, of: f32) f32 {
+    return if (of == 0) 1 else value / of;
+}
+
+/// The weight a mask gives `joint` at a layer's `weight`: the mask's own, or 1 with none. Written so
+/// a NaN is 0.
+fn jointWeight(mask: ?[]const f32, joint: usize, weight: f32) f32 {
+    const w = weight * (if (mask) |m| m[joint] else 1);
+    return if (!(w > 0)) 0 else @min(w, 1);
+}
+
+/// `blend`, joint by joint, at `mask[joint] × weight`: an override layer over the pose beneath.
+/// `out` may be `below` or `layer`.
+pub fn blendMasked(below: Pose, layer: Pose, mask: ?[]const f32, weight: f32, out: Pose) void {
+    core.assert.always(below.local.len == layer.local.len and below.local.len == out.local.len, "blendMasked needs three poses of one length", .{});
+    if (mask) |m| core.assert.always(m.len == out.local.len, "a mask needs a weight for each of {d} joints", .{out.local.len});
+    for (below.local, layer.local, out.local, 0..) |from, to, *mixed, joint| {
+        const w = jointWeight(mask, joint, weight);
+        if (w == 0) {
+            mixed.* = from;
+        } else if (w == 1) {
+            mixed.* = to;
+        } else {
+            mixed.* = .{
+                .translation = Vec3.lerp(from.translation, to.translation, w),
+                .rotation = Quat.slerp(from.rotation, to.rotation, w),
+                .scale = Vec3.lerp(from.scale, to.scale, w),
+            };
+        }
+    }
+}
+
+/// Adds a difference onto the pose beneath at `mask[joint] × weight`: `q_below · slerp(identity,
+/// q_diff, w)`, `t_below + w · t_diff` and `s_below · lerp(1, s_diff, w)`. `out` may be `below`.
+pub fn addMasked(below: Pose, diff: Pose, mask: ?[]const f32, weight: f32, out: Pose) void {
+    core.assert.always(below.local.len == diff.local.len and below.local.len == out.local.len, "addMasked needs three poses of one length", .{});
+    if (mask) |m| core.assert.always(m.len == out.local.len, "a mask needs a weight for each of {d} joints", .{out.local.len});
+    for (below.local, diff.local, out.local, 0..) |base, d, *mixed, joint| {
+        const w = jointWeight(mask, joint, weight);
+        if (w == 0) {
+            mixed.* = base;
+            continue;
+        }
+        const turn = if (w == 1) d.rotation else Quat.slerp(Quat.identity, d.rotation, w);
+        mixed.* = .{
+            .translation = base.translation.add(d.translation.scale(w)),
+            .rotation = base.rotation.mul(turn).normalize(),
+            .scale = .init(
+                base.scale.x * (1 + (d.scale.x - 1) * w),
+                base.scale.y * (1 + (d.scale.y - 1) * w),
+                base.scale.z * (1 + (d.scale.z - 1) * w),
+            ),
+        };
+    }
+}
