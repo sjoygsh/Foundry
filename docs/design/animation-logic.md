@@ -542,6 +542,8 @@ complete, and none names a contract the code does not have.
 
 > **2026-11-06:** M35's rows are designed in [`animation-states.md`](animation-states.md).
 
+> **2026-11-07:** M36's rows are designed in [`animation-ik.md`](animation-ik.md).
+
 > **2026-11-06, at M35's close:** M35 is complete (tag `m35`). State machines, layers, masks and additive poses (ADR-0072),
 > sync groups, a clip played backward and a ladder's climb fitted to its height (`rise` and
 > `Rig.lapsFor`) are all built and played in both samples. Those four rows are done. The 32-animator

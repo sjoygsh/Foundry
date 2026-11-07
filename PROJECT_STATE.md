@@ -1,7 +1,11 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-06
-**Current handoff: M35 is complete (2026-11-06, tag `m35`, pushed)** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Stop before M36's design, Animation logic III: foot placement, look-at and blend spaces. The owner never reported a play of Step 9's court build. The 32 animators miss on the M5's paced frame, and the i3's short court endings sit on the 0.25 ms line; both go to M100. The PC and the Mac hold no M35 scratch.
+**Last updated:** 2026-11-07
+**Current handoff: M36's design is proposed** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074); awaiting acceptance of §19. Stop before Step 1. No M36 code exists.
+
+**M36's design (2026-11-07):** foot placement and look-at as corrections of an evaluated pose in `anim`, from targets the game finds with its own raycasts, never saved (ADR-0073); blend spaces in one and two axes, named and played like a clip, placed by a machine's parameters, with no saved shape changed (ADR-0074); set v3 and machine v2; the climber's feet, a new strafer, the pacer's gaze and block, and the warden's blend, feet and gaze. Ten steps. The pacer's three pins would move once, for its new `blocked` parameter.
+
+**M35 is complete (2026-11-06, tag `m35`, pushed)** ([`docs/design/animation-states.md`](docs/design/animation-states.md), ADR-0072). Stop before M36's design, Animation logic III: foot placement, look-at and blend spaces. The owner never reported a play of Step 9's court build. The 32 animators miss on the M5's paced frame, and the i3's short court endings sit on the 0.25 ms line; both go to M100. The PC and the Mac hold no M35 scratch.
 
 **M35 Step 11 is done (2026-11-06): the close.**
 - Each dated note is in place: `animation-logic.md` §15, `animation3d.md` §14, ADR-0071's two revisits, ADR-0072, and §8, §10 and §14 of the design.
