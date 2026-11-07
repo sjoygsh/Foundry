@@ -11,6 +11,11 @@
 //! parameter cross a threshold and the state change on that tick is what it is for. A bare player
 //! prints as it did in M34.
 //!
+//! A channel playing a blend prints where the blend sits and each clip it mixes there, and a figure
+//! whose game added its feet and gaze prints each leg's offset, contact and lock, the pelvis's drop,
+//! and each aim chain's weight (`animation-ik.md` §10). Watching a contact flicker, or an offset
+//! settle on a step, is what those are for.
+//!
 //! Joints drawn in the world are a view, and M111's preview owns those.
 
 const std = @import("std");
@@ -48,6 +53,7 @@ pub const State = struct {
             const layers = row.layers[0..@min(row.layer_count, row.layers.len)];
             if (!row.machine) {
                 if (layers.len != 0) try channels(view, &layers[0], "  ");
+                try ik(view, row);
                 continue;
             }
             for (layers, 0..) |*layer, i| {
@@ -69,6 +75,7 @@ pub const State = struct {
             for (row.params[0..@min(row.param_count, row.params.len)]) |*param| {
                 try view.line("  {s} = {d:.2}", .{ param.label(), param.value });
             }
+            try ik(view, row);
         }
         if (r.players > rows.len) try view.line("and {d} more", .{r.players - rows.len});
     }
@@ -84,6 +91,28 @@ fn channels(view: *View, layer: *const anim.report.LayerRow, indent: []const u8)
             channel.weight,
             channel.speed,
         });
+        if (!channel.blend()) continue;
+        if (channel.axes == 2) {
+            try view.line("{s}  at {d:.2}, {d:.2}", .{ indent, channel.at[0], channel.at[1] });
+        } else {
+            try view.line("{s}  at {d:.2}", .{ indent, channel.at[0] });
+        }
+        for (channel.members[0..@min(channel.member_count, channel.members.len)]) |*member| {
+            try view.line("{s}  + {s}  weight {d:.2}", .{ indent, member.label(), member.weight });
+        }
+    }
+}
+
+/// A figure's feet and gaze, if its game added them.
+fn ik(view: *View, row: *const anim.report.Row) !void {
+    if (row.feet) {
+        try view.line("  pelvis {d:.3} m", .{row.pelvis});
+        for (row.legs[0..@min(row.leg_count, row.legs.len)]) |*leg| {
+            try view.line("  leg {s}  offset {d:.3} m  contact {d:.2}  lock {d:.2}", .{ leg.label(), leg.offset, leg.contact, leg.lock });
+        }
+    }
+    for (row.aims[0..@min(row.aim_count, row.aims.len)]) |*aim| {
+        try view.line("  aim {s}  weight {d:.2}{s}", .{ aim.label(), aim.weight, if (aim.beyond) "  past its limit" else "" });
     }
 }
 
@@ -233,6 +262,72 @@ test "a figure a machine steers prints its layers, states and parameters by name
     }) |text| try testing.expect(overlay.findText(&h.ctx, text));
 }
 
+test "a blend prints its place and its clips, and a figure's feet and gaze print by name" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    var report: anim.Report = .{ .players = 2, .row_count = 2 };
+    const row = &report.rows[0];
+    row.* = name(anim.report.Row, "warden");
+    row.layer_count = 1;
+    const base = &row.layers[0];
+    base.channel_count = 1;
+    base.channels[0] = name(anim.report.ChannelRow, "move");
+    base.channels[0].duration = 0.85;
+    base.channels[0].weight = 1;
+    base.channels[0].speed = 1;
+    base.channels[0].at = .{ 1.43, 0 };
+    base.channels[0].axes = 1;
+    base.channels[0].member_count = 2;
+    base.channels[0].members[0] = name(anim.report.MemberRow, "walk");
+    base.channels[0].members[0].weight = 0.5;
+    base.channels[0].members[1] = name(anim.report.MemberRow, "run");
+    base.channels[0].members[1].weight = 0.5;
+    row.feet = true;
+    row.pelvis = -0.12;
+    row.leg_count = 2;
+    row.legs[0] = name(anim.report.LegRow, "left");
+    row.legs[0].offset = -0.12;
+    row.legs[0].contact = 1;
+    row.legs[0].lock = 0.5;
+    row.legs[1] = name(anim.report.LegRow, "right");
+    row.aim_count = 1;
+    row.aims[0] = name(anim.report.AimRow, "head");
+    row.aims[0].weight = 0.25;
+    row.aims[0].beyond = true;
+
+    const strafer = &report.rows[1];
+    strafer.* = name(anim.report.Row, "strafer");
+    strafer.layer_count = 1;
+    strafer.layers[0].channel_count = 1;
+    strafer.layers[0].channels[0] = name(anim.report.ChannelRow, "strafe");
+    strafer.layers[0].channels[0].axes = 2;
+    strafer.layers[0].channels[0].at = .{ -0.5, 1 };
+    try h.describe(&report);
+    for ([_][]const u8{
+        "  move  0.00 / 0.85 s  weight 1.00  speed 1.00",
+        "    at 1.43",
+        "    + walk  weight 0.50",
+        "    + run  weight 0.50",
+        "  pelvis -0.120 m",
+        "  leg left  offset -0.120 m  contact 1.00  lock 0.50",
+        "  leg right  offset 0.000 m  contact 0.00  lock 0.00",
+        "  aim head  weight 0.25  past its limit",
+        "    at -0.50, 1.00",
+    }) |text| try testing.expect(overlay.findText(&h.ctx, text));
+}
+
+test "a figure with no feet or gaze added prints none" {
+    var h: Harness = undefined;
+    h.init();
+    defer h.deinit();
+    var report: anim.Report = .{ .players = 1, .row_count = 1 };
+    report.rows[0] = name(anim.report.Row, "pacer");
+    try h.describe(&report);
+    try testing.expect(!overlay.findText(&h.ctx, "pelvis"));
+    try testing.expect(!overlay.findText(&h.ctx, "aim "));
+}
+
 test "a still player prints no move, and a tick that lost nothing warns of nothing" {
     var h: Harness = undefined;
     h.init();
@@ -283,8 +378,18 @@ test "players past the rows are counted, and counts out of range read no further
             layer.mask_len = 200;
             layer.state_len = 200;
             layer.channel_count = 200;
-            for (&layer.channels) |*channel| channel.name_len = 200;
+            for (&layer.channels) |*channel| {
+                channel.name_len = 200;
+                channel.axes = 1;
+                channel.member_count = 200;
+                for (&channel.members) |*member| member.name_len = 200;
+            }
         }
+        row.feet = true;
+        row.leg_count = 200;
+        for (&row.legs) |*leg| leg.name_len = 200;
+        row.aim_count = 200;
+        for (&row.aims) |*aim| aim.name_len = 200;
     }
     try h.describe(&report);
     try testing.expect(overlay.findText(&h.ctx, "and 3 more"));

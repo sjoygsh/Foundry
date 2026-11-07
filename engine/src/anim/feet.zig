@@ -226,6 +226,8 @@ pub const LegState = struct {
     locked: f32 = 0,
     /// Whether it was in contact on the last tick, so a new contact is seen.
     down: bool = false,
+    /// How much the pose had it down on the last tick, 0 to 1: for the panel.
+    contact: f32 = 0,
     /// Whether the lock still holds this contact, until it ends or reaches too far.
     holding: bool = false,
 };
@@ -283,6 +285,7 @@ pub const Feet = struct {
             const state = &feet.legs[l];
             const placed = clip_feet[l].add(.init(0, state.offset, 0));
             const contact = std.math.clamp(contacts[l], 0, 1);
+            state.contact = contact;
             updateLock(state, to_world, to_model, placed, contact, step, options.lock);
             const target = if (state.locked > 0) placed.lerp(to_model.mulPoint(state.lock), state.locked) else placed;
 

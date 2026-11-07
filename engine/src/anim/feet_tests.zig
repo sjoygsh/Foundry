@@ -11,6 +11,7 @@ const gaze_mod = @import("gaze.zig");
 const ik = @import("ik.zig");
 const player_mod = @import("player.zig");
 const pose_mod = @import("pose.zig");
+const report_mod = @import("report.zig");
 const rig_mod = @import("rig.zig");
 const skeleton_mod = @import("skeleton.zig");
 
@@ -598,4 +599,58 @@ test "1200 ticks of feet and a gaze on moving bumpy ground replay byte for byte"
 
 comptime {
     _ = blend_mod;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The panel's rows.
+
+test "report: legs and aims are added to the figure's own row, by name" {
+    var built: Built = undefined;
+    built.init();
+    const rig = built.rig();
+    var player = playing(rig, name_walk, 10);
+    var feet: Feet = .{};
+    // Over a hollow, so the offsets and the pelvis have moved.
+    var local = settle(rig, &feet, &player, world(.zero, 0), leftHollow, Vec3.up, 20, .{});
+    var aim: gaze_mod.Aim = .{};
+    const eye = ik.positionOf(ik.modelOf(skeleton, .{ .local = &local }, head));
+    aim.apply(rig, 0, .{ .local = &local }, world(.zero, 0), eye.add(.init(0, 0, -3)), 1, dt);
+
+    var step: Step = .{};
+    var report: report_mod.Report = .{};
+    report.add(&player, rig, "walker", &step);
+    report.addFeet(rig, &feet);
+    report.addAim(rig, 0, &aim);
+    // A chain the rig lacks adds nothing.
+    report.addAim(rig, 3, &aim);
+    const row = &report.rows[0];
+    try t.expect(row.feet);
+    try t.expectEqual(@as(u8, 2), row.leg_count);
+    try t.expectEqualStrings("left", row.legs[0].label());
+    try t.expectEqualStrings("right", row.legs[1].label());
+    for (row.legs[0..2], feet.legs[0..2]) |out, state| {
+        try t.expectEqual(state.offset, out.offset);
+        try t.expectEqual(state.contact, out.contact);
+        try t.expectEqual(state.locked, out.lock);
+    }
+    try t.expect(row.legs[0].offset < 0);
+    try t.expectEqual(feet.pelvis, row.pelvis);
+    try t.expect(row.pelvis < 0);
+    // The contact is what `place` was given: this tick's pose, with a foot down.
+    try t.expect(row.legs[0].contact + row.legs[1].contact > 0);
+    try t.expectEqual(std.math.clamp(feet_mod.contactWeights(rig, &player, .none)[0], 0, 1), row.legs[0].contact);
+    try t.expectEqual(@as(u8, 1), row.aim_count);
+    try t.expectEqualStrings("head", row.aims[0].label());
+    try t.expectEqual(aim.weight, row.aims[0].weight);
+    try t.expect(!row.aims[0].beyond);
+
+    // A figure that got no row is counted, and its legs go nowhere, not into another's row.
+    var full: report_mod.Report = .{};
+    for (0..report_mod.max_rows) |_| full.add(&player, rig, "walker", &step);
+    full.add(&player, rig, "ninth", &step);
+    full.addFeet(rig, &feet);
+    full.addAim(rig, 0, &aim);
+    try t.expectEqual(@as(u32, report_mod.max_rows + 1), full.players);
+    try t.expect(!full.rows[report_mod.max_rows - 1].feet);
+    try t.expectEqual(@as(u8, 0), full.rows[report_mod.max_rows - 1].aim_count);
 }

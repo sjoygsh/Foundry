@@ -1031,3 +1031,47 @@ the 1,200-tick replay of feet and a gaze on moving, bumpy ground. Every other li
 
 **The bar:** see PROJECT_STATE. `zig build test`: 2,855/2,865, ten skips, 132/132 steps, with
 eleven new tests.
+
+## Resolution — Step 5: the scene's blend save, and the panel (2026-11-08)
+
+Step 1 had already moved `scene.animation.evaluate` to three scratch poses. This step adds the
+scene's blend tests and §10's report and panel.
+
+**In `scene`:**
+- **A version 2 save naming a blend loads and continues byte for byte.** A figure walks by a
+  blend, placed by `speed` at 0.3, halfway between standing and the walk. It is saved 37 ticks
+  in, mid-lap, loaded into a second world, and both are steered alike for 240 ticks: on to the
+  walk's place, then past it. Every tick's pose, motion, events and stack hash the same. Past the
+  walk's place the blend is held at its edge and the rate carries the rest (1.5 at 0.9 m/s).
+- **A save naming a blend that a later rig lacks** empties that channel and counts it as lost, as
+  a lost clip is, and the animator stays resolved (§7).
+- **Nothing saved changed,** so M35's test that holds the animator at 872 bytes holds it still.
+
+**In `anim.Report`:**
+- **A channel's row names a blend by its label.** Its `at` and `axes` say where it sits, and its
+  up to four `members` are the clips mixed there, with their weights. Its `time` and `duration`
+  are seconds of the lap it has at that place, not the entry's nominal one second.
+- **Where the place comes from:** `addStack` reads it with `machine.positions`. A bare player's
+  `add` has no machine, so a blend sits at its first point, as it plays.
+- **`addFeet(rig, feet)` and `addAim(rig, chain, aim)` write into the row added last.** `Report.open`
+  says whether that figure was given a row. Without it, a ninth figure's feet would land in the
+  eighth's row. A chain the rig lacks adds nothing.
+- **The contact weight is kept for the panel.** `LegState.contact` holds the contact `place` was
+  given on the last tick, since the panel needs it and only the game held it. Like the rest of
+  `Feet` it is presentation, never saved.
+
+**In the panel:**
+- **A blend channel** prints `at x` (or `at x, y`) and a `+ clip  weight` line for each clip.
+- **A figure with feet** prints `pelvis` and a `leg` line each, with its offset, contact and lock.
+- **Each aim chain** prints its weight, and `past its limit` when it is letting go.
+- All by the names content gave them. Counts out of range read no further than the arrays, and
+  the panel's no-write-path test still holds: a `Report` holds no pointer.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- `Report.open`;
+- the lap's seconds for a blend's time (`expected 0.85, found 1`);
+- `addStack`'s positions from the machine;
+- `place` keeping the contact. Its test now requires a foot to be down, so a contact left at 0
+  fails it.
+
+**The bar.** `zig build test`: 2,861/2,871, ten skips, 132/132 steps, with six new tests.

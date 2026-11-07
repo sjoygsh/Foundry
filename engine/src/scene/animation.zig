@@ -569,16 +569,67 @@ const machine_value: anim.Machine = .{
     },
 };
 
+// A figure that walks by a blend (`animation-ik.md` §7): standing at 0 and the walk at 0.6 m/s,
+// placed by `speed`. Nothing saved names it but the channel's clip.
+const set_blend: ContentId = .fromString("test:set.blend");
+const id_blend_machine: ContentId = .fromString("test:machine.blend");
+const name_move = anim.clipName("move");
+const move_points = [_]anim.BlendPoint{ .{ .clip = name_idle, .x = 0 }, .{ .clip = name_walk, .x = 0.6 } };
+const move_blend = anim.Blend.build(&move_points) catch unreachable;
+const blend_clips = blk: {
+    var clips = [_]anim.RigClip{
+        .{ .name = name_idle, .clip = .{ .duration = 1, .tracks = &swing_tracks }, .label = "idle" },
+        .{ .name = name_walk, .clip = .{ .duration = 1, .tracks = &tracks }, .motion = true, .events = &step_events, .label = "walk" },
+        anim.blend_space.entryFor(name_move, &move_blend, true, 0, "move"),
+    };
+    std.mem.sort(anim.RigClip, &clips, {}, struct {
+        fn less(_: void, a: anim.RigClip, b: anim.RigClip) bool {
+            return a.name < b.name;
+        }
+    }.less);
+    const sorted = clips;
+    break :blk sorted;
+};
+const blend_rig: anim.Rig = .{
+    .skeleton = .{ .parents = &parents, .rest = &rest, .inverse_bind = &binds },
+    .clips = &blend_clips,
+    .start = name_move,
+    .motion_joint = 0,
+};
+const blend_machine: anim.Machine = .{
+    .params = &.{.{ .name = p_speed }},
+    .layers = &.{.{ .entry = name_move, .states = &.{.{ .name = name_move, .clip = name_move, .speed_param = p_speed }} }},
+    .axes = &.{.{ .blend = name_move, .x = p_speed }},
+};
+// The same set after an override that dropped the blend.
+const unblended_clips = [_]anim.RigClip{ blend_clips[0], blend_clips[1], blend_clips[2] };
+const unblended_rig: anim.Rig = blk: {
+    var rig = blend_rig;
+    var kept: usize = 0;
+    var clips: [2]anim.RigClip = undefined;
+    for (unblended_clips) |clip| {
+        if (clip.blend != null) continue;
+        clips[kept] = clip;
+        kept += 1;
+    }
+    const final = clips;
+    rig.clips = &final;
+    rig.start = name_idle;
+    break :blk rig;
+};
+
 const FakeRigs = struct {
     fn lookup(_: *const FakeRigs, set: ContentId) ?*const anim.Rig {
         if (set.eql(set_walk)) return &walk_rig;
         if (set.eql(set_still)) return &still_rig;
         if (set.eql(set_machine)) return &machine_rig;
+        if (set.eql(set_blend)) return &blend_rig;
         return null;
     }
 
     fn lookupMachine(_: *const FakeRigs, set: ContentId, machine: ContentId) ?*const anim.Machine {
         if (set.eql(set_machine) and machine.eql(id_machine)) return &machine_value;
+        if (set.eql(set_blend) and machine.eql(id_blend_machine)) return &blend_machine;
         return null;
     }
 };
@@ -1165,6 +1216,74 @@ test "a world saved mid-transition, mid-fade, continues byte-identical, and ever
     }
     try testing.expectEqual(hash_a, hash_b);
     try testing.expectEqual(name_idle, stack(&b.world, entity).?.layers[0].state);
+}
+
+test "a version 2 save naming a blend loads and continues byte-identical" {
+    try blend_rig.validate();
+    try blend_machine.validate(blend_rig);
+    var a: Fixture = undefined;
+    try a.init();
+    defer a.deinit();
+    const entity = try a.spawnWith(set_blend, id_blend_machine);
+    _ = try advance(&a.world, rigSource(&fake), tick, .{});
+    try anim.machine.set(stack(&a.world, entity).?, blend_machine, p_speed, 0.3);
+    // 37 ticks: mid-lap, half way between standing and the walk.
+    for (0..37) |_| _ = try advance(&a.world, rigSource(&fake), tick, .{});
+    const s = stack(&a.world, entity).?;
+    try testing.expectEqual(name_move, s.players[0].channels[s.players[0].newest].clip);
+    try testing.expect(motionOf(&a.world, entity).?.translation.z < 0);
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try a.world.save(&bytes);
+    var b: Fixture = undefined;
+    try b.init();
+    defer b.deinit();
+    _ = try b.world.load(bytes.items, .default);
+    try testing.expectEqual(animatorOf(&a.world, entity).?.*, animatorOf(&b.world, entity).?.*);
+
+    var hash_a: u64 = 0xcbf29ce484222325;
+    var hash_b: u64 = 0xcbf29ce484222325;
+    var buffer: [8]Fired = undefined;
+    for (0..240) |i| {
+        // The game keeps steering both, the same way: on to the walk, then past it.
+        if (i == 60 or i == 150) {
+            const speed: f32 = if (i == 60) 0.6 else 0.9;
+            try anim.machine.set(stack(&a.world, entity).?, blend_machine, p_speed, speed);
+            try anim.machine.set(stack(&b.world, entity).?, blend_machine, p_speed, speed);
+        }
+        var events_a: Events = .{ .buffer = &buffer };
+        _ = try advance(&a.world, rigSource(&fake), tick, .{ .events = &events_a });
+        feedStack(&hash_a, &a, entity, &events_a);
+        var events_b: Events = .{ .buffer = &buffer };
+        _ = try advance(&b.world, rigSource(&fake), tick, .{ .events = &events_b });
+        feedStack(&hash_b, &b, entity, &events_b);
+    }
+    try testing.expectEqual(hash_a, hash_b);
+    // Walking past the walk's place, it is held there and the rate carries the rest.
+    const walking = stack(&b.world, entity).?;
+    try testing.expectApproxEqAbs(@as(f32, 1.5), walking.players[0].channels[walking.players[0].newest].speed, 1e-5);
+}
+
+test "a save naming a blend a later rig no longer has empties that channel and counts it" {
+    var a: Fixture = undefined;
+    try a.init();
+    defer a.deinit();
+    const entity = try a.spawn(set_blend);
+    for (0..10) |_| _ = try advance(&a.world, rigSource(&fake), tick, .{});
+    try testing.expectEqual(name_move, player(&a.world, entity).?.channels[player(&a.world, entity).?.newest].clip);
+
+    const Overridden = struct {
+        fn lookup(_: *const @This(), set: ContentId) ?*const anim.Rig {
+            return if (set.eql(set_blend)) &unblended_rig else null;
+        }
+    };
+    const overridden: Overridden = .{};
+    try unblended_rig.validate();
+    const summary = try advance(&a.world, rigSource(&overridden), tick, .{});
+    try testing.expectEqual(@as(u32, 1), summary.lost);
+    try testing.expectEqual(@as(u32, 0), summary.unresolved);
+    try testing.expect(animatorOf(&a.world, entity).?.constPlayer().sane());
 }
 
 test "a version 1 save loads with a base layer alone and no machine, and carries on" {

@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-08
-**Current handoff: M36 Step 4 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 5, `scene` and `debug`: the scene's blend-save test, and the panel's `Report.addFeet`, `addAim` and blend rows. No sample, clip or panel uses any of M36 yet.
+**Current handoff: M36 Step 5 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 6, the clips: `scripts/m36/clips.py` and the strafer's seven directional walks. No sample uses any of M36 yet.
+
+**M36 Step 5 is done (2026-11-08): the scene's blend save, and the panel.**
+- A save made mid-blend loads into a second world, and both continue byte for byte for 240 ticks. A save naming a blend a later rig lacks empties that channel and counts it lost. The animator is still 872 bytes.
+- `anim.Report` rows show a blend's place, its lap and the clips it mixes there. `addFeet` and `addAim` add legs (offset, contact, lock), the pelvis's drop and gaze (weight, past its limit) to the figure's own row, never another's. `LegState.contact` keeps the contact for the panel.
+- The debug panel prints all of it by name.
+- Bar 2,861/2,871 (ten skips), 132/132 steps, six new tests.
 
 **M36 Step 4 is done (2026-11-08): set v3 and machine v2 in `asset`.**
 - `foundry:animation_set` v3 appends `legs`, `aims` and `blends`, and `foundry:animation_machine` v2 appends `axes`. `fpack` checks each as §6 and §8 list, with `InvalidPoint` named for a point that is not a finite number.

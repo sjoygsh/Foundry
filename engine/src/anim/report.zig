@@ -6,9 +6,16 @@
 //! it wants shown, with `add`, or from each figure a machine steers, with `addStack`
 //! (`animation-states.md` §11). A row of a stack holds its layers, their states and the machine's
 //! parameters by the labels content gave them, so the panel prints names, never hashes.
+//!
+//! **M36 adds three things** (`animation-ik.md` §10). A channel playing a blend lists its place and
+//! the clips it mixes there. `addFeet` and `addAim` add a figure's legs and gaze to the row added
+//! last, since the game holds its `Feet` and `Aim` and passes them.
 
 const std = @import("std");
 
+const blend_mod = @import("blend.zig");
+const feet_mod = @import("feet.zig");
+const gaze_mod = @import("gaze.zig");
 const machine_mod = @import("machine.zig");
 const motion_mod = @import("motion.zig");
 const player_mod = @import("player.zig");
@@ -16,7 +23,10 @@ const rig_mod = @import("rig.zig");
 const stack_mod = @import("stack.zig");
 
 const Machine = machine_mod.Machine;
+const Aim = gaze_mod.Aim;
+const Feet = feet_mod.Feet;
 const Mode = stack_mod.Mode;
+const Positions = blend_mod.Positions;
 const Motion = motion_mod.Motion;
 const Player = player_mod.Player;
 const Rig = rig_mod.Rig;
@@ -36,8 +46,56 @@ pub const ChannelRow = struct {
     duration: f32 = 0,
     weight: f32 = 0,
     speed: f32 = 0,
+    /// A blend's: where it sits, and the clips it mixes there with their weights. A clip's row has
+    /// no members.
+    at: [2]f32 = .{ 0, 0 },
+    axes: u8 = 0,
+    members: [blend_mod.max_mixed]MemberRow = @splat(.{}),
+    member_count: u8 = 0,
 
     pub fn label(row: *const ChannelRow) []const u8 {
+        return row.name[0..@min(row.name_len, max_label)];
+    }
+
+    pub fn blend(row: *const ChannelRow) bool {
+        return row.axes != 0;
+    }
+};
+
+pub const MemberRow = struct {
+    name: [max_label]u8 = undefined,
+    name_len: u8 = 0,
+    weight: f32 = 0,
+
+    pub fn label(row: *const MemberRow) []const u8 {
+        return row.name[0..@min(row.name_len, max_label)];
+    }
+};
+
+/// One leg of a figure's `Feet`, this tick.
+pub const LegRow = struct {
+    name: [max_label]u8 = undefined,
+    name_len: u8 = 0,
+    /// The foot's correction, in metres.
+    offset: f32 = 0,
+    /// How much the pose has it down, and how firmly it is held, 0 to 1.
+    contact: f32 = 0,
+    lock: f32 = 0,
+
+    pub fn label(row: *const LegRow) []const u8 {
+        return row.name[0..@min(row.name_len, max_label)];
+    }
+};
+
+/// One aim chain of a figure, this tick.
+pub const AimRow = struct {
+    name: [max_label]u8 = undefined,
+    name_len: u8 = 0,
+    weight: f32 = 0,
+    /// Whether what it looks at is past its limit, so it is letting go.
+    beyond: bool = false,
+
+    pub fn label(row: *const AimRow) []const u8 {
         return row.name[0..@min(row.name_len, max_label)];
     }
 };
@@ -97,6 +155,14 @@ pub const Row = struct {
     motion: Motion = .{},
     /// This tick's, as `Step`'s.
     transitions: u32 = 0,
+    /// `addFeet`'s: each leg, and how far the pelvis is lowered. `feet` says whether it was added.
+    feet: bool = false,
+    legs: [feet_mod.max_legs]LegRow = @splat(.{}),
+    leg_count: u8 = 0,
+    pelvis: f32 = 0,
+    /// `addAim`'s, one a chain added.
+    aims: [gaze_mod.max_aims]AimRow = @splat(.{}),
+    aim_count: u8 = 0,
 
     pub fn label(row: *const Row) []const u8 {
         return row.name[0..@min(row.name_len, max_label)];
@@ -115,12 +181,15 @@ pub const Report = struct {
     transitions: u32 = 0,
     reentered: u32 = 0,
     params_dropped: u32 = 0,
+    /// Whether the last `add` or `addStack` was given a row, so `addFeet` and `addAim` never write
+    /// into another figure's.
+    open: bool = false,
 
     /// Adds one player's tick. `label` is a game's name for it, cut short if it is long.
     pub fn add(self: *Report, player: *const Player, rig: Rig, name: []const u8, step: *const Step) void {
         const row = self.begin(name, step) orelse return;
         row.layer_count = 1;
-        channels(&row.layers[0], player, rig);
+        channels(&row.layers[0], player, rig, .none);
     }
 
     /// Adds one figure's tick, as `machine.advance` left `stack`: each of the machine's layers with
@@ -145,7 +214,7 @@ pub const Report = struct {
             out.weight = if (i == 0) 1 else stack.layers[i].weight;
             if (layer.state(stack.layers[i].state)) |state| out.state_len = copy(&out.state, state.label);
             out.state_ticks = stack.layers[i].state_ticks;
-            channels(out, &stack.players[i], rig);
+            channels(out, &stack.players[i], rig, machine_mod.positions(stack, machine));
         }
         const params = @min(machine.params.len, stack_mod.max_params);
         row.param_count = @intCast(params);
@@ -156,12 +225,44 @@ pub const Report = struct {
         }
     }
 
+    /// Adds a figure's legs to the row added last: each leg's offset, contact and lock, and the
+    /// pelvis's drop. `rig` is the one `feet` was placed with. Nothing, if that figure got no row.
+    pub fn addFeet(self: *Report, rig: Rig, feet: *const Feet) void {
+        const row = self.last() orelse return;
+        row.feet = true;
+        const count = @min(rig.legs.len, feet_mod.max_legs);
+        row.leg_count = @intCast(count);
+        row.pelvis = feet.pelvis;
+        for (rig.legs[0..count], feet.legs[0..count], row.legs[0..count]) |leg, state, *out| {
+            out.* = .{ .offset = state.offset, .contact = state.contact, .lock = state.locked };
+            out.name_len = copy(&out.name, leg.label);
+        }
+    }
+
+    /// Adds one aim chain, `rig.aims[chain]`, to the row added last: its weight, and whether it is
+    /// past its limit. Nothing, for a chain the rig lacks or a row that is full.
+    pub fn addAim(self: *Report, rig: Rig, chain: usize, aim: *const Aim) void {
+        const row = self.last() orelse return;
+        if (chain >= rig.aims.len or row.aim_count == gaze_mod.max_aims) return;
+        const out = &row.aims[row.aim_count];
+        row.aim_count += 1;
+        out.* = .{ .weight = aim.weight, .beyond = aim.beyond };
+        out.name_len = copy(&out.name, rig.aims[chain].label);
+    }
+
+    fn last(self: *Report) ?*Row {
+        if (!self.open or self.row_count == 0) return null;
+        return &self.rows[self.row_count - 1];
+    }
+
     fn begin(self: *Report, name: []const u8, step: *const Step) ?*Row {
         self.players += 1;
         self.events +|= step.event_count;
         self.dropped +|= step.dropped;
         self.lost +|= step.lost;
+        self.open = false;
         if (self.row_count == max_rows) return null;
+        self.open = true;
         const row = &self.rows[self.row_count];
         self.row_count += 1;
         row.* = .{ .events = step.event_count, .motion = step.motion };
@@ -170,7 +271,7 @@ pub const Report = struct {
     }
 };
 
-fn channels(row: *LayerRow, player: *const Player, rig: Rig) void {
+fn channels(row: *LayerRow, player: *const Player, rig: Rig, positions: Positions) void {
     for (player.channels, 0..) |channel, i| {
         const entry = rig.find(channel.clip) orelse continue;
         const out = &row.channels[row.channel_count];
@@ -182,6 +283,22 @@ fn channels(row: *LayerRow, player: *const Player, rig: Rig) void {
             .speed = channel.speed,
         };
         out.name_len = copy(&out.name, entry.label);
+        const blend = entry.blend orelse continue;
+        // A blend's time is a fraction of its lap, so it prints as seconds of the lap it has there.
+        const at = positions.of(entry);
+        const lap: f32 = @floatCast(blend_mod.lapLength(rig, entry, at));
+        out.time *= lap;
+        out.duration = lap;
+        out.at = at;
+        out.axes = blend.axes();
+        const mix = blend.weights(at);
+        for (mix.slice()) |member| {
+            const clip = rig.find(member.clip) orelse continue;
+            const m = &out.members[out.member_count];
+            out.member_count += 1;
+            m.* = .{ .weight = member.weight };
+            m.name_len = copy(&m.name, clip.label);
+        }
     }
 }
 

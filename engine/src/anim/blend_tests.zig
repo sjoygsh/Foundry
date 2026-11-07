@@ -10,6 +10,7 @@ const machine_mod = @import("machine.zig");
 const motion_mod = @import("motion.zig");
 const player_mod = @import("player.zig");
 const pose_mod = @import("pose.zig");
+const report_mod = @import("report.zig");
 const rig_mod = @import("rig.zig");
 const skeleton_mod = @import("skeleton.zig");
 const stack_mod = @import("stack.zig");
@@ -561,4 +562,48 @@ test "a machine places its blend from its parameters, follows speed with the rat
     var ticks: u32 = 0;
     while (fresh.layers[0].state != s_jump and ticks < 600) : (ticks += 1) machine_mod.advance(&fresh, rig, mover, dt, &step);
     try t.expectEqual(@as(u32, 85), ticks);
+}
+
+test "report: a blend's row lists its place, its lap and the clips it mixes there, by name" {
+    var stack: Stack = .{};
+    var step: Step = .{};
+    try machine_mod.set(&stack, mover, p_speed, 1.43);
+    machine_mod.advance(&stack, rig, mover, dt, &step);
+    machine_mod.advance(&stack, rig, mover, dt, &step);
+    var report: report_mod.Report = .{};
+    report.addStack(&stack, rig, mover, "warden", &step);
+    const row = &report.rows[0].layers[0].channels[0];
+    try t.expectEqualStrings("move", row.label());
+    try t.expect(row.blend());
+    try t.expectEqual([2]f32{ 1.43, 0 }, row.at);
+    // Half way from the walk to the run, so its lap is half way between a second and 0.7 s.
+    const lap: f32 = @floatCast(blend_mod.lapLength(rig, entryOf(name_move), .{ 1.43, 0 }));
+    try t.expectEqual(lap, row.duration);
+    try t.expectApproxEqAbs(@as(f32, 0.85), lap, 1e-6);
+    try t.expect(row.time > 0 and row.time < lap);
+    try t.expectEqual(@as(u8, 2), row.member_count);
+    var total: f32 = 0;
+    for (row.members[0..row.member_count]) |member| {
+        total += member.weight;
+        try t.expect(std.mem.eql(u8, member.label(), "walk") or std.mem.eql(u8, member.label(), "run"));
+        try t.expectApproxEqAbs(@as(f32, 0.5), member.weight, 1e-5);
+    }
+    try t.expectApproxEqAbs(@as(f32, 1), total, 1e-6);
+
+    // A bare player has no machine to place it, so it shows the first point's clip alone.
+    var player = playing(name_move);
+    player.advance(rig, dt, &step);
+    var bare: report_mod.Report = .{};
+    bare.add(&player, rig, "bare", &step);
+    const alone = &bare.rows[0].layers[0].channels[0];
+    try t.expectEqual([2]f32{ 0, 0 }, alone.at);
+    try t.expectEqual(@as(u8, 1), alone.member_count);
+    try t.expectEqualStrings("idle", alone.members[0].label());
+    // A clip's row has no members, and is not a blend.
+    var stride = playing(name_walk);
+    stride.advance(rig, dt, &step);
+    var plain: report_mod.Report = .{};
+    plain.add(&stride, rig, "plain", &step);
+    try t.expect(!plain.rows[0].layers[0].channels[0].blend());
+    try t.expectEqual(@as(u8, 0), plain.rows[0].layers[0].channels[0].member_count);
 }
