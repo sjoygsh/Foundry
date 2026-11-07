@@ -495,6 +495,7 @@ test "replay: a three-layer machine run from parameters alone is byte-identical,
             var out: [joints]Transform = undefined;
             var a: [joints]Transform = undefined;
             var b: [joints]Transform = undefined;
+            var c: [joints]Transform = undefined;
             var hash = std.hash.Fnv1a_64.init();
             for (0..1200) |i| {
                 const phase = i % 400;
@@ -505,7 +506,7 @@ test "replay: a three-layer machine run from parameters alone is byte-identical,
                 try machine_mod.set(&stack, warden, p_link, if (crossing) 1 else 0);
                 try machine_mod.set(&stack, warden, p_link_t, if (crossing) @as(f32, @floatFromInt(phase - 320)) / 39 else 0);
                 machine_mod.advance(&stack, rig, warden, dt, &step);
-                machine_mod.evaluate(&stack, rig, warden, .{ .{ .local = &a }, .{ .local = &b } }, .{ .local = &out });
+                machine_mod.evaluate(&stack, rig, warden, .{ .{ .local = &a }, .{ .local = &b }, .{ .local = &c } }, .{ .local = &out });
                 // Field by field: an `extern` struct's padding is not a value.
                 for (stack.layers, stack.players) |layer, player| {
                     for (player.channels) |channel| {

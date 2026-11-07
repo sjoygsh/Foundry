@@ -74,8 +74,8 @@ pub const Figure = struct {
     character: physics.CharacterHandle = .none,
     feet: Vec3 = .zero,
     joint_count: usize = 0,
-    /// Two poses, since a stack mixes a layer over the base.
-    scratch: [2 * anim.max_joints]Transform = undefined,
+    /// Three poses, since a stack mixes a layer over the base and a blend its clips.
+    scratch: [3 * anim.max_joints]Transform = undefined,
     pose: [anim.max_joints]Transform = undefined,
     matrices: [anim.max_joints]Mat4 = undefined,
     fired: [anim.max_step_events]animation.Fired = undefined,

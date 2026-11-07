@@ -11,6 +11,11 @@
 //! on the mirrored span and its travel reverses. **Clips of one sync group are kept at one fraction**
 //! (§4), the newest leading.
 //!
+//! **A channel may play a blend space** (`animation-ik.md` §7): its time is then in laps, and it is
+//! re-anchored every tick at the lap's length for the blend's position, so a moving position never
+//! moves time. The `…At` calls take the positions a machine found; the others put every blend at its
+//! first point.
+//!
 //! **Everything a player holds is untrusted.** It may have come from a save or a raw component
 //! write, and a clip it names may be gone after a reload. So neither `advance` nor `evaluate`
 //! asserts on it: `advance` empties what it cannot use and counts it.
@@ -19,6 +24,7 @@ const std = @import("std");
 
 const core = @import("core");
 
+const blend_mod = @import("blend.zig");
 const motion_mod = @import("motion.zig");
 const pose_mod = @import("pose.zig");
 const rig_mod = @import("rig.zig");
@@ -26,6 +32,7 @@ const rig_mod = @import("rig.zig");
 const ContentId = core.ContentId;
 const Motion = motion_mod.Motion;
 const Pose = pose_mod.Pose;
+const Positions = blend_mod.Positions;
 const Rig = rig_mod.Rig;
 const RigClip = rig_mod.RigClip;
 
@@ -156,11 +163,36 @@ pub const Player = extern struct {
 
     /// One tick. `dt` is the caller's fixed step.
     pub fn advance(self: *Player, rig: Rig, dt: f32, step: *Step) void {
+        self.advanceAt(rig, .none, dt, step);
+    }
+
+    /// `advance`, with each blend at its place in `positions`.
+    pub fn advanceAt(self: *Player, rig: Rig, positions: Positions, dt: f32, step: *Step) void {
         const before = self.begin(rig, dt, step);
-        for (&self.channels) |*channel| {
-            if (channel.clip != 0) channel.ticks += 1;
+        for (0..max_channels) |i| self.tick(rig, positions, i, before[i]);
+        self.finish(rig, positions, dt, before, step, false);
+    }
+
+    /// Moves one channel a tick on: a clip by a tick's count, and a blend by its lap's length now,
+    /// re-anchored so that its ticks stay at zero (§7).
+    fn tick(self: *Player, rig: Rig, positions: Positions, i: usize, before: f64) void {
+        const channel = &self.channels[i];
+        if (channel.clip == 0) return;
+        const entry = rig.find(channel.clip).?;
+        if (entry.blend == null) {
+            channel.ticks += 1;
+            return;
         }
-        self.finish(rig, dt, before, step, false);
+        channel.anchor = before + self.lapsPerTick(rig, entry, channel.speed, positions.of(entry));
+        channel.ticks = 0;
+    }
+
+    /// Laps a blend moves in one tick at `speed`, at `at`.
+    fn lapsPerTick(self: *const Player, rig: Rig, entry: *const RigClip, speed: f32, at: [2]f32) f64 {
+        const dt: f64 = if (validStep(self.dt)) self.dt else 0;
+        const length = blend_mod.lapLength(rig, entry, at);
+        if (!(length > 0)) return 0;
+        return dt * @as(f64, speed) / length;
     }
 
     /// One tick in which the newest channel goes to `fraction` of its clip rather than running
@@ -175,11 +207,14 @@ pub const Player = extern struct {
     /// `fraction` 0.5 of three laps is halfway through the second (`animation-states.md` §5). What
     /// every lap crossed carries fires. A one-shot has one lap, and a count below 1 is 1.
     pub fn seekLaps(self: *Player, rig: Rig, fraction: f32, laps: u32, dt: f32, step: *Step) void {
+        self.seekLapsAt(rig, .none, fraction, laps, dt, step);
+    }
+
+    /// `seekLaps`, with each blend at its place in `positions`.
+    pub fn seekLapsAt(self: *Player, rig: Rig, positions: Positions, fraction: f32, laps: u32, dt: f32, step: *Step) void {
         const before = self.begin(rig, dt, step);
         const newest = self.newest;
-        for (&self.channels) |*channel| {
-            if (channel.clip != 0) channel.ticks += 1;
-        }
+        for (0..max_channels) |i| self.tick(rig, positions, i, before[i]);
         // `begin` left the newest channel usable.
         const entry = rig.find(self.channels[newest].clip).?;
         const count: f64 = if (entry.loop) @floatFromInt(@max(laps, 1)) else 1;
@@ -189,7 +224,7 @@ pub const Player = extern struct {
         const lap = if (entry.loop) @floor(before[newest] / span) else 0;
         self.channels[newest].anchor = (lap + to) * span;
         self.channels[newest].ticks = 0;
-        self.finish(rig, dt, before, step, true);
+        self.finish(rig, positions, dt, before, step, true);
     }
 
     /// What a tick starts with: a player safe to use at this step, and each channel's time.
@@ -213,12 +248,21 @@ pub const Player = extern struct {
 
     /// `seeking` is a seek's rule: what the newest channel and its followers cross backward is a
     /// restart, so it neither fires nor travels.
-    fn finish(self: *Player, rig: Rig, dt: f32, before: [max_channels]f64, step: *Step, seeking: bool) void {
+    fn finish(self: *Player, rig: Rig, positions: Positions, dt: f32, before: [max_channels]f64, step: *Step, seeking: bool) void {
         self.follow(rig, before);
         // Only the newest fires: a clip fading out is on its way to being gone.
         const entry = rig.find(self.channels[self.newest].clip).?;
         const newest_after = self.time(rig, self.newest);
-        if (!seeking or newest_after > before[self.newest]) fire(step, entry, before[self.newest], newest_after);
+        if (!seeking or newest_after > before[self.newest]) {
+            if (entry.blend) |blend| {
+                // A blend steps with its heaviest clip alone, at that clip's own seconds (§7).
+                const lead = blend_mod.member(rig, blend.weights(positions.of(entry)).heaviest());
+                const length: f64 = lead.clip.duration;
+                fire(step, lead, before[self.newest] * length, newest_after * length);
+            } else {
+                fire(step, entry, before[self.newest], newest_after);
+            }
+        }
 
         self.moveWeights(dt);
 
@@ -235,7 +279,10 @@ pub const Player = extern struct {
             const share = channel.weight / total;
             const after = self.time(rig, i);
             if (seeking and after < before[i] and (i == self.newest or self.follows(live, entry))) continue;
-            const travel = motion_mod.travel(rig, live, before[i], after);
+            const travel = if (live.blend != null)
+                blend_mod.travel(rig, live, positions.of(live), before[i], after)
+            else
+                motion_mod.travel(rig, live, before[i], after);
             step.motion.translation = step.motion.translation.add(travel.translation.scale(share));
             step.motion.yaw += travel.yaw * share;
         }
@@ -244,17 +291,33 @@ pub const Player = extern struct {
     /// The blended pose. With no channel it can use, the rig's start clip at its first frame.
     /// `scratch` is one pose the caller lends, and `out` may be followed by `skinMatrices`.
     pub fn evaluate(self: *const Player, rig: Rig, scratch: Pose, out: Pose) void {
+        self.evaluateWith(rig, .none, scratch, null, out);
+    }
+
+    /// `evaluate`, with each blend at its place in `positions`. A blend mixes its clips in the
+    /// second scratch pose before they join the channels' mix (§7).
+    pub fn evaluateAt(self: *const Player, rig: Rig, positions: Positions, scratch: [2]Pose, out: Pose) void {
+        self.evaluateWith(rig, positions, scratch[0], scratch[1], out);
+    }
+
+    /// With no `extra` pose, a blend that mixes more than one clip shows its heaviest alone, which is
+    /// all a blend at its first point ever has.
+    fn evaluateWith(self: *const Player, rig: Rig, positions: Positions, scratch: Pose, extra: ?Pose, out: Pose) void {
         var total: f32 = 0;
         for (0..max_channels) |i| {
             const channel = self.channels[i];
             const entry = self.usable(rig, channel) orelse continue;
             if (channel.weight <= 0) continue;
-            const at = fold(self.time(rig, i), entry);
             const into = if (total == 0) out else scratch;
-            pose_mod.sample(rig.skeleton, entry.clip, at, into);
-            if (entry.motion) motion_mod.hold(rig, entry, into);
-            // An additive clip blends as a difference (`animation-states.md` §6).
-            if (entry.additive) pose_mod.difference(into, entry.reference);
+            if (entry.blend) |blend| {
+                sampleBlend(rig, blend.weights(positions.of(entry)), self.time(rig, i), extra, into);
+            } else {
+                const at = fold(self.time(rig, i), entry);
+                pose_mod.sample(rig.skeleton, entry.clip, at, into);
+                if (entry.motion) motion_mod.hold(rig, entry, into);
+                // An additive clip blends as a difference (`animation-states.md` §6).
+                if (entry.additive) pose_mod.difference(into, entry.reference);
+            }
             if (total != 0) pose_mod.blend(out, scratch, channel.weight / (total + channel.weight), out);
             total += channel.weight;
         }
@@ -320,8 +383,12 @@ pub const Player = extern struct {
         const channel = self.channels[index];
         const entry = self.usable(rig, channel) orelse return 0;
         const dt: f64 = if (validStep(self.dt)) self.dt else 0;
+        const ticks: f64 = @floatFromInt(channel.ticks);
+        // A blend's ticks are always zero after a tick of its own; a raw write's run at its first
+        // point's lap.
+        if (entry.blend != null) return channel.anchor + ticks * self.lapsPerTick(rig, entry, channel.speed, Positions.none.of(entry));
         const rate = @as(f64, channel.speed) * @as(f64, entry.speed);
-        return channel.anchor + @as(f64, @floatFromInt(channel.ticks)) * dt * rate;
+        return channel.anchor + ticks * dt * rate;
     }
 
     /// Where a clip asked for with `.keep` begins: the newest channel's fraction if both are of one
@@ -524,6 +591,31 @@ fn fireBackward(step: *Step, entry: *const RigClip, from: f64, to: f64) void {
 fn countLeft(step: *Step, entry: *const RigClip, laps_left: f64) void {
     const left = @min(laps_left * @as(f64, @floatFromInt(entry.events.len)), std.math.maxInt(u32));
     step.dropped +|= @intFromFloat(left);
+}
+
+/// A blend's clips at one fraction of their own lengths, mixed into `into` by `mix`'s weights, with
+/// each clip's travel held out of the pose. `extra` is where a second clip is sampled; with none,
+/// only the heaviest is.
+fn sampleBlend(rig: Rig, mix: blend_mod.Mix, laps: f64, extra: ?Pose, into: Pose) void {
+    const fraction = lapFraction(laps, 1);
+    const parts = mix.slice();
+    if (extra == null or parts.len == 1) {
+        sampleMember(rig, blend_mod.member(rig, mix.heaviest()), fraction, into);
+        return;
+    }
+    var total: f32 = 0;
+    for (parts) |part| {
+        const target = if (total == 0) into else extra.?;
+        sampleMember(rig, blend_mod.member(rig, part.clip), fraction, target);
+        if (total != 0) pose_mod.blend(into, extra.?, part.weight / (total + part.weight), into);
+        total += part.weight;
+    }
+}
+
+fn sampleMember(rig: Rig, clip: *const RigClip, fraction: f64, into: Pose) void {
+    const seconds: f32 = @floatCast(fraction * @as(f64, clip.clip.duration));
+    pose_mod.sample(rig.skeleton, clip.clip, if (seconds >= clip.clip.duration) 0 else seconds, into);
+    if (clip.motion) motion_mod.hold(rig, clip, into);
 }
 
 /// A channel's time within its clip: wrapped if it loops, held at either end if not.

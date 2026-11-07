@@ -20,6 +20,7 @@
 
 const std = @import("std");
 
+const blend_mod = @import("blend.zig");
 const player_mod = @import("player.zig");
 const rig_mod = @import("rig.zig");
 const stack_mod = @import("stack.zig");
@@ -28,6 +29,7 @@ const Layer = stack_mod.Layer;
 const Param = stack_mod.Param;
 const Phase = player_mod.Phase;
 const Pose = @import("pose.zig").Pose;
+const Positions = blend_mod.Positions;
 const Rig = rig_mod.Rig;
 const RigClip = rig_mod.RigClip;
 const Spec = stack_mod.Spec;
@@ -110,9 +112,19 @@ pub const MachineLayer = struct {
     }
 };
 
+/// Which parameters place a blend when this machine plays it (`animation-ik.md` §8).
+pub const Axes = struct {
+    /// `clipName` of the blend.
+    blend: u64,
+    x: u64,
+    /// Zero for a blend of one axis, and required for one of two.
+    y: u64 = 0,
+};
+
 pub const Machine = struct {
     params: []const ParamDef = &.{},
     layers: []const MachineLayer,
+    axes: []const Axes = &.{},
 
     pub const ValidateError = stack_mod.SpecError || error{
         TooManyParams,
@@ -140,6 +152,13 @@ pub const Machine = struct {
         TooManyTransitions,
         TooManyConditions,
         InvalidCondition,
+        TooManyAxes,
+        UnknownBlend,
+        DuplicateAxes,
+        /// A `y` for a blend of one axis, or none for one of two.
+        AxisMismatch,
+        /// A state plays a blend this machine binds no axes for, so it would sit at one place.
+        UnboundBlend,
     };
 
     /// Refuses every way an untrusted machine can be wrong for `rig`, which must have passed
@@ -155,6 +174,16 @@ pub const Machine = struct {
         }
         var buffer: [stack_mod.max_layers]Spec = undefined;
         if (machine.layers.len > stack_mod.max_layers) return error.TooManyLayers;
+        if (machine.axes.len > blend_mod.max_positions) return error.TooManyAxes;
+        for (machine.axes, 0..) |binding, i| {
+            const blend = rig.blend(binding.blend) orelse return error.UnknownBlend;
+            for (machine.axes[0..i]) |earlier| {
+                if (earlier.blend == binding.blend) return error.DuplicateAxes;
+            }
+            try machine.known(binding.x);
+            if ((binding.y != 0) != (blend.axes() == 2)) return error.AxisMismatch;
+            if (binding.y != 0) try machine.known(binding.y);
+        }
         try stack_mod.validateSpecs(rig, machine.specs(&buffer));
         for (machine.layers, 0..) |layer, i| try machine.validateLayer(rig, layer, i);
     }
@@ -172,13 +201,15 @@ pub const Machine = struct {
                 if (earlier.name == state.name) return error.DuplicateState;
             }
             const entry = rig.find(state.clip) orelse return error.UnknownClip;
+            if (entry.blend != null and machine.bound(state.clip) == null) return error.UnboundBlend;
             if (entry.motion and at != 0) return error.MotionOffBase;
             if (entry.additive != (layer.spec.mode == .additive)) return error.AdditiveMismatch;
             if (!std.math.isFinite(state.speed) or @abs(state.speed) > player_mod.max_speed) return error.InvalidSpeed;
             if (state.speed_param != 0 and state.seek_param != 0) return error.SpeedAndSeek;
             if (state.speed_param != 0) {
                 try machine.known(state.speed_param);
-                if (!(rig.motionSpeed(state.clip) > 0)) return error.NoMotionSpeed;
+                const moves = if (entry.blend != null) blend_mod.fastest(rig, entry) else rig.motionSpeed(state.clip);
+                if (!(moves > 0)) return error.NoMotionSpeed;
             }
             if (state.seek_param != 0) try machine.known(state.seek_param);
         }
@@ -194,6 +225,14 @@ pub const Machine = struct {
                 if (condition.quantity == .param) try machine.known(condition.param);
             }
         }
+    }
+
+    /// The axes this machine binds for `blend`, or null.
+    pub fn bound(machine: Machine, blend: u64) ?*const Axes {
+        for (machine.axes) |*binding| {
+            if (binding.blend == blend) return binding;
+        }
+        return null;
     }
 
     fn known(machine: Machine, name: u64) ValidateError!void {
@@ -257,20 +296,34 @@ pub fn get(stack: *const Stack, machine: Machine, name: u64) ?f32 {
 pub fn advance(stack: *Stack, rig: Rig, machine: Machine, dt: f32, step: *Step) void {
     step.* = .{};
     adopt(stack, machine, step);
+    // The parameters are set before the tick, so every layer sees one place for each blend.
+    const at = positions(stack, machine);
     var buffer: [stack_mod.max_layers]Spec = undefined;
     const specs = machine.specs(&buffer);
     for (machine.layers[0..specs.len], 0..) |layer, i| {
-        const seek = choose(stack, rig, machine, layer, i, dt, step);
-        stack.advanceLayer(rig, specs, i, dt, seek, step);
+        const seek = choose(stack, rig, machine, at, layer, i, dt, step);
+        stack.advanceLayer(rig, specs, at, i, dt, seek, step);
         const own = &stack.layers[i];
         own.state_ticks +|= 1;
     }
 }
 
-/// The pose, through the machine's specs.
-pub fn evaluate(stack: *const Stack, rig: Rig, machine: Machine, scratch: [2]Pose, out: Pose) void {
+/// The pose, through the machine's specs, with its blends where its parameters put them. `scratch`
+/// is three poses, as `Stack.evaluate` takes.
+pub fn evaluate(stack: *const Stack, rig: Rig, machine: Machine, scratch: [3]Pose, out: Pose) void {
     var buffer: [stack_mod.max_layers]Spec = undefined;
-    stack.evaluate(rig, machine.specs(&buffer), scratch, out);
+    stack.evaluate(rig, machine.specs(&buffer), positions(stack, machine), scratch, out);
+}
+
+/// Where each blend the machine binds is, from its parameters as the next tick sees them.
+pub fn positions(stack: *const Stack, machine: Machine) Positions {
+    var out: Positions = .{};
+    for (machine.axes) |binding| {
+        const x = get(stack, machine, binding.x) orelse 0;
+        const y = if (binding.y == 0) 0 else get(stack, machine, binding.y) orelse 0;
+        out.put(binding.blend, .{ x, y });
+    }
+    return out;
 }
 
 /// Puts the stack's parameters in the machine's order, keeping each saved value by name, and
@@ -296,7 +349,7 @@ fn value(stack: *const Stack, machine: Machine, name: u64) f32 {
 
 /// Steps 1 to 3 of §7's tick for one layer: its target, a transition, its rate. Returns the
 /// fraction to seek to, for a state that seeks.
-fn choose(stack: *Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usize, dt: f32, step: *Step) ?f32 {
+fn choose(stack: *Stack, rig: Rig, machine: Machine, at: Positions, layer: MachineLayer, i: usize, dt: f32, step: *Step) ?f32 {
     const own = &stack.layers[i];
     if (i != 0) stack.setTarget(i, if (layer.weight_param == 0) 1 else value(stack, machine, layer.weight_param));
 
@@ -305,15 +358,17 @@ fn choose(stack: *Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usi
     } else if (layer.state(own.state) == null) {
         step.reentered +|= 1;
         enter(stack, rig, i, layer.state(layer.entry).?, .{});
-    } else if (pick(stack, rig, machine, layer, i, dt)) |transition| {
+    } else if (pick(stack, rig, machine, at, layer, i, dt)) |transition| {
         step.transitions +|= 1;
         enter(stack, rig, i, layer.state(transition.to).?, .{ .fade = transition.fade, .phase = transition.phase });
     }
 
     const state = layer.state(own.state).?;
     if (state.speed_param != 0) {
-        const per = rig.motionSpeed(state.clip);
-        const wanted = state.speed * value(stack, machine, state.speed_param) / per;
+        const per = rig.motionSpeedAt(state.clip, at);
+        // A blend at a place with no travel, such as standing, plays at its own speed: there is no
+        // ground speed to follow (`animation-ik.md` §7).
+        const wanted = if (per > 0) state.speed * value(stack, machine, state.speed_param) / per else state.speed;
         const rate = std.math.clamp(wanted, -player_mod.max_speed, player_mod.max_speed);
         // `validate` made the state's clip the layer's to play, and the rate is in range.
         stack.players[i].setSpeed(rig, if (std.math.isFinite(rate)) rate else 0) catch unreachable;
@@ -354,25 +409,25 @@ fn enter(stack: *Stack, rig: Rig, i: usize, state: *const State, how: Entry) voi
 }
 
 /// The first `"*"` transition that holds and leads elsewhere, or else the first of the state's own.
-fn pick(stack: *const Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usize, dt: f32) ?*const Transition {
+fn pick(stack: *const Stack, rig: Rig, machine: Machine, at: Positions, layer: MachineLayer, i: usize, dt: f32) ?*const Transition {
     const current = stack.layers[i].state;
     for (layer.transitions) |*transition| {
-        if (transition.from == any_state and transition.to != current and holds(stack, rig, machine, layer, i, dt, transition.*)) return transition;
+        if (transition.from == any_state and transition.to != current and holds(stack, rig, machine, at, layer, i, dt, transition.*)) return transition;
     }
     for (layer.transitions) |*transition| {
-        if (transition.from == current and holds(stack, rig, machine, layer, i, dt, transition.*)) return transition;
+        if (transition.from == current and holds(stack, rig, machine, at, layer, i, dt, transition.*)) return transition;
     }
     return null;
 }
 
-fn holds(stack: *const Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usize, dt: f32, transition: Transition) bool {
+fn holds(stack: *const Stack, rig: Rig, machine: Machine, at: Positions, layer: MachineLayer, i: usize, dt: f32, transition: Transition) bool {
     for (transition.conditions) |condition| {
-        if (!meets(stack, rig, machine, layer, i, dt, condition)) return false;
+        if (!meets(stack, rig, machine, at, layer, i, dt, condition)) return false;
     }
     return true;
 }
 
-fn meets(stack: *const Stack, rig: Rig, machine: Machine, layer: MachineLayer, i: usize, dt: f32, condition: Condition) bool {
+fn meets(stack: *const Stack, rig: Rig, machine: Machine, at: Positions, layer: MachineLayer, i: usize, dt: f32, condition: Condition) bool {
     const own = &stack.layers[i];
     switch (condition.quantity) {
         .param => return compare(value(stack, machine, condition.param), condition.compare, condition.value),
@@ -386,7 +441,9 @@ fn meets(stack: *const Stack, rig: Rig, machine: Machine, layer: MachineLayer, i
             const entry: *const RigClip = rig.find(state.clip).?;
             // In `f32`, as a game timing a side by hand would write it.
             const elapsed = @as(f32, @floatFromInt(own.state_ticks)) * dt;
-            const length = condition.value * entry.clip.duration;
+            // A blend's lap is as long as its place makes it now.
+            const lap: f32 = if (entry.blend != null) @floatCast(blend_mod.lapLength(rig, entry, at.of(entry))) else entry.clip.duration;
+            const length = condition.value * lap;
             return switch (condition.compare) {
                 .at_least => elapsed >= length,
                 .below => elapsed < length,

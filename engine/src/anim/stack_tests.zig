@@ -139,9 +139,10 @@ const Buffers = struct {
     out: [joints]Transform = undefined,
     a: [joints]Transform = undefined,
     b: [joints]Transform = undefined,
+    c: [joints]Transform = undefined,
 
     fn evaluate(self: *Buffers, stack: *const Stack, specs: []const Spec) []const Transform {
-        stack.evaluate(rig, specs, .{ .{ .local = &self.a }, .{ .local = &self.b } }, .{ .local = &self.out });
+        stack.evaluate(rig, specs, .none, .{ .{ .local = &self.a }, .{ .local = &self.b }, .{ .local = &self.c } }, .{ .local = &self.out });
         return &self.out;
     }
 };

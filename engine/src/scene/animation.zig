@@ -450,7 +450,8 @@ pub fn motionOf(world: *const World, entity: Entity) ?RootMotion {
 }
 
 /// One entity's pose, into a game's two buffers: `out` at least the rig's joint count, and
-/// `scratch` that, or twice it for an animator with a machine, whose layers are mixed in it.
+/// `scratch` that, or three times it for an animator with a machine, whose layers and blends are
+/// mixed in it (`animation-ik.md` §7).
 /// Returns the joint count, or null with no animator, no rig, a machine that is gone, or buffers
 /// too short.
 pub fn evaluate(world: *World, entity: Entity, rigs: RigSource, scratch: []Transform, out: []Transform) ?usize {
@@ -464,8 +465,12 @@ pub fn evaluate(world: *World, entity: Entity, rigs: RigSource, scratch: []Trans
         return joints;
     }
     const machine = rigs.machine(animator.set, animator.machine) orelse return null;
-    if (scratch.len < 2 * joints) return null;
-    const lent = [2]anim.Pose{ .{ .local = scratch[0..joints] }, .{ .local = scratch[joints .. 2 * joints] } };
+    if (scratch.len < 3 * joints) return null;
+    const lent = [3]anim.Pose{
+        .{ .local = scratch[0..joints] },
+        .{ .local = scratch[joints .. 2 * joints] },
+        .{ .local = scratch[2 * joints .. 3 * joints] },
+    };
     anim.machine.evaluate(animator.constStack(), rig.*, machine.*, lent, .{ .local = out[0..joints] });
     return joints;
 }
@@ -624,7 +629,7 @@ fn feed(hash: *u64, f: *Fixture, entity: Entity, events: *const Events) void {
 /// whole stack, field by field, since an `extern` struct's padding is not a value.
 fn feedStack(hash: *u64, f: *Fixture, entity: Entity, events: *const Events) void {
     var a: [1]Transform = undefined;
-    var b: [2]Transform = undefined;
+    var b: [3]Transform = undefined;
     _ = evaluate(&f.world, entity, rigSource(&fake), &b, &a).?;
     const fnv = struct {
         fn bytes(h: *u64, slice: []const u8) void {
@@ -1107,13 +1112,13 @@ test "an animator with a machine steers its layers from its parameters" {
 
     // The pose mixes the wave over the base, so it is not the base's alone.
     var out: [1]Transform = undefined;
-    var scratch: [2]Transform = undefined;
+    var scratch: [3]Transform = undefined;
     try testing.expectEqual(@as(?usize, 1), evaluate(&f.world, entity, rigSource(&fake), &scratch, &out));
     var base_out: [1]Transform = undefined;
     s.base().evaluate(machine_rig, .{ .local = scratch[0..1] }, .{ .local = &base_out });
     try testing.expect(out[0].translation.y != base_out[0].translation.y);
-    // A machine mixes in two scratch poses.
-    try testing.expect(evaluate(&f.world, entity, rigSource(&fake), scratch[0..1], &out) == null);
+    // A machine mixes in three scratch poses.
+    try testing.expect(evaluate(&f.world, entity, rigSource(&fake), scratch[0..2], &out) == null);
 }
 
 test "a world saved mid-transition, mid-fade, continues byte-identical, and every field survives" {

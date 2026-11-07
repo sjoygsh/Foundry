@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-07
-**Current handoff: M36's design is proposed** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074); awaiting acceptance of §19. Stop before Step 1. No M36 code exists.
+**Current handoff: M36 Step 1 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074, accepted 2026-11-07). Stop before Step 2, `anim`'s two solvers (`ik.twoBone` and `ik.aim`). No solver, feet, aim, set v3 or machine v2 record exists yet.
+
+**M36 Step 1 is done (2026-11-07): blend spaces in `anim`.**
+- `anim/blend.zig`: a blend is an entry of `Rig.clips` with `blend` set, a one-second lap with no tracks. It mixes up to four loops on a line or a full grid at one fraction, re-anchored each tick at the lap its place has.
+- Its travel and `motionSpeed` are weighted by lap, and its events are its heaviest clip's, with ties going to the earlier point.
+- `Machine.axes` binds blends to parameters. `Stack.evaluate` and `machine.evaluate` take three scratch poses, and `scene.animation.evaluate` asks for three times the joint count for a machine (Step 5's change, forced here).
+- Bar 2,826/2,836 (ten skips), 132/132 steps. Every M35 pin is unchanged.
 
 **M36's design (2026-11-07):** foot placement and look-at as corrections of an evaluated pose in `anim`, from targets the game finds with its own raycasts, never saved (ADR-0073); blend spaces in one and two axes, named and played like a clip, placed by a machine's parameters, with no saved shape changed (ADR-0074); set v3 and machine v2; the climber's feet, a new strafer, the pacer's gaze and block, and the warden's blend, feet and gaze. Ten steps. The pacer's three pins would move once, for its new `blocked` parameter.
 

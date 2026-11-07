@@ -27,6 +27,7 @@
 //!
 //! Design: `docs/design/animation3d.md`
 
+pub const blend_space = @import("blend.zig");
 pub const clip = @import("clip.zig");
 pub const machine = @import("machine.zig");
 pub const motion = @import("motion.zig");
@@ -75,6 +76,15 @@ pub const max_step_events = player.max_step_events;
 
 pub const Report = report.Report;
 
+pub const Blend = blend_space.Blend;
+pub const BlendMix = blend_space.Mix;
+pub const BlendPoint = blend_space.Point;
+pub const Positions = blend_space.Positions;
+pub const max_blend_points = blend_space.max_points;
+pub const max_blends = blend_space.max_blends;
+pub const max_positions = blend_space.max_positions;
+
+pub const Axes = machine.Axes;
 pub const Condition = machine.Condition;
 pub const Machine = machine.Machine;
 pub const MachineLayer = machine.MachineLayer;
@@ -109,6 +119,7 @@ pub const skin = skinning.skin;
 pub const validateInfluences = skinning.validateInfluences;
 
 test {
+    _ = blend_space;
     _ = clip;
     _ = machine;
     _ = motion;
@@ -119,6 +130,7 @@ test {
     _ = skeleton;
     _ = stack;
     _ = skinning;
+    _ = @import("blend_tests.zig");
     _ = @import("direction_tests.zig");
     _ = @import("machine_tests.zig");
     _ = @import("stack_tests.zig");

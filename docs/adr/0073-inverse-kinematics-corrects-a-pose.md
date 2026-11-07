@@ -1,6 +1,6 @@
 # ADR-0073: Inverse kinematics corrects a pose from targets the game finds
 
-**Status:** Proposed 2026-11-07
+**Status:** Accepted 2026-11-07, when the owner requested M36 Step 1
 **Date:** 2026-11-07
 **Informed by:** ADR-0013, ADR-0048, ADR-0051, ADR-0057, ADR-0058, ADR-0071, ADR-0072,
 `docs/design/animation-ik.md`

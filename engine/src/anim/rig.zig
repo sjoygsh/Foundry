@@ -6,6 +6,7 @@
 const std = @import("std");
 const core = @import("core");
 
+const blend_mod = @import("blend.zig");
 const clip_mod = @import("clip.zig");
 const motion = @import("motion.zig");
 const player = @import("player.zig");
@@ -59,6 +60,9 @@ pub const RigClip = struct {
     /// An additive clip's reference pose, one transform a joint, sampled when the rig was built so
     /// that no tick samples it. Empty for any other clip.
     reference: []const Transform = &.{},
+    /// Set for a blend space rather than a clip (`animation-ik.md` §7): `clip` is then a lap of one
+    /// second with no tracks, and the blend says what plays. `blend.entryFor` makes one.
+    blend: ?*const blend_mod.Blend = null,
 };
 
 /// Per-joint weights a layer is mixed by, named as a clip is (§6).
@@ -123,7 +127,7 @@ pub const Rig = struct {
     /// Unsorted, and few, so a lookup is a walk.
     masks: []const Mask = &.{},
 
-    pub const ValidateError = Skeleton.ValidateError || Clip.ValidateError || error{
+    pub const ValidateError = Skeleton.ValidateError || Clip.ValidateError || blend_mod.ValidateError || error{
         NoClips,
         TooManyClips,
         UnnamedClip,
@@ -175,6 +179,14 @@ pub const Rig = struct {
             if (!(entry.rise >= 0) or !std.math.isFinite(entry.rise)) return error.InvalidRise;
             try validateAdditive(rig, entry);
             if (entry.motion and rig.motion_joint == skeleton_mod.no_parent) return error.MissingMotionJoint;
+        }
+        // A blend names clips, so it is checked once they all are.
+        var blends: usize = 0;
+        for (rig.clips) |*entry| {
+            if (entry.blend == null) continue;
+            blends += 1;
+            if (blends > blend_mod.max_blends) return error.TooManyBlends;
+            try blend_mod.validate(rig, entry);
         }
         if (rig.find(rig.start) == null) return error.UnknownStart;
         if (rig.find(rig.start).?.additive) return error.AdditiveStart;
@@ -240,8 +252,20 @@ pub const Rig = struct {
     /// no motion. It is what a body moved by other means divides its own speed by, so that its
     /// feet keep up (`animation-logic.md` §6).
     pub fn motionSpeed(rig: Rig, name: u64) f32 {
+        return rig.motionSpeedAt(name, .none);
+    }
+
+    /// `motionSpeed`, with a blend at its position in `positions` rather than at its first point.
+    pub fn motionSpeedAt(rig: Rig, name: u64, positions: blend_mod.Positions) f32 {
         const entry = rig.find(name) orelse return 0;
+        if (entry.blend != null) return blend_mod.groundSpeed(rig, entry, positions.of(entry));
         return motion.groundSpeed(rig, entry);
+    }
+
+    /// The blend called `name`, or null for a clip or nothing.
+    pub fn blend(rig: Rig, name: u64) ?*const blend_mod.Blend {
+        const entry = rig.find(name) orelse return null;
+        return entry.blend;
     }
 
     /// How many laps of `name` fit a climb of `height` metres: its `rise` into the height, rounded,

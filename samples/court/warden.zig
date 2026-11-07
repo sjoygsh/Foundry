@@ -170,7 +170,7 @@ pub const Warden = struct {
     pause_ticks: u32 = 0,
     joint_count: usize = 0,
     /// Two poses, since a stack mixes its layers over the body.
-    scratch: [2 * anim.max_joints]Transform = undefined,
+    scratch: [3 * anim.max_joints]Transform = undefined,
     pose: [anim.max_joints]Transform = undefined,
     matrices: [anim.max_joints]Mat4 = undefined,
 
@@ -409,7 +409,7 @@ pub const Warden = struct {
         };
         const n = rig.skeleton.jointCount();
         const pose: anim.Pose = .{ .local = self.pose[0..n] };
-        anim.machine.evaluate(&self.stack, rig.*, machine.*, .{ .{ .local = self.scratch[0..n] }, .{ .local = self.scratch[n .. 2 * n] } }, pose);
+        anim.machine.evaluate(&self.stack, rig.*, machine.*, .{ .{ .local = self.scratch[0..n] }, .{ .local = self.scratch[n .. 2 * n] }, .{ .local = self.scratch[2 * n .. 3 * n] } }, pose);
         anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
         self.joint_count = n;
     }

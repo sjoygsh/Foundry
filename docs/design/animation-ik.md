@@ -1,6 +1,7 @@
 # Design: M36 — Animation logic III: foot placement, look-at and blend spaces
 
-**Status:** Proposed 2026-11-07; awaiting the owner's acceptance of §19. No step has begun.
+**Status:** Accepted 2026-11-07, when the owner asked for Step 1, with §19 as written. Each step's
+Resolution follows §19.
 **Date:** 2026-11-07
 **Baseline:** `f223898`, tag `m35`. M0–M35 are complete.
 **Decisions:**
@@ -789,3 +790,71 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 20 | The owner's watch and play is the exit condition's last clause, at Step 8 | §16 |
 
 Once these are accepted, nothing blocks Step 1.
+
+## Resolution — Step 1: blend spaces (2026-11-07)
+
+`anim` now covers §7:
+- `engine/src/anim/blend.zig` is new: `Blend`, `Point`, `Mix`, `Positions`, and the lap, travel and
+  speed of a blend at a place;
+- `Rig`, `Player`, `Stack` and `Machine` play blends;
+- the tests are in `engine/src/anim/blend_tests.zig`.
+
+**How a blend sits in a rig: as an entry of `Rig.clips`.**
+- **The entry:** `blend.entryFor` makes it, with `RigClip.blend` set and a clip that is a lap of
+  one second with no tracks. So `Rig.find` answers clips and blends alike.
+- **The name:** a blend sharing a clip's name is the rig's own `NameCollision`, so §6's
+  `BlendNameCollision` is that error. `Rig.blend(name)` answers the arrangement.
+- **The rig's refusals:** `InvalidBlend`, for a blend that is not sorted, or an entry carrying an
+  authored rate, events, a rise or a reference. Also `UnknownBlendClip`, `BlendOfBlend`,
+  `BlendOfOneShot`, `BlendOfAdditive`, `TooManyBlends` (eight), and `BlendMotionMismatch`, an entry
+  whose `motion` is not whether any of its clips moves.
+- **The arrangement's refusals:** `Blend.build` refuses `TooFewPoints`, `TooManyPoints` (25),
+  `InvalidPoint`, `DuplicatePoint` and `NotAGrid`. The set's own refusals in `fpack` are Step 4's.
+- **Ties:** the heaviest clip's tie goes to the earlier listed point. A clip standing at several
+  places has its weights summed, and keeps its earliest place.
+
+**Three sharpenings of §7:**
+- **A blend's `motionSpeed` is weighted by lap,** not as a mean of its clips' speeds. It is the
+  metres of a lap, weighted, over the seconds of a lap, weighted, so it equals the travel the blend
+  reports. §7's "weighted" is that.
+- **A clip's authored rate shortens its lap,** so a lap's length counts `duration ÷ speed`.
+- **Where a blend has no travel at all,** such as standing on `idle`, a `speed_param` state plays
+  at its own `speed` rather than at 0 ÷ 0. `NoMotionSpeed` for a blend asks whether its fastest clip
+  moves, since its first point may be still.
+
+**Two more that §7 had not said:**
+- **The `laps` condition on a blend state** counts laps of the blend's lap at its place now.
+- **The machine reads positions with `get`,** by name with defaults, so a pose evaluated before
+  any tick still finds them. A position that is not a number is the origin on that axis, and one
+  outside the grid is held at its edge.
+
+**The calls:**
+- `Player.advanceAt`, `seekLapsAt` and `evaluateAt` take `Positions`, and `evaluateAt` takes two
+  scratch poses.
+- The calls without `At` put every blend at its first point. There one clip has all the weight,
+  so the old one-pose `evaluate` stays exact.
+- `Stack.advanceLayer` takes positions, and `Stack.advance` passes none.
+- `Stack.evaluate` takes positions and three scratch poses, and `machine.evaluate` three, with
+  positions from the parameters. `machine.positions` is public.
+
+**Step 5's scratch change landed here,** because the signature forced it:
+- `scene.animation.evaluate` asks for three times the joint count for a machine;
+- the warden's and the pacer's buffers grew to match;
+- Step 5 keeps the scene's blend-save test and the panel.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the grid check;
+- the tie to the earlier point;
+- the blend's per-tick re-anchor (three tests failed);
+- `UnboundBlend`;
+- events from the heaviest clip.
+
+The name collision is M34's existing guard.
+
+**The bar.**
+- `zig build test`: 2,826/2,836, ten skips, 132/132 steps. That is thirteen new tests, and every M35
+  test and pin is unchanged.
+- The first run crashed one `scene` test: its helper still lent two scratch poses, so `evaluate`
+  answered null. The helper now lends three.
+- Every other line of the bar passed: `fmt`, the four `check`s, the four thirty-frame samples and
+  `fdt-check`.

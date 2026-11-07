@@ -595,7 +595,7 @@ test "a world's animator plays a machine from compiled content, through `Rigs` a
     const stack = scene.animation.stack(&world, entity).?;
     try testing.expectEqual(anim.clipName("walk"), stack.layers[0].state);
     try testing.expectEqual(@as(f32, 1), stack.layers[1].weight);
-    var scratch: [6]core.math.Transform = undefined;
+    var scratch: [9]core.math.Transform = undefined;
     var out: [3]core.math.Transform = undefined;
     try testing.expectEqual(@as(?usize, 3), scene.animation.evaluate(&world, entity, source, &scratch, &out));
 }

@@ -16,6 +16,7 @@
 const std = @import("std");
 const core = @import("core");
 
+const blend_mod = @import("blend.zig");
 const player_mod = @import("player.zig");
 const pose_mod = @import("pose.zig");
 const rig_mod = @import("rig.zig");
@@ -24,6 +25,7 @@ const Player = player_mod.Player;
 const PlayError = player_mod.PlayError;
 const PlayOptions = player_mod.PlayOptions;
 const Pose = pose_mod.Pose;
+const Positions = blend_mod.Positions;
 const Rig = rig_mod.Rig;
 const RigClip = rig_mod.RigClip;
 const Step = player_mod.Step;
@@ -138,18 +140,18 @@ pub const Stack = extern struct {
     pub fn advance(self: *Stack, rig: Rig, specs: []const Spec, dt: f32, step: *Step) void {
         step.* = .{};
         const count = @min(specs.len, max_layers);
-        for (0..count) |i| self.advanceLayer(rig, specs, i, dt, null, step);
+        for (0..count) |i| self.advanceLayer(rig, specs, .none, i, dt, null, step);
     }
 
-    /// One layer's tick, adding to `step`: run, or seek to `seek` of its newest clip's lap. A
-    /// machine calls this a layer at a time (`machine.zig`).
-    pub fn advanceLayer(self: *Stack, rig: Rig, specs: []const Spec, i: usize, dt: f32, seek: ?f32, step: *Step) void {
+    /// One layer's tick, adding to `step`: run, or seek to `seek` of its newest clip's lap, with each
+    /// blend at its place in `positions`. A machine calls this a layer at a time (`machine.zig`).
+    pub fn advanceLayer(self: *Stack, rig: Rig, specs: []const Spec, positions: Positions, i: usize, dt: f32, seek: ?f32, step: *Step) void {
         const layer = &self.layers[i];
         const player = &self.players[i];
         self.repair(rig, specs, i, dt, step);
         if (i != 0 and !player.hasClip()) return;
         var own: Step = undefined;
-        if (seek) |fraction| player.seek(rig, fraction, dt, &own) else player.advance(rig, dt, &own);
+        if (seek) |fraction| player.seekLapsAt(rig, positions, fraction, 1, dt, &own) else player.advanceAt(rig, positions, dt, &own);
         step.lost +|= own.lost;
         step.dropped +|= own.dropped;
         if (i == 0) step.motion = own.motion;
@@ -158,16 +160,18 @@ pub const Stack = extern struct {
         }
     }
 
-    /// The pose: the base, then each layer above it with weight, mixed in order. `scratch` is two
-    /// poses the caller lends, and `out` may be followed by `skinMatrices`.
-    pub fn evaluate(self: *const Stack, rig: Rig, specs: []const Spec, scratch: [2]Pose, out: Pose) void {
-        self.players[0].evaluate(rig, scratch[1], out);
+    /// The pose: the base, then each layer above it with weight, mixed in order, with each blend at
+    /// its place in `positions`. `scratch` is three poses the caller lends: a layer's pose, its
+    /// channels' mix, and a blend's clips (`animation-ik.md` §7). `out` may be followed by
+    /// `skinMatrices`.
+    pub fn evaluate(self: *const Stack, rig: Rig, specs: []const Spec, positions: Positions, scratch: [3]Pose, out: Pose) void {
+        self.players[0].evaluateAt(rig, positions, .{ scratch[1], scratch[2] }, out);
         const count = @min(specs.len, max_layers);
         for (1..count) |i| {
             const player = &self.players[i];
             const weight = unit(self.layers[i].weight);
             if (weight == 0 or !player.hasWeight(rig)) continue;
-            player.evaluate(rig, scratch[1], scratch[0]);
+            player.evaluateAt(rig, positions, .{ scratch[1], scratch[2] }, scratch[0]);
             const mask = if (specs[i].mask == 0) null else if (rig.mask(specs[i].mask)) |m| m.weights else continue;
             switch (specs[i].mode) {
                 .override => pose_mod.blendMasked(out, scratch[0], mask, weight, out),
