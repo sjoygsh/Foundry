@@ -463,6 +463,18 @@ test "seen, the warden chases at its chase speed and catches a player who stands
     try testing.expectApproxEqAbs(w.settings.?.chase_speed, fastest, 0.1);
 }
 
+/// The clip that leads the warden's body: the base's newest channel's, or inside a blend the
+/// heaviest of its clips at the machine's place in it (`animation-ik.md` §13).
+fn leading(game: *const game_mod.Game) u64 {
+    const w = &game.warden.?;
+    const rig = game.rigs.?.get(w.rig).?;
+    const machine = game.rigs.?.getMachine(w.machine).?;
+    const body = w.stack.players[0];
+    const entry = rig.find(body.channels[body.newest].clip) orelse return 0;
+    const blend = entry.blend orelse return entry.name;
+    return blend.weights(@import("anim").machine.positions(&w.stack, machine.*).of(entry)).heaviest();
+}
+
 test "in a chase it runs, footfalls from the run, reaches when near, and heaves; the breath fades after" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
@@ -484,8 +496,7 @@ test "in a chase it runs, footfalls from the run, reaches when near, and heaves;
         try game.step(.{}, fixtures.dt);
         if (game.phase != .playing) break;
         try testing.expectEqual(warden.Mode.chasing, w.mode);
-        const body = w.body();
-        if (body.channels[body.newest].clip == run) ran_steps += w.footfalls;
+        if (leading(game) == run) ran_steps += w.footfalls;
         const away = game.walk.result.feet.sub(w.feet).length();
         // Out of reach the arms stay down; within it they come up over their 0.3 s.
         if (away > w.settings.?.reach_distance + 0.1) {
@@ -715,17 +726,21 @@ test "a restart forgets a crossing, and the machine's place with it" {
     try testing.expect(w.body().playing(warden.idle));
 }
 
-test "how far it has faded into a stride is part of the hash" {
+test "how much of it walks rather than stands is part of the hash, and not of the body's" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
     var env = try fixtures.TestEnv.initPlaying(gpa);
     defer env.deinit(gpa);
     const w = &env.game.warden.?;
     while (w.walkWeight() == 0) try env.game.step(.{}, fixtures.dt);
+    // On patrol at 1 m/s, `move` is the stride alone.
+    for (0..60) |_| try env.game.step(.{}, fixtures.dt);
+    try testing.expectApproxEqAbs(@as(f32, 1), w.walkWeight(), 1e-4);
     const before = env.game.hashTick();
-    const channel = &w.stack.players[0].channels[w.stack.players[0].newest];
-    channel.weight /= 2;
+    const body = env.game.bodyHash();
+    w.walk_weight /= 2;
     try testing.expect(env.game.hashTick() != before);
+    try testing.expectEqual(body, env.game.bodyHash());
 }
 
 test "what the warden is doing is part of the hash" {
@@ -847,23 +862,26 @@ test "the warden's feet keep up with its body, on patrol and in a chase" {
         if (n >= 200) try game.walk.teleport(w.feet.add(.init(2.5, 0.2, 0.3)).add(.init(0, -0.196 - w.feet.y, 0)));
         const was = w.feet;
         try game.step(.{}, fixtures.dt);
-        // Walk or run, whichever leads, at the rate its own travel asks. A rate past ±16 is the
-        // machine's to clamp (`machine_tests.zig`).
+        // `move` at the place its speed puts it, at the rate that keeps the blend's own travel on
+        // the body's. A rate past ±16 is the machine's to clamp (`machine_tests.zig`).
         const body = w.body();
         const channel = body.channels[body.newest];
-        if (channel.clip != stride and channel.clip != run) continue;
+        if (channel.clip != @import("anim").clipName("move") or body.fade != 0) continue;
         var moved = w.feet.sub(was);
         moved.y = 0;
         if (moved.length() == 0) continue;
         const rate = moved.length() / fixtures.dt;
-        try testing.expectApproxEqAbs(rate, channel.speed * rig.motionSpeed(channel.clip), 1e-4);
+        const positions = @import("anim").machine.positions(&w.stack, game.rigs.?.getMachine(w.machine).?.*);
+        try testing.expectApproxEqAbs(rate, channel.speed * rig.motionSpeedAt(channel.clip, positions), 1e-3);
         if (rate > 2.3) {
             chase += 1;
             // A chase runs, and a patrol walks.
-            try testing.expectEqual(run, channel.clip);
-        } else if (rate > 0.9 and rate < 1.6) {
+            try testing.expectEqual(run, leading(game));
+        } else if (rate > 0.9 and rate < 1.1) {
+            // Its patrol's 1 m/s is `move`'s stride alone. Faster, the run comes in: by 1.43 m/s it
+            // is half and half, where M35's machine walked on to 1.8.
             patrol += 1;
-            try testing.expectEqual(stride, channel.clip);
+            try testing.expectEqual(stride, leading(game));
         }
     }
     try testing.expect(chase > 50 and patrol > 20);
@@ -880,23 +898,25 @@ test "a replay plays the same player on the same ticks, and only events make a w
     var stood: u32 = 0;
     // It begins on `idle`, before a tick.
     try testing.expect(env.game.warden.?.stack.players[0].playing(warden.idle));
+    var held: f32 = 0;
     const stride = @import("anim").clipName("stride");
     var first_stride = true;
     for (0..600) |_| {
         const was = env.game.warden.?.feet;
-        const held = env.game.warden.?.stack.players[0].seconds(env.game.rigs.?.get(env.game.warden.?.rig).?.*, env.game.warden.?.stack.players[0].newest);
+        held = env.game.warden.?.stack.players[0].seconds(env.game.rigs.?.get(env.game.warden.?.rig).?.*, env.game.warden.?.stack.players[0].newest);
         try env.game.step(.{}, fixtures.dt);
         try fresh.game.step(.{}, fixtures.dt);
         const w = &env.game.warden.?;
         const r = &fresh.game.warden.?;
         if (w.feet.x == was.x and w.feet.z == was.z) {
-            try testing.expect(w.stack.players[0].playing(warden.idle));
+            // Standing, `move` is idle.
+            try testing.expectEqual(warden.idle, leading(&env.game));
             stood += 1;
-        } else if (first_stride) {
-            // It takes up the time it stood at, so a pause never restarts a foot.
-            try testing.expect(w.stack.players[0].playing(stride));
-            try testing.expectApproxEqAbs(held, w.stack.players[0].channels[w.stack.players[0].newest].anchor, 1e-3);
-            try testing.expect(held > 0.1);
+        } else if (first_stride and leading(&env.game) == stride) {
+            // One channel plays idle and the stride, so a pause never restarts a foot: the lap
+            // goes on from where it stood, by less than a tick's lap.
+            const now = w.stack.players[0].seconds(env.game.rigs.?.get(w.rig).?.*, w.stack.players[0].newest);
+            try testing.expect(@abs(now - held) < 0.05 or @abs(now - held) > 0.95);
             first_stride = false;
         }
         try testing.expectEqualSlices(u8, std.mem.asBytes(&w.stack), std.mem.asBytes(&r.stack));
@@ -1018,4 +1038,76 @@ test "a warden's record has to name a set" {
     @memset(copied[24..32], 0);
     try testing.expectError(error.InvalidWarden, warden.WardenSettings.read(edited));
     try testing.expect(settings.machine.eql(core.ContentId.fromString("court:warden.machine")));
+}
+
+test "on the flat court the warden's feet only take it down to the floor, and it looks at the player it sees" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    const game = try hunted(&env);
+    const w = &game.warden.?;
+    const rig = game.rigs.?.get(w.rig).?;
+    face(game, 1, 0);
+    w.wait_ticks = 0;
+    var placed: u32 = 0;
+    var looked: u32 = 0;
+    var missed: u32 = 0;
+    for (0..400) |n| {
+        // First left to walk its patrol, then seen, then kept ahead of it.
+        if (n >= 200) try game.walk.teleport(w.feet.add(.init(2.5, 0.2, 0.3)).add(.init(0, -0.196 - w.feet.y, 0)));
+        try game.step(.{}, fixtures.dt);
+        if (game.phase != .playing) break;
+        try testing.expectEqual(@as(usize, 19), w.joint_count);
+        if (!w.placed) continue;
+        placed += 1;
+        // The court is flat, and the controller holds the body a few millimetres over it. Each
+        // offset is that and nothing more, and the pelvis drops by it.
+        for (rig.legs, 0..) |_, l| {
+            const ground = w.grounds[l];
+            // A foot the run lifts high has its ray end above the floor, and is left as it is.
+            if (!ground.hit) {
+                try testing.expect(w.feet_state.legs[l].contact < 0.5);
+                missed += 1;
+                continue;
+            }
+            try testing.expectEqual(@as(f32, 0), ground.point.y);
+            const above = w.feet.y - ground.point.y;
+            try testing.expect(above > 0 and above < 0.01);
+            if (n > 10) try testing.expectApproxEqAbs(-above, w.feet_state.legs[l].offset, 1e-4);
+        }
+        if (n > 10) try testing.expectApproxEqAbs(-(w.feet.y), w.feet_state.pelvis, 1e-4);
+        // Seen, its head comes round to the player's eyes; unseen, it lets go.
+        if (w.mode == .chasing and w.aim.weight == 1) looked += 1;
+        if (w.mode == .patrolling and n > 30) try testing.expectEqual(@as(f32, 0), w.aim.weight);
+    }
+    try testing.expect(placed > 300 and looked > 50 and missed < placed / 4);
+}
+
+test "the warden's gaze and feet never reach the hash, and a replay draws the same pose" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try fixtures.TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    var other = try fixtures.TestEnv.init(gpa);
+    defer other.deinit(gpa);
+    const a = try hunted(&env);
+    const b = try hunted(&other);
+    for ([_]*game_mod.Game{ a, b }) |game| {
+        face(game, 1, 0);
+        game.warden.?.wait_ticks = 0;
+        try game.walk.teleport(.init(3.5, 0.004, 3));
+    }
+    // One warden's feet and gaze are thrown off every tick; the other's are left alone.
+    for (0..240) |_| {
+        try a.step(.{}, fixtures.dt);
+        try b.step(.{}, fixtures.dt);
+        try testing.expectEqual(a.hashTick(), b.hashTick());
+        try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(a.warden.?.pose[0..19]), std.mem.sliceAsBytes(b.warden.?.pose[0..19]));
+        b.warden.?.aim = .{ .at = .init(9, 9, 9), .weight = 0.5, .aimed = true };
+        b.warden.?.feet_state.legs[0].offset = 0.2;
+        try testing.expectEqual(a.hashTick(), b.hashTick());
+        b.warden.?.aim = a.warden.?.aim;
+        b.warden.?.feet_state = a.warden.?.feet_state;
+    }
 }

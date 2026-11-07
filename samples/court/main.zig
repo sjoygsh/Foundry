@@ -716,8 +716,8 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         }
     }
     if (game.warden) |*w| {
-        // A warden whose set does not resolve is left undrawn; it still patrols.
-        w.evaluate(if (game.rigs) |*r| r else null);
+        // A warden whose set does not resolve is left undrawn; it still patrols. Its pose was made
+        // on its last tick, with its feet and its gaze (`warden.zig`).
         try w.draw(content);
     }
     try navigation.draw(renderer);

@@ -539,8 +539,9 @@ is a pose's.
 - **The body layer's states:** `court:warden.machine` replaces `walk` and `run`, and their four
   transitions, with one state, `move`. It plays the blend with `speed_param "speed"`, and its axis
   is `speed`.
-- **What that does:** at 1.0 m/s on patrol it plays `stride` alone, at rate 1. At 2.4 m/s in a
-  chase it plays `run` alone, at 1.29. Between, it mixes them on one foot.
+- **What that does:** at 1.0 m/s on patrol it plays `stride` alone, at rate 1.67, `stride`'s own
+  0.6 m/s being slower (corrected 2026-11-08, Step 6; it said rate 1). At 2.4 m/s in a chase it
+  plays `run` alone, at 1.29. Between, it mixes them on one foot.
 - **What stays:** idle and the jump. `idle` stays in the blend at 0, so slowing to a stop eases
   in. The jump stays a state, faded to and from `move` in the `feet` group.
 
@@ -1257,3 +1258,78 @@ Four things §12 said turned out otherwise, and one clip fix went back into Step
 
 **The bar.** `zig build test`: 2,871/2,881, ten skips, 132/132 steps, with eight new tests. Every
 other line passed.
+
+## Resolution — Step 8: the court: the warden's blend, feet and gaze (2026-11-08)
+
+§13 is built:
+- `court:warden.machine` plays `move`;
+- `warden.zig` places the warden's feet and turns its head each tick;
+- the tests are in the court's `nav_tests.zig`.
+
+**The machine.** The body layer is now two states:
+- `move`, the entry: it plays the set's `move` with `speed_param "speed"`, and its axis is `speed`;
+- `jump`, as before, faded to from `*` when `link` is 1, and back to `move` when it is 0.
+
+M35's `walk` and `run`, `idle` as a state, and their four transitions are gone. Standing, `move` is
+idle. The arms and the breath are unchanged.
+
+**What the blend does:**
+- at 1 m/s on patrol it is `stride` alone, at rate 1.67 (§13's "rate 1" is corrected in place,
+  dated);
+- by 1.43 m/s it is half and half, where M35's machine walked on to 1.8;
+- from 1.86 m/s it is `run`;
+- a chase at 2.4 m/s is `run` at 1.29.
+
+The court's tests that read "which clip plays" now read the clip that leads inside `move`, at the
+machine's place.
+
+**The pose, the feet and the gaze are made on the tick, not the frame.**
+- **The order:** after the body's move, `Warden.present` evaluates the pose. It casts two rays into
+  the level's layer and places the feet, locked, as §13 says. It turns the `head` aim toward the
+  player's eyes, with `wanted` 1 while the warden sees them, and then skins.
+- **Why on the tick:** feet and a gaze are stepped once a tick, with the tick's `dt` (ADR-0073). So
+  the frame only draws what the last tick made, and a replay makes the same pose.
+- **On a crossing** its jump is left as its clip.
+- **`evaluate` stays,** pose and skin only, for a test or a host with no level.
+- **None of it reaches either hash.** A test throws one warden's gaze and feet off every tick and
+  finds `hashTick` and the pose equal to a second warden's.
+
+**`hashTick`'s walk weight** is now read at the end of each tick, as the share of the base layer
+that is not idle, a blend's clips counted by their weights at its place. M35 read the `stride`
+channel, which no longer plays.
+
+**A correction to §13: on the flat court the offsets are not 0.**
+- **Why:** the controller holds the warden 4–5 mm over the floor (its waypoints stand at 0.004,
+  and the controller has its skin). So each settled offset is exactly minus that height, within
+  0.1 mm, and the pelvis drops by it.
+- **What the test holds:** that, over a patrol and a chase, for every planted foot.
+- **The rays that miss:** a foot the run lifts high has its ray end above the floor, and a miss
+  leaves that foot as it is. Every planted foot finds the floor.
+
+**The bodies keep every tick.** `win`, `caught`, `fell` and the soundtrack keep their M35 digests,
+`2495783980aedff1`, `757a204cc05d1b02`, `6b4fdba4db5b669e` and `806953eeb8f10db8`, every tick. A
+mutation putting the gaze's weight into `bodyHash` fails that test.
+
+**From the staged ReleaseSafe court on Metal, moved out of the repository,** each script was played
+windowed:
+
+| Script | Whole game tick p95 | `render.skin` p95 |
+| --- | --- | --- |
+| `win` | 0.233 ms | |
+| `caught` | 0.193 ms | 0.067 ms |
+| `fell` | 0.207 ms | 0.071 ms |
+
+The budgets are 0.25 ms for the tick and 0.25 ms for the skin. No sound, mixer command or event
+was dropped.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the feet placed at all;
+- the gaze given the player's eyes;
+- the walk weight read from the blend;
+- the gaze kept out of the body's hash (the digest test failed).
+
+**The bar.** `zig build test`: 2,873/2,883, ten skips, 132/132 steps, with two new tests. Every other
+line passed. `room` and `court` were staged with `dist`, since the content changed.
+
+**The exit's last clause is the owner's:** the staged build is `zig-out/dist/court/Foundry
+Court.app`, or its zip, and the owner has not yet played it.

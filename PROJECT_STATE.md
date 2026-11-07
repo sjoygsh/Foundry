@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-08
-**Current handoff: M36 Step 7 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 8, the court: the warden's `move` blend, feet and gaze, and a build for the owner to play. §13's "rate 1 at 1 m/s" is wrong (1.67), and Step 8 corrects it.
+**Current handoff: M36 Step 8 of 10 is complete but for the owner's play** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). The court build is staged at `zig-out/dist/court/Foundry Court.app`, and the exit's last clause is the owner's play. Stop before Step 9, Windows/Vulkan.
+
+**M36 Step 8 is done (2026-11-08): the warden's blend, feet and gaze.**
+- `court:warden.machine` plays `move` (idle, stride and run by `speed`) and keeps the jump. At 1 m/s it is the stride alone at rate 1.67 (§13 corrected), half and half at 1.43, and the run from 1.86.
+- Each tick after the move, `Warden.present` evaluates the pose, places the feet (two rays, locked) and turns the head to the player's eyes while it sees them. None of it reaches either hash.
+- The four M35 body digests hold every tick.
+- On the flat court each offset is exactly minus the 4–5 mm the controller holds the body up, so the offsets are not 0 as §13 said.
+- Staged ReleaseSafe court on Metal: game tick p95 0.193–0.233 ms (budget 0.25), skin 0.067–0.071 ms.
+- Bar 2,873/2,883 (ten skips), 132/132 steps, two new tests. `room` and `court` staged.
 
 **M36 Step 7 is done (2026-11-08): `sandbox3d`'s feet, strafer, gaze and block.**
 - **The climber** places locked feet on the course through walk-world rays. Settled landings are exact, 2,105 of them, 25 on the steps, ramp and platform. 21 landings in two minutes come down while their offset still eases after an edge (§4's no-pop rule), missing by up to 12.6 cm. On the floor the feet take it down the crowd's 1.37 cm. `Feet.probes` now measures in world metres.

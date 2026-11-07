@@ -18,6 +18,12 @@
 //! on a link, so that tick keeps `link` and puts `link_t` at 1, and an event at the clip's end still
 //! fires.
 //!
+//! **Since M36 it walks and runs on a blend, and places its feet and looks** (`animation-ik.md` §13):
+//! the machine's `move` mixes idle, the stride and the run by `speed`. After each tick's move the
+//! pose is evaluated, its feet are put on what two rays find in the level, locked, and its head
+//! turns to the player's eyes while it sees them. All of that is presentation, stepped once a tick
+//! so a replay draws the same, and none of it moves the body.
+//!
 //! **Its senses and its states are the court's,** not the engine's: it patrols, chases what it
 //! sees, and searches where it last saw the player before going back. Every number is content.
 const std = @import("std");
@@ -42,6 +48,9 @@ const link_param = anim.clipName("link");
 const link_t_param = anim.clipName("link_t");
 const near_param = anim.clipName("near");
 const winded_param = anim.clipName("winded");
+const head_aim = anim.clipName("head");
+/// What the feet's rays may hit: the level's layer.
+const ground_mask: u32 = 1;
 /// What a foot landing is called in `foundry:animation_set`, and what `warden_step` is made from.
 pub const footfall = core.ContentId.fromString("court:event.footfall");
 /// What landing from a crossing is called there.
@@ -144,6 +153,16 @@ pub const Warden = struct {
     landings: u32 = 0,
     /// This tick's, for the overlay.
     report: anim.Report = .{},
+    /// How much of the base layer walks rather than stands, this tick, for `hashTick`.
+    walk_weight: f32 = 0,
+    /// Its feet and its gaze: presentation, stepped once a tick, never saved or hashed.
+    feet_state: anim.Feet = .{},
+    aim: anim.Aim = .{},
+    /// What each foot's ray found this tick, and whether its feet were placed: for the tests.
+    grounds: [anim.max_legs]anim.Ground = @splat(.{}),
+    placed: bool = false,
+    /// Whether planted feet are held where they landed.
+    lock: bool = true,
     /// The `link` it told the machine last tick: the kind plus one while crossing, and 0 otherwise.
     link: f32 = 0,
     character: physics.CharacterHandle = .none,
@@ -226,6 +245,10 @@ pub const Warden = struct {
         self.yaw = 0;
         self.tick = 0;
         self.link = 0;
+        self.walk_weight = 0;
+        self.feet_state = .{};
+        self.aim = .{};
+        self.joint_count = 0;
         // A cut to the start of `idle`, which is all a new game's body holds. The machine's first
         // tick takes the state that plays it.
         self.stack = .{};
@@ -280,8 +303,8 @@ pub const Warden = struct {
     }
 
     /// One fixed tick. `gravity` is the court's, from its rules, and `seen` is whether it sees the
-    /// player at `player`, the feet. With no mesh it stands.
-    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, rigs: ?*const asset.Rigs, gravity: f32, dt: f32, seen: bool, player: Vec3) !void {
+    /// player at `player`, the feet, with its eyes at `player_eye`. With no mesh it stands.
+    pub fn step(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, rigs: ?*const asset.Rigs, gravity: f32, dt: f32, seen: bool, player: Vec3, player_eye: Vec3) !void {
         const s = self.settings orelse return;
         if (self.character.isNone()) return;
         const before = self.feet;
@@ -308,6 +331,7 @@ pub const Warden = struct {
             _ = try world.setCharacterFeet(gpa, self.character, self.feet);
             self.velocity = 0;
             try self.finishTick(before, s, rigs, dt, self.crossing(crowd), player);
+            self.present(world, rigs, true, if (seen) player_eye else null, dt);
             return;
         };
         if (wish) |w| horizontal = .init(w.displacement.x, 0, w.displacement.z);
@@ -319,6 +343,7 @@ pub const Warden = struct {
         crowd.place(self.agent, self.feet);
         if (result.grounded) self.velocity = 0;
         try self.finishTick(before, s, rigs, dt, null, player);
+        self.present(world, rigs, false, if (seen) player_eye else null, dt);
     }
 
     /// The kind of link being crossed, and how far across it is.
@@ -339,12 +364,80 @@ pub const Warden = struct {
         return self.stack.base();
     }
 
-    /// How far between idle and `stride` the figure is.
+    /// How much of the body walks rather than stands: `hashTick`'s, read at the end of each tick.
     pub fn walkWeight(self: *const Warden) f32 {
+        return self.walk_weight;
+    }
+
+    /// Each channel's weight, less the share of it that is `idle`: all of a clip that is not idle,
+    /// and a blend's clips other than idle at the machine's place in it.
+    fn readWalkWeight(self: *const Warden, rig: anim.Rig, machine: anim.Machine) f32 {
+        const positions = anim.machine.positions(&self.stack, machine);
+        var total: f32 = 0;
         for (self.stack.players[0].channels) |channel| {
-            if (channel.clip == stride_clip) return channel.weight;
+            if (channel.weight == 0 or channel.clip == idle) continue;
+            const entry = rig.find(channel.clip) orelse continue;
+            const blend = entry.blend orelse {
+                total += channel.weight;
+                continue;
+            };
+            const mix = blend.weights(positions.of(entry));
+            for (mix.slice()) |part| {
+                if (part.clip != idle) total += channel.weight * part.weight;
+            }
         }
-        return 0;
+        return total;
+    }
+
+    /// The pose and its skin, with no feet or gaze: what the warden plays, for a test or a host
+    /// with no level to stand it on.
+    pub fn evaluate(self: *Warden, rigs: ?*const asset.Rigs) void {
+        const rig = self.rigOf(rigs) orelse {
+            self.joint_count = 0;
+            return;
+        };
+        const machine = (rigs orelse return).getMachine(self.machine) orelse {
+            self.joint_count = 0;
+            return;
+        };
+        const n = rig.skeleton.jointCount();
+        const pose: anim.Pose = .{ .local = self.pose[0..n] };
+        anim.machine.evaluate(&self.stack, rig.*, machine.*, .{ .{ .local = self.scratch[0..n] }, .{ .local = self.scratch[n .. 2 * n] }, .{ .local = self.scratch[2 * n .. 3 * n] } }, pose);
+        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
+        self.joint_count = n;
+    }
+
+    /// `animation-ik.md` §14's steps 3 to 6, once a tick after the move: the pose, the feet on what
+    /// two rays find in the level, the head toward `look`, and the skin. A crossing's one-shot is
+    /// left as its clip, off the ground. Nothing here moves the body or reaches the hash.
+    fn present(self: *Warden, world: *physics.World, rigs: ?*const asset.Rigs, crossing_now: bool, look: ?Vec3, dt: f32) void {
+        self.placed = false;
+        const rig = self.rigOf(rigs) orelse {
+            self.joint_count = 0;
+            return;
+        };
+        const machine = rigs.?.getMachine(self.machine) orelse {
+            self.joint_count = 0;
+            return;
+        };
+        const n = rig.skeleton.jointCount();
+        const pose: anim.Pose = .{ .local = self.pose[0..n] };
+        anim.machine.evaluate(&self.stack, rig.*, machine.*, .{ .{ .local = self.scratch[0..n] }, .{ .local = self.scratch[n .. 2 * n] }, .{ .local = self.scratch[2 * n .. 3 * n] } }, pose);
+        const to_world = Mat4.trs(self.feet, Quat.fromAxisAngle(.up, self.yaw), .one);
+        if (!crossing_now and self.link == 0 and rig.legs.len != 0) {
+            var rays: [anim.max_legs]anim.Probe = undefined;
+            const probes = anim.Feet.probes(rig.*, pose, to_world, &rays);
+            for (probes, 0..) |probe, l| {
+                const hit = world.raycast(probe.origin, probe.direction, probe.distance, .{ .mask = ground_mask }) catch null;
+                self.grounds[l] = if (hit) |h| .{ .hit = true, .point = h.point, .normal = h.normal } else .{};
+            }
+            const contacts = anim.feet.contactWeights(rig.*, self.stack.base(), anim.machine.positions(&self.stack, machine.*));
+            self.feet_state.place(rig.*, pose, to_world, self.grounds[0..probes.len], contacts, dt, .{ .lock = self.lock });
+            self.placed = true;
+        }
+        if (aimOf(rig.*)) |chain| self.aim.apply(rig.*, chain, pose, to_world, look, if (look != null) 1 else 0, dt);
+        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
+        self.joint_count = n;
     }
 
     fn finishTick(self: *Warden, before: Vec3, s: WardenSettings, rigs: ?*const asset.Rigs, dt: f32, across: ?Crossing, player: Vec3) !void {
@@ -389,29 +482,13 @@ pub const Warden = struct {
 
         var step_out: anim.Step = undefined;
         anim.machine.advance(&self.stack, rig.*, machine.*, dt, &step_out);
+        self.walk_weight = self.readWalkWeight(rig.*, machine.*);
         self.report = .{};
         self.report.addStack(&self.stack, rig.*, machine.*, "warden", &step_out);
         for (step_out.fired()) |event| {
             if (event.eql(footfall)) self.footfalls += 1;
             if (event.eql(land)) self.landings += 1;
         }
-    }
-
-    /// The pose, a function of the stack, the rig and the machine alone.
-    pub fn evaluate(self: *Warden, rigs: ?*const asset.Rigs) void {
-        const rig = self.rigOf(rigs) orelse {
-            self.joint_count = 0;
-            return;
-        };
-        const machine = (rigs orelse return).getMachine(self.machine) orelse {
-            self.joint_count = 0;
-            return;
-        };
-        const n = rig.skeleton.jointCount();
-        const pose: anim.Pose = .{ .local = self.pose[0..n] };
-        anim.machine.evaluate(&self.stack, rig.*, machine.*, .{ .{ .local = self.scratch[0..n] }, .{ .local = self.scratch[n .. 2 * n] }, .{ .local = self.scratch[2 * n .. 3 * n] } }, pose);
-        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
-        self.joint_count = n;
     }
 
     pub fn draw(self: *const Warden, content: *render3d.Content) !void {
@@ -423,6 +500,12 @@ pub const Warden = struct {
         });
     }
 };
+
+/// The set's `head` aim, if it has one.
+fn aimOf(rig: anim.Rig) ?usize {
+    for (rig.aims, 0..) |entry, i| if (entry.name == head_aim) return i;
+    return null;
+}
 
 fn index(fields: Fields, name: []const u8) !u32 {
     for (fields.fields, 0..) |field, i| if (std.mem.eql(u8, field.name, name)) return @intCast(i);

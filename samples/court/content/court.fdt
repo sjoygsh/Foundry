@@ -182,31 +182,30 @@ foundry:animation_set court:warden.set {
 }
 # M35: what the warden does with its clips (`docs/design/animation-states.md` §10, §14). The court
 # says five things a tick: its ground `speed`, the `link` it crosses (its kind plus one, so 1 is a
-# jump) and how far across, `near` in a chase within reach, and `winded` in a chase. Walk and run
-# share a foot, and cross at 1.8 and 1.6 m/s, so a patrol at 1 m/s walks and a chase at 2.4 runs.
+# jump) and how far across, `near` in a chase within reach, and `winded` in a chase.
+#
+# Since M36 (`animation-ik.md` §13) it walks and runs on `move`, the set's blend of idle, the stride
+# and the run over ground speed, placed by `speed`: the stride alone at 1 m/s on patrol, the run
+# alone from 1.86 m/s, and the two in step between. Its rate comes from speed too, so its feet keep
+# pace. Standing, the blend is idle. The jump stays a state.
 foundry:animation_machine court:warden.machine {
     params [ { name "speed" } { name "link" } { name "link_t" } { name "near" } { name "winded" } ]
     layers [
-        { name "body" entry "idle"
+        { name "body" entry "move"
             states [
-                { name "idle" clip "idle" }
-                { name "walk" clip "stride" speed_param "speed" }
-                { name "run" clip "run" speed_param "speed" }
+                { name "move" clip "move" speed_param "speed" }
                 { name "jump" clip "jump" seek_param "link_t" }
             ]
             transitions [
                 { from "*" to "jump" fade 0.1 when [ { param "link" is 1 } ] }
-                { from "jump" to "idle" fade 0.2 when [ { param "link" is 0 } ] }
-                { from "idle" to "walk" fade 0.25 phase "keep" when [ { param "speed" at_least 0.05 } ] }
-                { from "walk" to "run" fade 0.3 phase "keep" when [ { param "speed" at_least 1.8 } ] }
-                { from "run" to "walk" fade 0.3 phase "keep" when [ { param "speed" below 1.6 } ] }
-                { from "walk" to "idle" fade 0.25 when [ { param "speed" below 0.05 } ] }
+                { from "jump" to "move" fade 0.2 when [ { param "link" is 0 } ] }
         ] }
         { name "arms" mask "upper" weight_param "near" weight_fade 0.3 entry "reach"
             states [ { name "reach" clip "reach" } ] }
         { name "breath" mode "additive" weight_param "winded" weight_fade 1.5 entry "pant"
             states [ { name "pant" clip "pant" } ] }
     ]
+    axes [ { blend "move" x "speed" } ]
 }
 warden court:warden.main {
     model court:models.warden
