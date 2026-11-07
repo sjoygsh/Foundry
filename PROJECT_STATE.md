@@ -1,7 +1,13 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-07
-**Current handoff: M36 Step 3 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 4, `asset`: `foundry:animation_set` v3 (legs, aims, blends) and `foundry:animation_machine` v2 (axes), with `Rigs` reading contacts and soles. No record, sample or panel uses any of M36 yet.
+**Last updated:** 2026-11-08
+**Current handoff: M36 Step 4 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 5, `scene` and `debug`: the scene's blend-save test, and the panel's `Report.addFeet`, `addAim` and blend rows. No sample, clip or panel uses any of M36 yet.
+
+**M36 Step 4 is done (2026-11-08): set v3 and machine v2 in `asset`.**
+- `foundry:animation_set` v3 appends `legs`, `aims` and `blends`, and `foundry:animation_machine` v2 appends `axes`. `fpack` checks each as §6 and §8 list, with `InvalidPoint` named for a point that is not a finite number.
+- `Rigs` builds a blend as an entry of the rig's clips, refusing `BlendNameCollision` against any model clip. It reads each leg's sole from the rest pose and every looping, non-additive clip's contacts after the rig validates. `start` may name a blend.
+- A v2 set and a v1 machine build what they did.
+- Bar 2,855/2,865 (ten skips), 132/132 steps, eleven new tests.
 
 **M36 Step 3 is done (2026-11-07): feet and aims in `anim`.**
 - `anim/feet.zig`: `Rig.legs` and `RigClip.contacts`, contacts read from a looping clip's foot heights by `deriveContacts`, and `Feet.probes` and `Feet.place`. The pelvis only drops, legs reach by `twoBone`, planted feet tilt by contact (0.5 rad at most), and locks release at 0.25 m and at contact's end.

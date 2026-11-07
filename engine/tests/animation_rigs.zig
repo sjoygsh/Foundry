@@ -496,6 +496,9 @@ test "a version 2 set builds masks, groups, additive clips and rises into its ri
     try testing.expectEqual(@as(usize, 3), idle.reference.len);
     try testing.expectEqual(@as(f32, 0), idle.reference[0].translation.z);
     try testing.expect(!walk.additive and walk.reference.len == 0);
+    // A version 2 set has no legs, aims or blends, so no clip has contacts.
+    try testing.expect(rig.legs.len == 0 and rig.aims.len == 0);
+    for (rig.clips) |clip| try testing.expect(clip.blend == null and clip.contacts.len == 0);
 }
 
 test "a version 1 set still builds the rig it did" {
@@ -513,7 +516,10 @@ test "a version 1 set still builds the rig it did" {
         try testing.expectEqual(@as(u64, 0), clip.sync);
         try testing.expectEqual(@as(f32, 0), clip.rise);
         try testing.expect(!clip.additive and clip.reference.len == 0);
+        // Nor anything of version 3.
+        try testing.expect(clip.blend == null and clip.contacts.len == 0);
     }
+    try testing.expect(rig.legs.len == 0 and rig.aims.len == 0);
 }
 
 test "every version 2 refusal that needs the model is named, and leaves nothing behind" {
@@ -734,4 +740,207 @@ test "out of memory building a version 2 rig or a machine leaks nothing, and a r
         break;
     }
     try testing.expect(fail > 6);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Version 3 and machine version 2 (`docs/design/animation-ik.md` §6, §8, M36 Step 4)
+
+/// A figure that stands: a pelvis a metre up, a knee, a foot 5 cm above the floor at rest, and a
+/// head. `idle` holds the rest pose. `walk` carries the pelvis 0.6 m forward over half a second and
+/// lifts the foot 15 cm at the middle of its lap.
+fn writeLegged(s: *Stack) !void {
+    const parents = [_]u16{ 0xFFFF, 0, 1, 0 };
+    const rest = [_]Transform{
+        .{ .translation = .init(0, 1, 0) },
+        .{ .translation = .init(0, -0.5, 0) },
+        .{ .translation = .init(0, -0.45, 0) },
+        .{ .translation = .init(0, 0.6, 0) },
+    };
+    const binds: [4]Mat4 = @splat(Mat4.identity);
+    const names = [_][]const u8{ "pelvis", "knee", "foot", "head" };
+    const rig = try asset.skeleton.write(gpa, .{ .parents = &parents, .rest = &rest, .inverse_bind = &binds, .names = &names });
+    defer gpa.free(rig);
+    try s.install("rig.fskel", rig);
+
+    const idle = try asset.animation.write(gpa, .{ .duration = 1, .joint_count = 4, .tracks = &.{} });
+    defer gpa.free(idle);
+    try s.install("clip0.fanim", idle);
+
+    const pelvis_times = [_]f32{ 0, 0.5 };
+    const pelvis = [_]f32{ 0, 1, 0, 0, 1, -0.6 };
+    const foot_times = [_]f32{ 0, 0.25, 0.5 };
+    const foot = [_]f32{ 0, -0.45, 0, 0, -0.3, 0, 0, -0.45, 0 };
+    const tracks = [_]asset.animation.Track{
+        .{ .joint = 0, .path = .translation, .times = &pelvis_times, .values = &pelvis },
+        .{ .joint = 2, .path = .translation, .times = &foot_times, .values = &foot },
+    };
+    const walk = try asset.animation.write(gpa, .{ .duration = 0.5, .joint_count = 4, .tracks = &tracks });
+    defer gpa.free(walk);
+    try s.install("clip1.fanim", walk);
+}
+
+const v3_set =
+    \\foundry:animation_set demo:set {
+    \\    model demo:hero
+    \\    start "move"
+    \\    motion_joint "pelvis"
+    \\    clips [ { name "walk" motion true } ]
+    \\    legs [ { name "only" hip "pelvis" knee "knee" foot "foot" max_drop 0.2 } ]
+    \\    aims [ { name "look" joints [ { joint "pelvis" weight 0.4 } { joint "head" weight 0.6 } ] limit 1 } ]
+    \\    blends [ { name "move" sync "feet" points [ { clip "idle" x 0 } { clip "walk" x 1.2 } ] } ]
+    \\}
+;
+
+const v2_machine =
+    \\foundry:animation_machine demo:machine {
+    \\    params [ { name "speed" } ]
+    \\    layers [ { name "body" entry "move" states [ { name "move" clip "move" speed_param "speed" } ] } ]
+    \\    axes [ { blend "move" x "speed" } ]
+    \\}
+;
+
+test "a version 3 set and a version 2 machine build a rig with a blend, a leg and an aim, with no renderer" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try writeLegged(s);
+    try s.set(v3_set);
+    try s.write("machine.fdt", v2_machine);
+    try s.build();
+    const handle = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    defer s.rigs.releaseMachine(handle);
+    const rig = s.rigs.lookup(id("demo:set")).?;
+    const machine = s.rigs.getMachine(handle).?;
+    try rig.validate();
+    try machine.validate(rig.*);
+
+    // The blend is an entry of the rig's clips, and the rig starts on it.
+    const move = rig.find(anim.clipName("move")).?;
+    try testing.expectEqual(rig.start, move.name);
+    try testing.expectEqualStrings("move", move.label);
+    try testing.expect(move.motion and move.blend != null);
+    try testing.expectEqual(anim.clipName("feet"), move.sync);
+    try testing.expectEqual(@as(u8, 1), rig.blend(anim.clipName("move")).?.axes());
+    try testing.expectEqual(@as(usize, 3), rig.clips.len);
+
+    // The leg, its sole read from the rest pose: 1 - 0.5 - 0.45.
+    try testing.expectEqual(@as(usize, 1), rig.legs.len);
+    const leg = rig.legs[0];
+    try testing.expectEqualStrings("only", leg.label);
+    try testing.expectEqual(anim.TwoBone{ .root = 0, .middle = 1, .end = 2 }, leg.chain);
+    try testing.expectApproxEqAbs(@as(f32, 0.05), leg.sole, 1e-6);
+    try testing.expectEqual(@as(f32, 0.2), leg.max_drop);
+    try testing.expectEqual(@as(f32, 0.03), leg.contact_height);
+
+    // The aim chain, its weights as shares and its forward the default.
+    try testing.expectEqual(@as(usize, 1), rig.aims.len);
+    const look = rig.aims[0];
+    try testing.expectEqual(anim.clipName("look"), look.name);
+    try testing.expectEqual(@as(usize, 2), look.chain.joints.len);
+    try testing.expectEqual(@as(u16, 3), look.chain.joints[1].joint);
+    try testing.expectEqual(@as(f32, 0.6), look.chain.joints[1].share);
+    try testing.expectEqual(@as(f32, 1), look.chain.limit);
+    try testing.expectEqual(core.math.Vec3.forward, look.chain.forward);
+
+    // Contacts, read from the foot's heights: down all of `idle`, and in `walk` within 3 cm of its
+    // lowest, across the lap's end, from sample 58 of 64 to sample 7.
+    const idle = rig.find(anim.clipName("idle")).?;
+    try testing.expectEqual(@as(usize, 1), idle.contacts.len);
+    try testing.expectEqual(anim.Contact{ .leg = 0, .from = 0, .to = 1 }, idle.contacts[0]);
+    const walk = rig.find(anim.clipName("walk")).?;
+    try testing.expectEqual(@as(usize, 1), walk.contacts.len);
+    try testing.expectEqual(anim.Contact{ .leg = 0, .from = 58.0 / 64.0, .to = 7.0 / 64.0 }, walk.contacts[0]);
+    try testing.expectEqual(@as(usize, 0), move.contacts.len);
+
+    // The machine binds the blend's axis, and places it from its parameter.
+    try testing.expectEqual(anim.clipName("speed"), machine.bound(anim.clipName("move")).?.x);
+    var stack: anim.Stack = .{};
+    var step: anim.Step = .{};
+    try anim.machine.set(&stack, machine.*, anim.clipName("speed"), 0.6);
+    var travelled: f32 = 0;
+    for (0..30) |_| {
+        anim.machine.advance(&stack, rig.*, machine.*, 1.0 / 60.0, &step);
+        travelled += step.motion.translation.length();
+    }
+    try testing.expect(stack.players[0].playing(anim.clipName("move")));
+    const positions = anim.machine.positions(&stack, machine.*);
+    try testing.expectEqual([2]f32{ 0.6, 0 }, positions.of(move));
+    // Half way between standing and the walk, the rate from speed keeps the ground at 0.6 m/s.
+    try testing.expectApproxEqAbs(@as(f32, 0.3), travelled, 1e-3);
+}
+
+test "every version 3 refusal that needs the model is named, and leaves nothing behind" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try writeLegged(s);
+    const head = "foundry:animation_set demo:set { model demo:hero motion_joint \"pelvis\" clips [ { name \"walk\" motion true } ] ";
+    try s.expectRefused(error.UnknownJoint, head ++ "legs [ { name \"l\" hip \"pelvis\" knee \"knee\" foot \"toe\" } ] }");
+    try s.expectRefused(error.NotAChain, head ++ "legs [ { name \"l\" hip \"knee\" knee \"pelvis\" foot \"foot\" } ] }");
+    try s.expectRefused(error.NotAChain, head ++ "legs [ { name \"l\" hip \"head\" knee \"knee\" foot \"foot\" } ] }");
+    try s.expectRefused(error.UnknownJoint, head ++ "aims [ { name \"a\" joints [ { joint \"eye\" } ] } ] }");
+    try s.expectRefused(error.NotAChain, head ++ "aims [ { name \"a\" joints [ { joint \"head\" } { joint \"pelvis\" } ] } ] }");
+    // `idle` is the model's, though the set does not list it.
+    try s.expectRefused(error.BlendNameCollision, head ++ "blends [ { name \"idle\" points [ { clip \"walk\" x 0 } { clip \"walk\" x 1 } ] } ] }");
+    try s.expectRefused(error.UnknownBlendClip, head ++ "blends [ { name \"b\" points [ { clip \"idle\" x 0 } { clip \"run\" x 1 } ] } ] }");
+    try s.expectRefused(error.UnknownClip, head ++ "start \"nothing\" blends [ { name \"b\" points [ { clip \"idle\" x 0 } { clip \"walk\" x 1 } ] } ] }");
+    try testing.expectEqual(@as(u32, 0), s.rigs.entries.count());
+    _ = s.assets.evictUnused(gpa);
+    try testing.expectEqual(@as(u32, 0), s.assets.count());
+}
+
+test "every version 2 machine refusal that needs the rig is named, and leaves nothing behind" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try writeLegged(s);
+    try s.set(v3_set);
+    const head = "foundry:animation_machine demo:machine { params [ { name \"p\" } { name \"q\" } ] layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"move\" speed_param \"p\" } ] } ] ";
+    const cases = [_]struct { anyerror, []const u8 }{
+        .{ error.UnknownBlend, "axes [ { blend \"move\" x \"p\" } { blend \"walk\" x \"q\" } ] }" },
+        .{ error.AxisMismatch, "axes [ { blend \"move\" x \"p\" y \"q\" } ] }" },
+        .{ error.UnboundBlend, "}" },
+    };
+    for (cases) |case| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, head);
+        try text.appendSlice(gpa, case[1]);
+        try s.write("machine.fdt", text.items);
+        try s.build();
+        try testing.expectError(case[0], s.rigs.acquireMachine(id("demo:set"), id("demo:machine")));
+    }
+    try testing.expectEqual(@as(u32, 0), s.rigs.machines.count());
+    try testing.expectEqual(@as(u32, 0), s.rigs.entries.count());
+}
+
+test "a version 1 machine still builds against a version 3 rig, binding no blend" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try writeLegged(s);
+    try s.set(v3_set);
+    try s.write("machine.fdt", "foundry:animation_machine demo:machine { layers [ { name \"b\" entry \"w\" states [ { name \"w\" clip \"walk\" } ] } ] }");
+    try s.build();
+    const handle = try s.rigs.acquireMachine(id("demo:set"), id("demo:machine"));
+    defer s.rigs.releaseMachine(handle);
+    try testing.expectEqual(@as(usize, 0), s.rigs.getMachine(handle).?.axes.len);
+}
+
+test "out of memory building a version 3 rig or a version 2 machine leaks nothing, and a retry succeeds" {
+    const s = try Stack.init();
+    defer s.deinit();
+    try writeLegged(s);
+    try s.set(v3_set);
+    try s.write("machine.fdt", v2_machine);
+    try s.build();
+    var fail: usize = 0;
+    while (true) : (fail += 1) {
+        var failing = testing.FailingAllocator.init(gpa, .{ .fail_index = fail });
+        var rigs = Rigs.init(failing.allocator(), &s.assets);
+        defer rigs.deinit();
+        const handle = rigs.acquireMachine(id("demo:set"), id("demo:machine")) catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            continue;
+        };
+        rigs.releaseMachine(handle);
+        break;
+    }
+    try testing.expect(fail > 10);
 }

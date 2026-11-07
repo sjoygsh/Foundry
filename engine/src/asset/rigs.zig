@@ -15,6 +15,10 @@
 //!
 //! **Machines are built here too** (`animation-states.md` §10): a `foundry:animation_machine`
 //! against the rig of a set, checked by `anim.Machine.validate`, rebuilt with its rig.
+//!
+//! **Version 3's legs, aim chains and blends** (`animation-ik.md` §6) are built here as well. A blend
+//! is an entry of the rig's clips. A leg's `sole` is read from the rest pose, and every looping clip's
+//! contacts from its foot heights, once, when the rig is built: a tick reads neither.
 
 const std = @import("std");
 const anim = @import("anim");
@@ -81,6 +85,14 @@ const Built = struct {
     weights: []f32 = &.{},
     mask_labels: []u8 = &.{},
     references: []core.math.Transform = &.{},
+    /// Version 3's: blends' arrangements, legs, aim chains and their joints, their names, and every
+    /// clip's contacts.
+    blends: []anim.Blend = &.{},
+    legs: []anim.Leg = &.{},
+    aims: []anim.RigAim = &.{},
+    aim_joints: []anim.AimJoint = &.{},
+    part_labels: []u8 = &.{},
+    contacts: []anim.Contact = &.{},
     rig: anim.Rig = undefined,
 
     fn release(self: *Built, gpa: Allocator, assets: *Registry) void {
@@ -95,6 +107,12 @@ const Built = struct {
         gpa.free(self.weights);
         gpa.free(self.mask_labels);
         gpa.free(self.references);
+        gpa.free(self.blends);
+        gpa.free(self.legs);
+        gpa.free(self.aims);
+        gpa.free(self.aim_joints);
+        gpa.free(self.part_labels);
+        gpa.free(self.contacts);
         self.* = .{};
     }
 };
@@ -291,7 +309,9 @@ pub const Rigs = struct {
         const skeleton_id = idField(model.fields, "skeleton") orelse return error.NotSkinned;
         const model_clips = listField(model.fields, "clips") orelse return error.NotSkinned;
         if (model_clips.len == 0) return error.NotSkinned;
-        if (model_clips.len > anim.max_rig_clips) return error.TooManyClips;
+        const blend_list = try set_mod.blends(fields);
+        const blend_count: usize = if (blend_list) |list| list.len else 0;
+        if (model_clips.len + blend_count > anim.max_rig_clips) return error.TooManyClips;
 
         var built: Built = .{};
         errdefer built.release(gpa, self.assets);
@@ -302,7 +322,7 @@ pub const Rigs = struct {
         // First the shape, so that a rig's arrays are allocated once and never move.
         built.assets = try gpa.alloc(AssetHandle, model_clips.len);
         @memset(built.assets, .none);
-        built.clips = try gpa.alloc(anim.RigClip, model_clips.len);
+        built.clips = try gpa.alloc(anim.RigClip, model_clips.len + blend_count);
         const listed = try set_mod.clips(fields);
         var track_count: usize = 0;
         var event_count: usize = 0;
@@ -323,6 +343,9 @@ pub const Rigs = struct {
                 if (clip.events) |events| event_count += events.len;
             }
         }
+        if (blend_list) |list| for (0..list.len) |i| {
+            label_bytes += (try set_mod.blendAt(list, @intCast(i))).name.len;
+        };
         // A set listing a clip the model lacks is a mistake to be told about, not one to skip.
         if (listed) |list| for (0..list.len) |i| {
             if (!hasClip(model_clips, (try set_mod.clipAt(list, @intCast(i))).name)) return error.UnknownClip;
@@ -334,7 +357,7 @@ pub const Rigs = struct {
         var next_track: usize = 0;
         var next_event: usize = 0;
         var next_label: usize = 0;
-        for (built.clips, sources, 0..) |*out, source, i| {
+        for (built.clips[0..model_clips.len], sources, 0..) |*out, source, i| {
             const entry = (try model_clips.nestedAt(@intCast(i))).?;
             const clip_name = stringField(entry, "name").?;
             const tracks = built.tracks[next_track..][0..source.tracks.len];
@@ -361,22 +384,116 @@ pub const Rigs = struct {
             for (events, 0..) |*event, e| event.* = try set_mod.eventAt(list, @intCast(e));
             out.events = events;
         }
+        if (blend_list) |list| {
+            // A blend is a clip's entry, so it can't share a name with one.
+            built.blends = try gpa.alloc(anim.Blend, list.len);
+            for (built.blends, built.clips[model_clips.len..], 0..) |*arrangement, *out, i| {
+                const blend = try set_mod.blendAt(list, @intCast(i));
+                if (hasClip(model_clips, blend.name)) return error.BlendNameCollision;
+                arrangement.* = try set_mod.arrangement(blend);
+                var moves = false;
+                for (arrangement.places()) |place| {
+                    for (built.clips[0..model_clips.len]) |clip| {
+                        if (clip.name == place) moves = moves or clip.motion;
+                    }
+                }
+                const label = built.labels[next_label..][0..blend.name.len];
+                next_label += label.len;
+                @memcpy(label, blend.name);
+                out.* = anim.blend_space.entryFor(anim.clipName(blend.name), arrangement, moves, hashOf(blend.sync), label);
+            }
+        }
         std.mem.sort(anim.RigClip, built.clips, {}, lessByName);
 
         const start_name = (try set_mod.start(fields)) orelse stringField((try model_clips.nestedAt(0)).?, "name").?;
-        if (!hasClip(model_clips, start_name)) return error.UnknownClip;
+        if (!hasClip(model_clips, start_name) and !try hasBlend(blend_list, start_name)) return error.UnknownClip;
         const anim_skeleton: anim.Skeleton = .{ .parents = skeleton.parents, .rest = skeleton.rest, .inverse_bind = skeleton.inverse_bind, .root = skeleton.root };
         try anim_skeleton.validate();
         try self.applyVersion2(&built, fields, anim_skeleton, skeleton);
+        try self.applyVersion3(&built, fields, anim_skeleton, skeleton);
         built.rig = .{
             .skeleton = anim_skeleton,
             .clips = built.clips,
             .start = anim.clipName(start_name),
             .motion_joint = if (try set_mod.motionJoint(fields)) |joint| try jointNamed(skeleton, joint) else anim.no_parent,
             .masks = built.masks,
+            .legs = built.legs,
+            .aims = built.aims,
         };
         try built.rig.validate();
+        try self.readContacts(&built);
         return built;
+    }
+
+    /// Version 3's legs and aim chains, their joints found by name. Blends were built with the clips.
+    fn applyVersion3(self: *Rigs, built: *Built, fields: data.fpk.Fields, anim_skeleton: anim.Skeleton, skeleton: *const skeleton_mod.Skeleton) BuildError!void {
+        const gpa = self.gpa;
+        const leg_list = try set_mod.legs(fields);
+        const aim_list = try set_mod.aims(fields);
+        const leg_count: usize = if (leg_list) |list| list.len else 0;
+        const aim_count: usize = if (aim_list) |list| list.len else 0;
+        if (leg_count > anim.max_legs) return error.TooManyLegs;
+        if (aim_count > anim.gaze.max_aims) return error.TooManyAims;
+        var label_bytes: usize = 0;
+        for (0..leg_count) |i| label_bytes += (try set_mod.legAt(leg_list.?, @intCast(i))).name.len;
+        for (0..aim_count) |i| label_bytes += (try set_mod.aimAt(aim_list.?, @intCast(i))).name.len;
+        built.part_labels = try gpa.alloc(u8, label_bytes);
+        built.legs = try gpa.alloc(anim.Leg, leg_count);
+        built.aims = try gpa.alloc(anim.RigAim, aim_count);
+        built.aim_joints = try gpa.alloc(anim.AimJoint, aim_count * anim.ik.max_aim_joints);
+        var next_label: usize = 0;
+        for (built.legs, 0..) |*out, i| {
+            const leg = try set_mod.legAt(leg_list.?, @intCast(i));
+            const chain: anim.TwoBone = .{
+                .root = try jointNamed(skeleton, leg.hip),
+                .middle = try jointNamed(skeleton, leg.knee),
+                .end = try jointNamed(skeleton, leg.foot),
+            };
+            const label = built.part_labels[next_label..][0..leg.name.len];
+            next_label += label.len;
+            @memcpy(label, leg.name);
+            out.* = .{
+                .name = anim.clipName(leg.name),
+                .chain = chain,
+                .sole = anim.feet.soleOf(anim_skeleton, chain.end),
+                .contact_height = leg.contact_height,
+                .max_raise = leg.max_raise,
+                .max_drop = leg.max_drop,
+                .label = label,
+            };
+        }
+        for (built.aims, 0..) |*out, i| {
+            const aim = try set_mod.aimAt(aim_list.?, @intCast(i));
+            if (aim.joints.len == 0 or aim.joints.len > anim.ik.max_aim_joints) return error.NotAChain;
+            const joints = built.aim_joints[i * anim.ik.max_aim_joints ..][0..aim.joints.len];
+            for (joints, 0..) |*joint, j| {
+                const entry = try set_mod.aimJointAt(aim.joints, @intCast(j));
+                joint.* = .{ .joint = try jointNamed(skeleton, entry.joint), .share = entry.weight };
+            }
+            const label = built.part_labels[next_label..][0..aim.name.len];
+            next_label += label.len;
+            @memcpy(label, aim.name);
+            out.* = .{ .name = anim.clipName(aim.name), .chain = .{ .joints = joints, .forward = aim.forward, .limit = aim.limit }, .label = label };
+        }
+    }
+
+    /// Every looping clip's contacts, read from its foot heights now its keys are validated. An
+    /// additive clip has none: contact is the base layer's.
+    fn readContacts(self: *Rigs, built: *Built) BuildError!void {
+        if (built.legs.len == 0) return;
+        const gpa = self.gpa;
+        const per_clip = anim.max_legs * anim.feet.max_contacts;
+        built.contacts = try gpa.alloc(anim.Contact, built.clips.len * per_clip);
+        const scratch = try gpa.alloc(core.math.Transform, built.rig.skeleton.jointCount());
+        defer gpa.free(scratch);
+        for (built.clips, 0..) |*clip, i| {
+            if (clip.additive) continue;
+            const out = built.contacts[i * per_clip ..][0..per_clip];
+            const count = anim.feet.deriveContacts(built.rig.skeleton, clip, built.legs, .{ .local = scratch }, out);
+            clip.contacts = out[0..count];
+        }
+        built.rig.clips = built.clips;
+        try anim.feet.validateLegs(built.rig);
     }
 
     /// Version 2's lists, applied to clips already built: sync groups, rises, additive clips with
@@ -442,6 +559,18 @@ fn clipOf(clips: []anim.RigClip, clip_name: []const u8) BuildError!*anim.RigClip
         if (clip.name == hash) return clip;
     }
     return error.UnknownClip;
+}
+
+fn hashOf(text: ?[]const u8) u64 {
+    return if (text) |t| anim.clipName(t) else 0;
+}
+
+fn hasBlend(list: ?data.fpk.List, blend_name: []const u8) set_mod.DecodeError!bool {
+    const l = list orelse return false;
+    for (0..l.len) |i| {
+        if (std.mem.eql(u8, (try set_mod.blendAt(l, @intCast(i))).name, blend_name)) return true;
+    }
+    return false;
 }
 
 fn lessByName(_: void, a: anim.RigClip, b: anim.RigClip) bool {

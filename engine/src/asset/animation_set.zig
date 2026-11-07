@@ -40,6 +40,14 @@
 //! refuse every package compiled against version 1 (I8). A list beside it is an ordinary optional
 //! field.
 //!
+//! **Version 3** (`animation-ik.md` §6) adds three more lists, for the same reason:
+//!
+//! ```fdt
+//!     legs [ { name "left" hip "hip.L" knee "knee.L" foot "foot.L" } ]
+//!     aims [ { name "head" joints [ { joint "neck" weight 0.4 } { joint "head" weight 0.6 } ] limit 1.2 } ]
+//!     blends [ { name "move" points [ { clip "idle" x 0 } { clip "stride" x 1.0 } { clip "run" x 1.86 } ] } ]
+//! ```
+//!
 //! **Every name here is on authors' disks** (CLAUDE.md §7).
 
 const std = @import("std");
@@ -100,9 +108,47 @@ const rise_type: FieldType = .{ .nested = &.{
     .{ .name = "rise", .type = .f32 },
 } };
 
+const leg_type: FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "hip", .type = .string },
+    .{ .name = "knee", .type = .string },
+    .{ .name = "foot", .type = .string },
+    .{ .name = "contact_height", .type = .f32, .presence = .{ .default = .{ .float = 0.03 } } },
+    .{ .name = "max_raise", .type = .f32, .presence = .{ .default = .{ .float = 0.35 } } },
+    .{ .name = "max_drop", .type = .f32, .presence = .{ .default = .{ .float = 0.35 } } },
+} };
+
+const aim_joint_type: FieldType = .{ .nested = &.{
+    .{ .name = "joint", .type = .string },
+    .{ .name = "weight", .type = .f32, .presence = .{ .default = .{ .float = 1 } } },
+} };
+
+const vec3_type: FieldType = .{ .nested = &.{
+    .{ .name = "x", .type = .f32 }, .{ .name = "y", .type = .f32 }, .{ .name = "z", .type = .f32 },
+} };
+
+const aim_type: FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "joints", .type = .{ .list = &aim_joint_type } },
+    .{ .name = "forward", .type = vec3_type, .presence = .optional },
+    .{ .name = "limit", .type = .f32, .presence = .{ .default = .{ .float = 1.2 } } },
+} };
+
+const point_type: FieldType = .{ .nested = &.{
+    .{ .name = "clip", .type = .string },
+    .{ .name = "x", .type = .f32 },
+    .{ .name = "y", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
+} };
+
+const blend_type: FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "points", .type = .{ .list = &point_type } },
+    .{ .name = "sync", .type = .string, .presence = .optional },
+} };
+
 pub const schema: Schema = .{
     .id = SchemaId.fromStringUnchecked(name),
-    .version = 2,
+    .version = 3,
     .fields = &.{
         .{ .name = "model", .type = .id },
         .{ .name = "start", .type = .string, .presence = .optional },
@@ -112,11 +158,23 @@ pub const schema: Schema = .{
         .{ .name = "sync", .type = .{ .list = &sync_type }, .presence = .optional, .since = 2 },
         .{ .name = "additive", .type = .{ .list = &additive_type }, .presence = .optional, .since = 2 },
         .{ .name = "rises", .type = .{ .list = &rise_type }, .presence = .optional, .since = 2 },
+        .{ .name = "legs", .type = .{ .list = &leg_type }, .presence = .optional, .since = 3 },
+        .{ .name = "aims", .type = .{ .list = &aim_type }, .presence = .optional, .since = 3 },
+        .{ .name = "blends", .type = .{ .list = &blend_type }, .presence = .optional, .since = 3 },
     },
 };
 
 /// Version 1, as M34 compiled it: what an older package was written against.
 pub const schema_v1: Schema = .{ .id = schema.id, .version = 1, .fields = schema.fields[0..4] };
+/// Version 2, as M35 compiled it.
+pub const schema_v2: Schema = .{ .id = schema.id, .version = 2, .fields = schema.fields[0..8] };
+
+/// Legs, aim chains and blends one set may hold, and joints one chain may turn.
+pub const max_legs: usize = anim.max_legs;
+pub const max_aims: usize = anim.gaze.max_aims;
+pub const max_aim_joints: usize = anim.ik.max_aim_joints;
+pub const max_blends: usize = anim.blend_space.max_blends;
+pub const max_points: usize = anim.blend_space.max_points;
 
 /// Masks one set may hold, and joints one mask may name.
 pub const max_masks: usize = anim.max_masks;
@@ -153,6 +211,27 @@ pub const Refusal = error{
     AdditiveStart,
     DuplicateRise,
     InvalidRise,
+    // Version 3.
+    TooManyLegs,
+    DuplicateLeg,
+    InvalidLegRange,
+    TooManyAims,
+    DuplicateAim,
+    /// An aim chain of no joints, or of more than four.
+    NotAChain,
+    InvalidAimWeight,
+    InvalidForward,
+    InvalidLimit,
+    TooManyBlends,
+    DuplicateBlend,
+    BlendNameCollision,
+    TooFewPoints,
+    TooManyPoints,
+    InvalidPoint,
+    DuplicatePoint,
+    NotAGrid,
+    BlendOfOneShot,
+    BlendOfAdditive,
 };
 
 pub const DecodeError = Refusal || data.fpk.ReadError;
@@ -182,6 +261,25 @@ pub fn describe(err: DecodeError) []const u8 {
         error.AdditiveStart => "starts on an additive clip; a figure begins on its base layer",
         error.DuplicateRise => "gives one clip a rise twice",
         error.InvalidRise => "has a rise that is not above 0",
+        error.TooManyLegs => "has more legs than a set may hold, 4",
+        error.DuplicateLeg => "names one leg twice",
+        error.InvalidLegRange => "has a leg whose contact_height is not from 0 to 0.5, or whose max_raise or max_drop is not from 0 to 2",
+        error.TooManyAims => "has more aim chains than a set may hold, 4",
+        error.DuplicateAim => "names one aim chain twice",
+        error.NotAChain => "has an aim chain of no joints or more than 4, or a chain whose joints do not descend one from the next",
+        error.InvalidAimWeight => "has an aim joint whose weight is not above 0",
+        error.InvalidForward => "has an aim chain whose forward is zero or not a finite direction",
+        error.InvalidLimit => "has an aim chain whose limit is not above 0 and at most pi",
+        error.TooManyBlends => "has more blends than a set may hold, 8",
+        error.DuplicateBlend => "names one blend twice",
+        error.BlendNameCollision => "names a blend as it names a clip; a channel plays one name",
+        error.TooFewPoints => "has a blend of fewer than 2 points",
+        error.TooManyPoints => "has a blend of more than 25 points",
+        error.InvalidPoint => "has a blend point whose place is not a finite number",
+        error.DuplicatePoint => "has two points of a blend at one place",
+        error.NotAGrid => "has a blend of two axes whose points are not a full grid, one at each pair of x and y",
+        error.BlendOfOneShot => "blends a clip that does not loop; a blend plays laps",
+        error.BlendOfAdditive => "blends an additive clip; a blend is a base pose",
         else => "is malformed",
     };
 }
@@ -299,6 +397,98 @@ pub fn riseAt(list: List, index: u32) DecodeError!Rise {
     return .{ .clip = try requiredName(fields, "clip"), .rise = @floatCast(rise) };
 }
 
+pub const Leg = struct {
+    name: []const u8,
+    hip: []const u8,
+    knee: []const u8,
+    foot: []const u8,
+    contact_height: f32,
+    max_raise: f32,
+    max_drop: f32,
+};
+pub const AimJoint = struct { joint: []const u8, weight: f32 };
+pub const Aim = struct { name: []const u8, joints: List, forward: core.math.Vec3, limit: f32 };
+pub const Point = struct { clip: []const u8, x: f32, y: f32 };
+pub const Blend = struct { name: []const u8, points: List, sync: ?[]const u8 };
+
+pub fn legs(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "legs") orelse return null);
+}
+
+pub fn legAt(list: List, index: u32) DecodeError!Leg {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    return .{
+        .name = try requiredName(fields, "name"),
+        .hip = try requiredName(fields, "hip"),
+        .knee = try requiredName(fields, "knee"),
+        .foot = try requiredName(fields, "foot"),
+        .contact_height = try floatOr(fields, "contact_height", 0.03),
+        .max_raise = try floatOr(fields, "max_raise", 0.35),
+        .max_drop = try floatOr(fields, "max_drop", 0.35),
+    };
+}
+
+pub fn aims(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "aims") orelse return null);
+}
+
+pub fn aimAt(list: List, index: u32) DecodeError!Aim {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const joints = (try fields.listAt(indexOf(fields, "joints") orelse return error.NotAChain)) orelse return error.NotAChain;
+    var forward = core.math.Vec3.forward;
+    if (indexOf(fields, "forward")) |at| {
+        if (try fields.nestedAt(at)) |vector| forward = .init(
+            try floatOr(vector, "x", 0),
+            try floatOr(vector, "y", 0),
+            try floatOr(vector, "z", 0),
+        );
+    }
+    return .{ .name = try requiredName(fields, "name"), .joints = joints, .forward = forward, .limit = try floatOr(fields, "limit", 1.2) };
+}
+
+pub fn aimJointAt(list: List, index: u32) DecodeError!AimJoint {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    return .{ .joint = try requiredName(fields, "joint"), .weight = try floatOr(fields, "weight", 1) };
+}
+
+pub fn blends(fields: Fields) DecodeError!?List {
+    return fields.listAt(indexOf(fields, "blends") orelse return null);
+}
+
+pub fn blendAt(list: List, index: u32) DecodeError!Blend {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const points = (try fields.listAt(indexOf(fields, "points") orelse return error.TooFewPoints)) orelse return error.TooFewPoints;
+    return .{ .name = try requiredName(fields, "name"), .points = points, .sync = try optionalName(fields, "sync") };
+}
+
+pub fn pointAt(list: List, index: u32) DecodeError!Point {
+    const fields = (try list.nestedAt(index)) orelse return error.EmptyName;
+    const x = (try fields.floatAt(indexOf(fields, "x") orelse return error.InvalidPoint)) orelse return error.InvalidPoint;
+    return .{ .clip = try requiredName(fields, "clip"), .x = @floatCast(x), .y = try floatOr(fields, "y", 0) };
+}
+
+/// A blend's arrangement, its clips named by hash: what `anim.Blend.build` takes.
+pub fn arrangement(blend: Blend) DecodeError!anim.Blend {
+    if (blend.points.len > max_points) return error.TooManyPoints;
+    var points: [max_points]anim.blend_space.Point = undefined;
+    for (0..blend.points.len) |i| {
+        const point = try pointAt(blend.points, @intCast(i));
+        points[i] = .{ .clip = anim.clipName(point.clip), .x = point.x, .y = point.y };
+    }
+    return anim.Blend.build(points[0..blend.points.len]) catch |err| switch (err) {
+        error.TooFewPoints => error.TooFewPoints,
+        error.TooManyPoints => error.TooManyPoints,
+        error.InvalidPoint => error.InvalidPoint,
+        error.DuplicatePoint => error.DuplicatePoint,
+        error.NotAGrid => error.NotAGrid,
+    };
+}
+
+fn floatOr(fields: Fields, field: []const u8, default: f32) DecodeError!f32 {
+    const at = indexOf(fields, field) orelse return default;
+    return @floatCast((try fields.floatAt(at)) orelse return default);
+}
+
 fn requiredName(fields: Fields, field: []const u8) DecodeError![]const u8 {
     return (try optionalName(fields, field)) orelse error.EmptyName;
 }
@@ -317,6 +507,62 @@ fn listedClip(list: ?List, clip_name: []const u8) DecodeError!?Clip {
 pub fn check(fields: Fields) DecodeError!void {
     try checkClips(fields);
     try checkVersion2(fields);
+    try checkVersion3(fields);
+}
+
+/// Written so a NaN is outside.
+fn within(value: f32, lo: f32, hi: f32) bool {
+    return value >= lo and value <= hi;
+}
+
+fn checkVersion3(fields: Fields) DecodeError!void {
+    if (try legs(fields)) |list| {
+        if (list.len > max_legs) return error.TooManyLegs;
+        for (0..list.len) |i| {
+            const leg = try legAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try legAt(list, @intCast(earlier))).name, leg.name)) return error.DuplicateLeg;
+            }
+            if (!within(leg.contact_height, 0, 0.5) or !within(leg.max_raise, 0, 2) or !within(leg.max_drop, 0, 2)) return error.InvalidLegRange;
+        }
+    }
+    if (try aims(fields)) |list| {
+        if (list.len > max_aims) return error.TooManyAims;
+        for (0..list.len) |i| {
+            const aim = try aimAt(list, @intCast(i));
+            for (0..i) |earlier| {
+                if (std.mem.eql(u8, (try aimAt(list, @intCast(earlier))).name, aim.name)) return error.DuplicateAim;
+            }
+            if (aim.joints.len == 0 or aim.joints.len > max_aim_joints) return error.NotAChain;
+            for (0..aim.joints.len) |j| {
+                const joint = try aimJointAt(aim.joints, @intCast(j));
+                if (!(joint.weight > 0) or !std.math.isFinite(joint.weight)) return error.InvalidAimWeight;
+            }
+            if (!aim.forward.isFinite() or !(aim.forward.length() > 1e-6)) return error.InvalidForward;
+            if (!(aim.limit > 0 and aim.limit <= std.math.pi)) return error.InvalidLimit;
+        }
+    }
+    const list = (try blends(fields)) orelse return;
+    if (list.len > max_blends) return error.TooManyBlends;
+    const listed = try clips(fields);
+    const additive = try additives(fields);
+    for (0..list.len) |i| {
+        const blend = try blendAt(list, @intCast(i));
+        for (0..i) |earlier| {
+            if (std.mem.eql(u8, (try blendAt(list, @intCast(earlier))).name, blend.name)) return error.DuplicateBlend;
+        }
+        if (try listedClip(listed, blend.name) != null) return error.BlendNameCollision;
+        _ = try arrangement(blend);
+        for (0..blend.points.len) |p| {
+            const point = try pointAt(blend.points, @intCast(p));
+            if (try listedClip(listed, point.clip)) |clip| {
+                if (!clip.loop) return error.BlendOfOneShot;
+            }
+            if (additive) |a| for (0..a.len) |k| {
+                if (std.mem.eql(u8, (try additiveAt(a, @intCast(k))).clip, point.clip)) return error.BlendOfAdditive;
+            };
+        }
+    }
 }
 
 fn checkVersion2(fields: Fields) DecodeError!void {
@@ -629,4 +875,142 @@ test "version 2 is additive: a set compiled against version 1 reads under it, wi
     try testing.expect((try additives(fields)) == null);
     try testing.expect((try rises(fields)) == null);
     try testing.expect((try clipAt((try clips(fields)).?, 0)).motion);
+}
+
+test "version 3: legs, aims and blends read with their defaults" {
+    var c: Compiled = undefined;
+    try c.init(
+        \\foundry:animation_set t:set {
+        \\    model t:model
+        \\    legs [
+        \\        { name "left" hip "hip.L" knee "knee.L" foot "foot.L" }
+        \\        { name "right" hip "hip.R" knee "knee.R" foot "foot.R" contact_height 0.05 max_raise 0.2 max_drop 0.4 }
+        \\    ]
+        \\    aims [
+        \\        { name "head" joints [ { joint "neck" weight 0.4 } { joint "head" } ] }
+        \\        { name "eyes" joints [ { joint "eye" } ] forward { x 0 y 0 z 1 } limit 0.5 }
+        \\    ]
+        \\    blends [
+        \\        { name "move" points [ { clip "idle" x 0 } { clip "stride" x 1 } { clip "run" x 1.86 } ] }
+        \\        { name "strafe" sync "feet" points [
+        \\            { clip "idle" x 0 y 0 } { clip "left" x -1 y 0 } { clip "ahead" x 0 y 1 } { clip "left" x -1 y 1 }
+        \\        ] }
+        \\    ]
+        \\}
+    );
+    defer c.deinit();
+    const fields = c.fields();
+    try check(fields);
+    const left = try legAt((try legs(fields)).?, 0);
+    try testing.expectEqualStrings("knee.L", left.knee);
+    try testing.expectEqual(@as(f32, 0.03), left.contact_height);
+    try testing.expectEqual(@as(f32, 0.35), left.max_raise);
+    try testing.expectEqual(@as(f32, 0.35), left.max_drop);
+    const right = try legAt((try legs(fields)).?, 1);
+    try testing.expectEqual(@as(f32, 0.4), right.max_drop);
+
+    const head = try aimAt((try aims(fields)).?, 0);
+    try testing.expectEqual(@as(f32, 1.2), head.limit);
+    try testing.expectEqual(core.math.Vec3.forward, head.forward);
+    try testing.expectEqual(@as(f32, 0.4), (try aimJointAt(head.joints, 0)).weight);
+    try testing.expectEqual(@as(f32, 1), (try aimJointAt(head.joints, 1)).weight);
+    const eyes = try aimAt((try aims(fields)).?, 1);
+    try testing.expectEqual(@as(f32, 1), eyes.forward.z);
+    try testing.expectEqual(@as(f32, 0.5), eyes.limit);
+
+    const move = try blendAt((try blends(fields)).?, 0);
+    try testing.expect(move.sync == null);
+    try testing.expectEqual(@as(f32, 0), (try pointAt(move.points, 0)).y);
+    try testing.expectEqual(@as(u8, 1), (try arrangement(move)).axes());
+    const strafe = try blendAt((try blends(fields)).?, 1);
+    try testing.expectEqualStrings("feet", strafe.sync.?);
+    try testing.expectEqual(@as(u8, 2), (try arrangement(strafe)).axes());
+}
+
+test "version 3: every refusal is named, at its boundary" {
+    const head = "foundry:animation_set t:set { model t:m ";
+    const leg = "{ name \"l\" hip \"h\" knee \"k\" foot \"f\" }";
+    const cases = [_]struct { DecodeError, []const u8 }{
+        .{ error.DuplicateLeg, "legs [ " ++ leg ++ " " ++ leg ++ " ] }" },
+        .{ error.EmptyName, "legs [ { name \"l\" hip \"\" knee \"k\" foot \"f\" } ] }" },
+        .{ error.InvalidLegRange, "legs [ { name \"l\" hip \"h\" knee \"k\" foot \"f\" contact_height 0.6 } ] }" },
+        .{ error.InvalidLegRange, "legs [ { name \"l\" hip \"h\" knee \"k\" foot \"f\" contact_height -0.01 } ] }" },
+        .{ error.InvalidLegRange, "legs [ { name \"l\" hip \"h\" knee \"k\" foot \"f\" max_raise 2.5 } ] }" },
+        .{ error.InvalidLegRange, "legs [ { name \"l\" hip \"h\" knee \"k\" foot \"f\" max_drop -1 } ] }" },
+        .{ error.DuplicateAim, "aims [ { name \"a\" joints [ { joint \"j\" } ] } { name \"a\" joints [ { joint \"k\" } ] } ] }" },
+        .{ error.NotAChain, "aims [ { name \"a\" joints [ ] } ] }" },
+        .{ error.NotAChain, "aims [ { name \"a\" joints [ { joint \"a\" } { joint \"b\" } { joint \"c\" } { joint \"d\" } { joint \"e\" } ] } ] }" },
+        .{ error.InvalidAimWeight, "aims [ { name \"a\" joints [ { joint \"j\" weight 0 } ] } ] }" },
+        .{ error.InvalidAimWeight, "aims [ { name \"a\" joints [ { joint \"j\" weight -1 } ] } ] }" },
+        .{ error.InvalidForward, "aims [ { name \"a\" joints [ { joint \"j\" } ] forward { x 0 y 0 z 0 } } ] }" },
+        .{ error.InvalidLimit, "aims [ { name \"a\" joints [ { joint \"j\" } ] limit 0 } ] }" },
+        .{ error.InvalidLimit, "aims [ { name \"a\" joints [ { joint \"j\" } ] limit 3.2 } ] }" },
+        .{ error.DuplicateBlend, "blends [ { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } ] }" },
+        .{ error.BlendNameCollision, "clips [ { name \"b\" } ] blends [ { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } ] }" },
+        .{ error.TooFewPoints, "blends [ { name \"b\" points [ { clip \"a\" x 0 } ] } ] }" },
+        .{ error.DuplicatePoint, "blends [ { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 0 } ] } ] }" },
+        .{ error.NotAGrid, "blends [ { name \"b\" points [ { clip \"a\" x 0 y 0 } { clip \"c\" x 1 y 0 } { clip \"d\" x 0 y 1 } ] } ] }" },
+        .{ error.BlendOfOneShot, "clips [ { name \"a\" loop false } ] blends [ { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } ] }" },
+        .{ error.BlendOfAdditive, "additive [ { clip \"c\" } ] blends [ { name \"b\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } ] }" },
+        .{ error.EmptyName, "blends [ { name \"b\" sync \"\" points [ { clip \"a\" x 0 } { clip \"c\" x 1 } ] } ] }" },
+    };
+    for (cases) |case| {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(gpa);
+        try text.appendSlice(gpa, head);
+        try text.appendSlice(gpa, case[1]);
+        try expectRefused(case[0], text.items);
+    }
+
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa, head ++ "legs [");
+    for (0..max_legs + 1) |i| try text.print(gpa, " {{ name \"l{d}\" hip \"h\" knee \"k\" foot \"f\" }}", .{i});
+    try text.appendSlice(gpa, " ] }");
+    try expectRefused(error.TooManyLegs, text.items);
+
+    text.clearRetainingCapacity();
+    try text.appendSlice(gpa, head ++ "aims [");
+    for (0..max_aims + 1) |i| try text.print(gpa, " {{ name \"a{d}\" joints [ {{ joint \"j\" }} ] }}", .{i});
+    try text.appendSlice(gpa, " ] }");
+    try expectRefused(error.TooManyAims, text.items);
+
+    text.clearRetainingCapacity();
+    try text.appendSlice(gpa, head ++ "blends [");
+    for (0..max_blends + 1) |i| try text.print(gpa, " {{ name \"b{d}\" points [ {{ clip \"a\" x 0 }} {{ clip \"c\" x 1 }} ] }}", .{i});
+    try text.appendSlice(gpa, " ] }");
+    try expectRefused(error.TooManyBlends, text.items);
+
+    text.clearRetainingCapacity();
+    try text.appendSlice(gpa, head ++ "blends [ { name \"b\" points [");
+    for (0..max_points + 1) |i| try text.print(gpa, " {{ clip \"a\" x {d} }}", .{i});
+    try text.appendSlice(gpa, " ] } ] }");
+    try expectRefused(error.TooManyPoints, text.items);
+}
+
+test "version 3 is additive: a set compiled against version 2 reads under it, with nothing new listed" {
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, schema_v2);
+    var package = try data.Package.init(gpa, "t:content", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    var doc = try data.parser.parse(gpa, "t.fdt", "foundry:animation_set t:set { model t:model sync [ { clip \"a\" group \"g\" } ] }", .{ .namespace = "t" }, &diags);
+    defer doc.deinit(gpa);
+    try package.addDocument(gpa, &doc, &registry, &diags);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try data.fpk.write(gpa, &package, &registry, &bytes);
+
+    try registerAll(gpa, &registry);
+    var store: data.Store = .init(gpa, .default);
+    defer store.deinit(gpa);
+    _ = try store.add(gpa, "t.fpk", bytes.items, &registry, &diags);
+    const fields = store.lookup(ContentId.fromString("t:set")).?.fields;
+    try check(fields);
+    try testing.expect((try legs(fields)) == null);
+    try testing.expect((try aims(fields)) == null);
+    try testing.expect((try blends(fields)) == null);
+    try testing.expectEqualStrings("g", (try syncAt((try syncs(fields)).?, 0)).group);
 }

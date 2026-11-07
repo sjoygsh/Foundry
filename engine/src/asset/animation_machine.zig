@@ -30,6 +30,10 @@
 //! set have this clip, this mask, a motion speed) is `rigs.zig`'s, when a machine is built against a
 //! rig, since a mod may override any of them.
 //!
+//! **Version 2** (`animation-ik.md` §8) appends `axes`, which parameters place each blend this machine
+//! plays: `axes [ { blend "move" x "speed" } { blend "strafe" x "side" y "ahead" } ]`. It is a list of
+//! its own beside `layers`, as the set's version 2 lists are, so a version 1 package still loads.
+//!
 //! **Every name here is on authors' disks** (CLAUDE.md §7).
 
 const std = @import("std");
@@ -51,6 +55,7 @@ pub const max_layers = anim.max_layers;
 pub const max_states = anim.machine.max_states;
 pub const max_transitions = anim.machine.max_transitions;
 pub const max_conditions = anim.machine.max_conditions;
+pub const max_axes = anim.max_positions;
 
 const param_type: FieldType = .{ .nested = &.{
     .{ .name = "name", .type = .string },
@@ -92,14 +97,24 @@ const layer_type: FieldType = .{ .nested = &.{
     .{ .name = "transitions", .type = .{ .list = &transition_type }, .presence = .optional },
 } };
 
+const axes_type: FieldType = .{ .nested = &.{
+    .{ .name = "blend", .type = .string },
+    .{ .name = "x", .type = .string },
+    .{ .name = "y", .type = .string, .presence = .{ .default = .{ .string = "" } } },
+} };
+
 pub const schema: Schema = .{
     .id = SchemaId.fromStringUnchecked(name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = "params", .type = .{ .list = &param_type }, .presence = .optional },
         .{ .name = "layers", .type = .{ .list = &layer_type } },
+        .{ .name = "axes", .type = .{ .list = &axes_type }, .presence = .optional, .since = 2 },
     },
 };
+
+/// Version 1, as M35 compiled it: what an older package was written against.
+pub const schema_v1: Schema = .{ .id = schema.id, .version = 1, .fields = schema.fields[0..2] };
 
 pub fn registerAll(allocator: Allocator, registry: *Registry) (data.schema.RegisterError || Allocator.Error)!void {
     _ = try registry.register(allocator, schema);
@@ -133,6 +148,9 @@ pub const Refusal = error{
     MisplacedParam,
     /// Not exactly one of `at_least`, `below` and `is`.
     NoComparison,
+    // Version 2.
+    TooManyAxes,
+    DuplicateAxes,
 };
 
 pub const DecodeError = Refusal || data.fpk.ReadError;
@@ -165,6 +183,8 @@ pub fn describe(err: DecodeError) []const u8 {
         error.UnknownQuantity => "has a condition whose quantity is not \"param\", \"laps\" or \"finished\"",
         error.MisplacedParam => "has a condition on a parameter with no param named, or a param on laps or finished",
         error.NoComparison => "has a condition without exactly one of at_least, below and is",
+        error.TooManyAxes => "binds axes for more blends than a machine may play, 8",
+        error.DuplicateAxes => "binds one blend's axes twice",
         else => "is malformed",
     };
 }
@@ -247,6 +267,19 @@ pub const Layer = struct {
     states: List,
     transitions: ?List,
 };
+
+/// Which parameters place a blend. `y` is null for a blend of one axis.
+pub const Axes = struct { blend: []const u8, x: []const u8, y: ?[]const u8 };
+
+pub fn axes(fields: Fields) DecodeError!?List {
+    return list(fields, "axes");
+}
+
+pub fn axesAt(l: List, index: usize) DecodeError!Axes {
+    const fields = try item(l, index);
+    const y = if (indexOf(fields, "y")) |at| (try fields.stringAt(at)) orelse "" else "";
+    return .{ .blend = try string(fields, "blend"), .x = try string(fields, "x"), .y = if (y.len == 0) null else y };
+}
 
 pub fn params(fields: Fields) DecodeError!?List {
     return list(fields, "params");
@@ -357,6 +390,16 @@ pub fn check(fields: Fields) DecodeError!void {
     if (layer_list.len == 0) return error.NoLayers;
     if (layer_list.len > max_layers) return error.TooManyLayers;
     for (0..layer_list.len) |i| try checkLayer(param_list, try layerAt(layer_list, i), i);
+    const axes_list = (try axes(fields)) orelse return;
+    if (axes_list.len > max_axes) return error.TooManyAxes;
+    for (0..axes_list.len) |i| {
+        const binding = try axesAt(axes_list, i);
+        for (0..i) |earlier| {
+            if (std.mem.eql(u8, (try axesAt(axes_list, earlier)).blend, binding.blend)) return error.DuplicateAxes;
+        }
+        try known(param_list, binding.x);
+        if (binding.y) |y| try known(param_list, y);
+    }
 }
 
 fn checkLayer(param_list: ?List, layer: Layer, index: usize) DecodeError!void {
@@ -468,7 +511,13 @@ pub fn decode(arena: Allocator, fields: Fields) (DecodeError || Allocator.Error)
             .label = try arena.dupe(u8, layer.name),
         };
     }
-    return .{ .params = out_params, .layers = out_layers };
+    const axes_list = try axes(fields);
+    const out_axes = try arena.alloc(anim.Axes, if (axes_list) |l| l.len else 0);
+    for (out_axes, 0..) |*out, i| {
+        const binding = try axesAt(axes_list.?, i);
+        out.* = .{ .blend = anim.clipName(binding.blend), .x = anim.clipName(binding.x), .y = hashOf(binding.y) };
+    }
+    return .{ .params = out_params, .layers = out_layers, .axes = out_axes };
 }
 
 fn hashOf(text: ?[]const u8) u64 {
@@ -654,4 +703,71 @@ test "every refusal one record can show is named" {
     for (0..max_conditions + 1) |_| try text.appendSlice(gpa, " { param \"p\" is 1 }");
     try text.appendSlice(gpa, " ] } ] } ] }");
     try expectRefused(error.TooManyConditions, text.items);
+}
+
+test "version 2: axes read into the machine, a one-axis binding with no y" {
+    var c: Compiled = undefined;
+    try c.init(
+        \\foundry:animation_machine t:machine {
+        \\    params [ { name "speed" } { name "side" } { name "ahead" } ]
+        \\    layers [ { name "body" entry "move" states [ { name "move" clip "move" speed_param "speed" } ] } ]
+        \\    axes [ { blend "move" x "speed" } { blend "strafe" x "side" y "ahead" } ]
+        \\}
+    );
+    defer c.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const machine = try decode(arena.allocator(), c.fields());
+    try testing.expectEqual(@as(usize, 2), machine.axes.len);
+    try testing.expectEqual(anim.clipName("move"), machine.axes[0].blend);
+    try testing.expectEqual(anim.clipName("speed"), machine.axes[0].x);
+    try testing.expectEqual(@as(u64, 0), machine.axes[0].y);
+    try testing.expectEqual(anim.clipName("ahead"), machine.axes[1].y);
+}
+
+test "version 2: every axes refusal one record can show is named" {
+    const head = "foundry:animation_machine t:machine { params [ { name \"p\" } { name \"q\" } ] layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"c\" } ] } ] ";
+    const cases = [_]struct { DecodeError, []const u8 }{
+        .{ error.UnknownParam, "axes [ { blend \"m\" x \"r\" } ] }" },
+        .{ error.UnknownParam, "axes [ { blend \"m\" x \"p\" y \"r\" } ] }" },
+        .{ error.DuplicateAxes, "axes [ { blend \"m\" x \"p\" } { blend \"m\" x \"q\" } ] }" },
+        .{ error.EmptyName, "axes [ { blend \"\" x \"p\" } ] }" },
+        .{ error.EmptyName, "axes [ { blend \"m\" x \"\" } ] }" },
+    };
+    inline for (cases) |case| try expectRefused(case[0], head ++ case[1]);
+
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa, head ++ "axes [");
+    for (0..max_axes + 1) |i| try text.print(gpa, " {{ blend \"b{d}\" x \"p\" }}", .{i});
+    try text.appendSlice(gpa, " ] }");
+    try expectRefused(error.TooManyAxes, text.items);
+}
+
+test "version 2 is additive: a machine compiled against version 1 reads under it, with no axes" {
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, schema_v1);
+    var package = try data.Package.init(gpa, "t:content", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    var doc = try data.parser.parse(gpa, "t.fdt", "foundry:animation_machine t:machine { layers [ { name \"b\" entry \"s\" states [ { name \"s\" clip \"c\" } ] } ] }", .{ .namespace = "t" }, &diags);
+    defer doc.deinit(gpa);
+    try package.addDocument(gpa, &doc, &registry, &diags);
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(gpa);
+    try data.fpk.write(gpa, &package, &registry, &bytes);
+
+    try registerAll(gpa, &registry);
+    var store: data.Store = .init(gpa, .default);
+    defer store.deinit(gpa);
+    _ = try store.add(gpa, "t.fpk", bytes.items, &registry, &diags);
+    const fields = store.lookup(ContentId.fromString("t:machine")).?.fields;
+    try check(fields);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const machine = try decode(arena.allocator(), fields);
+    try testing.expectEqual(@as(usize, 0), machine.axes.len);
+    try testing.expectEqual(@as(usize, 1), machine.layers.len);
 }

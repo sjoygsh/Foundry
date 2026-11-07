@@ -960,3 +960,74 @@ slides away from. The lock test holds only within the 8 cm the leg can reach.
 
 **The bar.** `zig build test`: 2,844/2,854, ten skips, 132/132 steps, with nine new tests including
 the 1,200-tick replay of feet and a gaze on moving, bumpy ground. Every other line of the bar passed.
+
+## Resolution — Step 4: the set's version 3 and the machine's version 2 (2026-11-08)
+
+`asset` now covers §6 and §8:
+- `foundry:animation_set` is version 3, appending `legs`, `aims` and `blends`, each `since = 3`;
+  `schema_v2` is version 2's fields, as `schema_v1` is version 1's;
+- `foundry:animation_machine` is version 2, appending `axes`, with `schema_v1`;
+- `Rigs` builds legs, aim chains, blends and every clip's contacts, and machines bind axes;
+- the tests are colocated in `animation_set.zig` and `animation_machine.zig`, and in
+  `engine/tests/animation_rigs.zig` on a new standing figure with a pelvis, a knee, a foot and a head.
+
+**What `fpack` checks, as §6 and §8 list it,** with three sharpenings:
+- **An aim chain of no joints or more than four** is `NotAChain`, since a single record can't
+  see the skeleton. The rig refuses a chain whose joints do not descend, with the same name.
+- **A point whose place is not a finite number** is `InvalidPoint`. §6 had no name for it, and
+  `anim.Blend.build` already refuses it by that name.
+- **A blend is checked with the arrangement `anim` will build,** by `set_mod.arrangement`, so
+  `TooFewPoints`, `TooManyPoints`, `DuplicatePoint` and `NotAGrid` are the same checks at compile
+  and at build. `BlendOfOneShot` and `BlendOfAdditive` are refused where the set itself lists the
+  clip as a one-shot or additive. Otherwise the rig refuses them.
+
+**Defaults §6 had not written:**
+- an aim joint's `weight` defaults to 1;
+- `forward` is an optional `{ x y z }`, all three required when it is given.
+
+**In `Rigs`:**
+- **A blend becomes an entry of the rig's clips,** after the model's, by `blend_space.entryFor`, and
+  the whole list is then sorted. Its `motion` is whether any of its clips moves, and its `sync` is
+  `blends[].sync`.
+- **A blend named as one of the model's clips** is `BlendNameCollision`, named by `Rigs` before
+  `Rig.validate` would say `NameCollision`. So a clip the set never lists is caught too.
+- **`start` may name a blend.** A figure may stand in one, at its first point, before a machine
+  places it.
+- **A leg's joints are found by name,** and its `sole` is read from the rest pose by `soleOf`. Its
+  chain, and an aim's descent, are `Rig.validate`'s.
+- **Aim weights become `share`s as written,** since `ik.aim` normalises them.
+- **Contacts are read after `Rig.validate`,** so no unvalidated key is sampled. Every clip that is
+  looping, not additive and not a blend gets its contacts, at most four stretches a leg, and
+  `validateLegs` runs again on the result. A rig with no legs reads none. An additive clip has
+  none, because contact is the base layer's (§4).
+
+**In the machine:**
+- **`fpack` checks** `TooManyAxes` (8), `DuplicateAxes`, that `x` and `y` are declared
+  parameters, and empty names. `y ""`, its default, is a one-axis binding.
+- **The rig checks** `UnknownBlend`, `AxisMismatch` and `UnboundBlend`, as Step 1's
+  `Machine.validate` does.
+
+**Older versions build what they did:**
+- a version 2 set compiled against `schema_v2` reads under version 3 with no new lists;
+- a version 1 machine reads under version 2 with no axes, and builds against a version 3 rig;
+- the version 1 and 2 rig tests now also hold that no clip has a blend or contacts, and that the rig
+  has no legs or aims.
+
+**The proof from text:**
+- the standing figure's `walk` lifts the foot 15 cm at mid-lap. Its contact is read across the
+  lap's end, from sample 58 of 64 to sample 7, exactly as `deriveContacts` writes it;
+- `idle` is down all lap;
+- the sole is 0.05 m;
+- the machine, at speed 0.6, places the blend halfway between standing and walking, and the rate
+  from speed keeps the ground at 0.6 m/s over half a second.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the compile-time arrangement check (`TooFewPoints` passed);
+- `BlendOfAdditive` at compile;
+- `DuplicateAxes`;
+- `Rigs`' `BlendNameCollision`, which `Rig.validate` would otherwise report only as
+  `NameCollision`;
+- a blend's `motion`: with it wrong, every version 3 rig test failed with `BlendMotionMismatch`.
+
+**The bar:** see PROJECT_STATE. `zig build test`: 2,855/2,865, ten skips, 132/132 steps, with
+eleven new tests.
