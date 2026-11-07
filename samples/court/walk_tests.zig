@@ -203,7 +203,8 @@ test "warden: M35's clips build a version 2 rig: a run in step with the stride, 
     const handle = try rigs.acquire(core.ContentId.fromString("court:warden.set"));
     defer rigs.release(handle);
     const rig = rigs.get(handle).?;
-    try testing.expectEqual(@as(usize, 11), rig.clips.len);
+    // M35's eleven, and M36's `move` (`animation-ik.md` §11): the warden's model gains no clip.
+    try testing.expectEqual(@as(usize, 12), rig.clips.len);
 
     // `run` covers its 1.3 m in 0.7 s, and keeps a foot in step with the stride's.
     const run = rig.find(anim.clipName("run")).?;
@@ -246,4 +247,39 @@ test "warden: M35's clips build a version 2 rig: a run in step with the stride, 
     // A climb rises 0.3 m a lap, so 3 m is ten laps.
     try testing.expectEqual(@as(f32, 0.3), rig.find(anim.clipName("climb")).?.rise);
     try testing.expectEqual(@as(u32, 10), rig.lapsFor(anim.clipName("climb"), 3));
+}
+
+test "warden: M36's lists build a version 3 rig: two legs, a gaze and `move`, and no new clip" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const engine = try app.Engine.init(gpa, .{ .headless = true, .workers = 0, .content_dir = options.generated, .content = &.{
+        .{ .base_dir = std.fs.path.dirname(options.core_package).?, .file = std.fs.path.basename(options.core_package), .root = "core-assets" },
+        .{ .base_dir = std.fs.path.dirname(options.package).?, .file = std.fs.path.basename(options.package), .root = "court-assets" },
+    } });
+    defer engine.deinit();
+    var rigs = asset.Rigs.init(gpa, &engine.assets);
+    defer rigs.deinit();
+    const handle = try rigs.acquire(core.ContentId.fromString("court:warden.set"));
+    defer rigs.release(handle);
+    const rig = rigs.get(handle).?;
+    try testing.expectEqual(@as(usize, 2), rig.legs.len);
+    for (rig.legs) |leg| try testing.expectApproxEqAbs(@as(f32, 0.08), leg.sole, 1e-6);
+    try testing.expectEqualStrings("right", rig.legs[1].label);
+    try testing.expectEqual(@as(usize, 1), rig.aims.len);
+    try testing.expectEqual(@as(f32, 1.2), rig.aims[0].chain.limit);
+    // The stride and the run have each foot down part of a lap.
+    for ([_][]const u8{ "stride", "run" }) |name| {
+        var legs = [_]bool{ false, false };
+        for (rig.find(anim.clipName(name)).?.contacts) |contact| legs[contact.leg] = true;
+        try testing.expect(legs[0] and legs[1]);
+    }
+    const move = rig.find(anim.clipName("move")).?;
+    try testing.expectEqual(anim.clipName("feet"), move.sync);
+    try testing.expectEqual(@as(u8, 1), move.blend.?.axes());
+    // At 1 m/s the stride alone; past 1.86 the run alone.
+    const at_walk = move.blend.?.weights(.{ 1, 0 });
+    try testing.expectEqual(@as(u8, 1), at_walk.len);
+    try testing.expectEqual(anim.clipName("stride"), at_walk.entries[0].clip);
+    try testing.expectEqual(anim.clipName("run"), move.blend.?.weights(.{ 2.4, 0 }).heaviest());
+    try testing.expect(rig.find(anim.clipName("walk8")) == null);
 }

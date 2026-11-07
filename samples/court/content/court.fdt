@@ -169,6 +169,16 @@ foundry:animation_set court:warden.set {
     sync [ { clip "stride" group "feet" } { clip "run" group "feet" } ]
     additive [ { clip "pant" } { clip "look" } ]
     rises [ { clip "climb" rise 0.3 } ]
+    # Version 3 (`animation-ik.md` §6, §11): both legs, the head's gaze over the neck, and the walk
+    # and run as one blend over ground speed, in step with them.
+    legs [
+        { name "left" hip "hip.L" knee "knee.L" foot "foot.L" }
+        { name "right" hip "hip.R" knee "knee.R" foot "foot.R" }
+    ]
+    aims [ { name "head" joints [ { joint "neck" weight 0.4 } { joint "head" weight 0.6 } ] limit 1.2 } ]
+    blends [
+        { name "move" sync "feet" points [ { clip "idle" x 0 } { clip "stride" x 1.0 } { clip "run" x 1.86 } ] }
+    ]
 }
 # M35: what the warden does with its clips (`docs/design/animation-states.md` §10, §14). The court
 # says five things a tick: its ground `speed`, the `link` it crosses (its kind plus one, so 1 is a

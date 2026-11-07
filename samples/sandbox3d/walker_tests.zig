@@ -268,15 +268,16 @@ fn resident(assets: *const asset.Registry, name: []const u8) !asset.AssetHandle 
     return error.NotResident;
 }
 
-test "walker: M34's and M35's clips are appended, and old bytes stay" {
+test "walker: M34's, M35's and M36's clips are appended, and old bytes stay" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = testing.allocator;
     const os = try platform.os.Os.init(gpa, .{});
     defer os.deinit();
     // What every clip before M35's, the mesh and the skeleton compile to, from before M35 appended its
     // four (`animation-states.md` §12). The walker and the warden share them, and both models have
-    // M35's four after them.
-    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "clip2.fanim", "clip3.fanim", "clip4.fanim", "clip5.fanim", "clip6.fanim", "mesh0.fmesh", "skeleton0.fskel", "clip7.fanim", "clip8.fanim", "clip9.fanim", "clip10.fanim" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0x677f6e68ba41d452, 0xd6ea268c1b779558, 0x713aa9b4e2b9b0de, 0xa6f9a2d5f8bffd30, 0x84900a520fa63575, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb, 0x142f09c2287a2525, 0xdc62c95899a438d9, 0x39e40914d0fd57e7, 0x43a9fdfc1d1ae389 }) |name, pin| {
+    // M35's four after them. Only the walker has M36's eight walks after those (`animation-ik.md`
+    // §11), and every earlier file kept its bytes when they came.
+    for ([_][]const u8{ "clip0.fanim", "clip1.fanim", "clip2.fanim", "clip3.fanim", "clip4.fanim", "clip5.fanim", "clip6.fanim", "mesh0.fmesh", "skeleton0.fskel", "clip7.fanim", "clip8.fanim", "clip9.fanim", "clip10.fanim", "clip11.fanim", "clip12.fanim", "clip13.fanim", "clip14.fanim", "clip15.fanim", "clip16.fanim", "clip17.fanim", "clip18.fanim" }, [_]u64{ 0x1f2fa1d2d86042df, 0x5f966564dd9529be, 0x677f6e68ba41d452, 0xd6ea268c1b779558, 0x713aa9b4e2b9b0de, 0xa6f9a2d5f8bffd30, 0x84900a520fa63575, 0xeeef08a437cd77d7, 0xbb4e02a8a82029cb, 0x142f09c2287a2525, 0xdc62c95899a438d9, 0x39e40914d0fd57e7, 0x43a9fdfc1d1ae389, 0x693339386f05723a, 0xa7bfddd7fef0e845, 0x62146a77fcf4aaee, 0x6d8a2a2962404cc5, 0x38546fdddfe129ba, 0x808fbac7067c3a45, 0x1827e282e9646a6e, 0x4d2a1ddf21d590c5 }) |name, pin| {
         const path = try std.fs.path.join(gpa, &.{ options.generated, "models/walker", name });
         defer gpa.free(path);
         const bytes = try os.readFile(gpa, path, 1024 * 1024);
@@ -298,13 +299,13 @@ test "walker: a stride covers its 0.6 m a second, and a turn is a quarter to the
     const handle = try rigs.acquire(core.ContentId.fromString("sandbox3d:walker.set"));
     defer rigs.release(handle);
     const rig = rigs.get(handle).?;
-    try testing.expectEqual(@as(usize, 11), rig.clips.len);
     // Every clip as if it moved, to read what each carries.
-    var clips: [11]anim.RigClip = undefined;
-    @memcpy(&clips, rig.clips);
-    for (&clips) |*entry| entry.motion = true;
+    var clips: [anim.max_rig_clips]anim.RigClip = undefined;
+    const count = rig.clips.len;
+    @memcpy(clips[0..count], rig.clips);
+    for (clips[0..count]) |*entry| entry.motion = true;
     var moving = rig.*;
-    moving.clips = &clips;
+    moving.clips = clips[0..count];
     moving.motion_joint = 0;
     try testing.expectApproxEqAbs(@as(f32, 0.6), moving.motionSpeed(anim.clipName("stride")), 1e-5);
     const turn = moving.find(anim.clipName("turn")).?;
@@ -391,7 +392,8 @@ test "walker: M35's clips build a version 2 rig: a run in step with the stride, 
     const handle = try rigs.acquire(core.ContentId.fromString("sandbox3d:walker.set"));
     defer rigs.release(handle);
     const rig = rigs.get(handle).?;
-    try testing.expectEqual(@as(usize, 11), rig.clips.len);
+    // M35's eleven, and M36's eight walks and two blends (`animation-ik.md` §11).
+    try testing.expectEqual(@as(usize, 21), rig.clips.len);
 
     // `run` covers its 1.3 m in 0.7 s, and keeps a foot in step with the stride's.
     const run = rig.find(anim.clipName("run")).?;
@@ -434,4 +436,81 @@ test "walker: M35's clips build a version 2 rig: a run in step with the stride, 
     // A climb rises 0.3 m a lap, so 3 m is ten laps.
     try testing.expectEqual(@as(f32, 0.3), rig.find(anim.clipName("climb")).?.rise);
     try testing.expectEqual(@as(u32, 10), rig.lapsFor(anim.clipName("climb"), 3));
+}
+
+const walks = [_]struct { []const u8, f32, f32 }{
+    .{ "walk.n", 0, 1 },  .{ "walk.ne", 1, 1 },   .{ "walk.e", 1, 0 },  .{ "walk.se", 1, -1 },
+    .{ "walk.s", 0, -1 }, .{ "walk.sw", -1, -1 }, .{ "walk.w", -1, 0 }, .{ "walk.nw", -1, 1 },
+};
+
+test "walker: M36's lists build a version 3 rig: two legs, a gaze, `move`, and `walk8`, whose travel is its place" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const engine = try app.Engine.init(gpa, .{ .headless = true, .workers = 0, .content_dir = options.generated, .content = &.{
+        .{ .base_dir = std.fs.path.dirname(options.core_package).?, .file = std.fs.path.basename(options.core_package), .root = "core-assets" },
+        .{ .base_dir = std.fs.path.dirname(options.package).?, .file = std.fs.path.basename(options.package), .root = "sandbox3d-assets" },
+    } });
+    defer engine.deinit();
+    var rigs = asset.Rigs.init(gpa, &engine.assets);
+    defer rigs.deinit();
+    const handle = try rigs.acquire(core.ContentId.fromString("sandbox3d:walker.set"));
+    defer rigs.release(handle);
+    const rig = rigs.get(handle).?;
+
+    // The legs, their soles the feet's 8 cm at rest.
+    try testing.expectEqual(@as(usize, 2), rig.legs.len);
+    try testing.expectEqualStrings("left", rig.legs[0].label);
+    try testing.expectEqual(anim.TwoBone{ .root = 13, .middle = 14, .end = 15 }, rig.legs[0].chain);
+    try testing.expectEqual(anim.TwoBone{ .root = 16, .middle = 17, .end = 18 }, rig.legs[1].chain);
+    for (rig.legs) |leg| try testing.expectApproxEqAbs(@as(f32, 0.08), leg.sole, 1e-6);
+    // The gaze, over the neck and the head.
+    try testing.expectEqual(@as(usize, 1), rig.aims.len);
+    try testing.expectEqualStrings("head", rig.aims[0].label);
+    try testing.expectEqual(@as(u16, 3), rig.aims[0].chain.joints[0].joint);
+    try testing.expectEqual(@as(u16, 4), rig.aims[0].chain.joints[1].joint);
+
+    // Standing, both feet are down all lap; walking, each foot is down for part of it.
+    const idle = rig.find(anim.clipName("idle")).?;
+    try testing.expectEqual(@as(usize, 2), idle.contacts.len);
+    for (idle.contacts) |contact| try testing.expect(contact.from == 0 and contact.to == 1);
+    var names: [walks.len + 1][]const u8 = undefined;
+    names[0] = "stride";
+    for (walks, 1..) |walk, i| names[i] = walk[0];
+    for (names) |name| {
+        const entry = rig.find(anim.clipName(name)).?;
+        var legs = [_]bool{ false, false };
+        for (entry.contacts) |contact| {
+            legs[contact.leg] = true;
+            try testing.expect(contact.from != 0 or contact.to != 1);
+        }
+        try testing.expect(legs[0] and legs[1]);
+    }
+
+    // Each walk travels its place on the grid in a one-second lap, in step with the stride.
+    for (walks) |walk| {
+        const entry = rig.find(anim.clipName(walk[0])).?;
+        try testing.expect(entry.motion and entry.loop);
+        try testing.expectEqual(@as(f32, 1), entry.clip.duration);
+        try testing.expectEqual(anim.clipName("feet"), entry.sync);
+        try testing.expectEqual(@as(usize, 2), entry.events.len);
+        const moved = anim.motion.travel(rig.*, entry, 0, 1);
+        try testing.expectApproxEqAbs(walk[1], moved.translation.x, 1e-5);
+        try testing.expectApproxEqAbs(-walk[2], moved.translation.z, 1e-5);
+    }
+
+    // `move` is the walk and the run over speed, in the feet's group.
+    const move = rig.find(anim.clipName("move")).?;
+    try testing.expectEqual(anim.clipName("feet"), move.sync);
+    try testing.expectEqual(@as(u8, 1), move.blend.?.axes());
+    try testing.expect(move.motion);
+
+    // `walk8` is a full 3 x 3 grid, and anywhere on it a lap travels its position.
+    const walk8 = rig.find(anim.clipName("walk8")).?;
+    try testing.expectEqual(@as(u8, 2), walk8.blend.?.axes());
+    for ([_][2]f32{ .{ 0.3, -0.7 }, .{ 0.9, 0.2 }, .{ -0.5, 0.5 }, .{ -0.64, -0.64 }, .{ 0, 0.9 } }) |at| {
+        const moved = anim.blend_space.travel(rig.*, walk8, at, 0, 1);
+        try testing.expectApproxEqAbs(at[0], moved.translation.x, 1e-4);
+        try testing.expectApproxEqAbs(-at[1], moved.translation.z, 1e-4);
+        try testing.expectApproxEqAbs(@as(f64, 1), anim.blend_space.lapLength(rig.*, walk8, at), 1e-6);
+    }
 }

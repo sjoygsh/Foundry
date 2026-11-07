@@ -1075,3 +1075,72 @@ scene's blend tests and §10's report and panel.
   fails it.
 
 **The bar.** `zig build test`: 2,861/2,871, ten skips, 132/132 steps, with six new tests.
+
+## Resolution — Step 6: the clips (2026-11-08)
+
+§11 is built:
+- `scripts/m36/clips.py` generates the walks;
+- `scripts/m24/make_character.py` appends them to the walker after M35's four. The warden's model
+  gains none, and its generator was not run;
+- `sandbox3d:walker.set` and `court:warden.set` gain `legs`, the `head` aim and `move`, and the
+  walker's gains `walk8`.
+
+**A correction to §11: eight walks, not seven, each travelling its place on the grid.**
+- **What §11 said:** `stride` as north, and seven walks of 1.0 m a lap toward their compass
+  points.
+- **Why that does not fit:** `walk8`'s places are metres a second, `x` from −1 to 1 and `y` from
+  −1 to 1. But `stride` travels 0.6 m a lap, and a diagonal walk of 1.0 m travels 0.71 m on each
+  axis. So the travel inside the grid would not be the velocity the strafer sets. A body that
+  code moves at that velocity would slide against its locked feet.
+- **What was built:** a new `walk.n` of 1 m a lap takes north. The diagonals travel 1 m on each
+  axis, √2 m a lap. Bilinear weights reproduce anything linear in the position exactly, so
+  `walk8`'s travel is its position everywhere on the grid. A test holds that at five places,
+  within 0.1 mm, and every lap is one second.
+- **What stays as it was:** `stride` is untouched, and stays `move`'s walk and the pacer's.
+
+**The gait.** Each walk is `stride`'s:
+- **The hips** swing about the axis that carries a hanging limb toward the direction of travel.
+  They swing in proportion to `stride`'s 0.4 rad for 0.6 m, held at 0.45 rad so that a leg swung
+  sideways crosses the other little.
+- **The arms** swing with the forward part of the walk alone.
+- **The knees, the spine and the bob** are `stride`'s. So a foot is down near 0 and halfway,
+  where the footfalls are.
+- **What the set says of each:** a looping clip with motion, two footfalls and the `feet` group.
+
+**`move`** is §6's: `idle` at 0, `stride` at 1.0 and `run` at 1.86, in `feet`.
+- **A place on the axis is a speed asked for, not a clip's own speed.** So at 1 m/s the warden
+  plays `stride` alone at rate 1.67, its 0.6 m/s motion speed's, as M35's machine already did.
+- **§13 says "at rate 1",** which is wrong. Step 8, which builds the warden's machine, corrects it.
+- **At 2.4 m/s** it plays `run` alone at 1.29, as §13 says.
+
+**Bytes.**
+- `walker.bin`'s first 29,800 bytes are unchanged, and so are the glTF's nodes, skin, mesh, and its
+  first 96 accessors and buffer views. Only the eight animations and their data follow.
+- `clip0`–`clip10`, `mesh0` and `skeleton0` compile to their pins in both models.
+- The walker's pin test now also pins `clip11`–`clip18`. The warden's files are untouched.
+- The walker's, the player's and the pacer's pins and the court's digests all hold. No sample plays
+  anything new yet.
+
+**Tests on each sample's compiled content.** The walker's rig is M35's eleven clips plus eight
+walks and two blends, 21 entries, and it checks:
+- both legs, their chains and their 8 cm soles;
+- the `head` chain over the neck and the head;
+- `idle` with both feet down all lap, and `stride` and every walk with each foot down for part of
+  one;
+- each walk's travel and group;
+- `move` as one axis in `feet`;
+- `walk8` as a 3 × 3 grid whose travel is its place.
+
+The warden's is twelve entries: its legs, gaze and `move`. A test places `move` at 1 and 2.4 m/s,
+and finds no `walk8`. The M35 tests that counted eleven clips now count 21 and 12. The `stride` test
+copies the rig's clips into a buffer of any size.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- a walk taken out of `feet`;
+- the warden's legs removed;
+- two of `walk8`'s points swapped (its travel then misses its place);
+- a wrong pin on `clip11`.
+
+**The bar:** see PROJECT_STATE. `zig build test`: 2,863/2,873, ten skips, 132/132 steps, two new
+tests. The samples' content changed, so `court` and `room` were staged with `dist`, ReleaseSafe on
+Metal.

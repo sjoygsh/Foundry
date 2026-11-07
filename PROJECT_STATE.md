@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-08
-**Current handoff: M36 Step 5 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 6, the clips: `scripts/m36/clips.py` and the strafer's seven directional walks. No sample uses any of M36 yet.
+**Current handoff: M36 Step 6 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 7, `sandbox3d`: the climber's feet, the strafer on `walk8`, and the pacer's gaze and block. No sample plays a walk, a blend, feet or a gaze yet.
+
+**M36 Step 6 is done (2026-11-08): the clips.**
+- `scripts/m36/clips.py` appends eight walks to the walker, `walk.n` to `walk.nw`. That is one more than §11 said: each travels its place on a 3 × 3 grid of m/s, so `walk8`'s travel is its position everywhere. `stride` (0.6 m a lap) stays out of the grid.
+- Both sets gain legs, the `head` aim and `move` (idle 0, stride 1.0, run 1.86, in `feet`), and the walker's gains `walk8`. The warden's model gains no clip.
+- Every old clip, mesh and skeleton keeps its pin, and the walker's buffer keeps its first 29,800 bytes. `clip11`–`clip18` are pinned.
+- §13's "rate 1 at 1 m/s" is wrong (it is 1.67). Step 8 corrects it.
+- Bar 2,863/2,873 (ten skips), 132/132 steps, two new tests. `court` and `room` staged with `dist`.
 
 **M36 Step 5 is done (2026-11-08): the scene's blend save, and the panel.**
 - A save made mid-blend loads into a second world, and both continue byte for byte for 240 ticks. A save naming a blend a later rig lacks empties that channel and counts it lost. The animator is still 872 bytes.
