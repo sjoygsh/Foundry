@@ -1331,5 +1331,5 @@ was dropped.
 **The bar.** `zig build test`: 2,873/2,883, ten skips, 132/132 steps, with two new tests. Every other
 line passed. `room` and `court` were staged with `dist`, since the content changed.
 
-**The exit's last clause is the owner's:** the staged build is `zig-out/dist/court/Foundry
-Court.app`, or its zip, and the owner has not yet played it.
+**The owner played it (2026-11-08), which is the exit's last clause.** They played the staged
+ReleaseSafe build, `zig-out/dist/court/Foundry Court.app`, on the Mac, and reported "Alls well".
