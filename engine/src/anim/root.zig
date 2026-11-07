@@ -30,6 +30,8 @@
 pub const blend_space = @import("blend.zig");
 pub const clip = @import("clip.zig");
 pub const ik = @import("ik.zig");
+pub const feet = @import("feet.zig");
+pub const gaze = @import("gaze.zig");
 pub const machine = @import("machine.zig");
 pub const motion = @import("motion.zig");
 pub const player = @import("player.zig");
@@ -80,6 +82,15 @@ pub const Report = report.Report;
 pub const AimChain = ik.AimChain;
 pub const AimJoint = ik.AimJoint;
 pub const TwoBone = ik.TwoBone;
+
+pub const Aim = gaze.Aim;
+pub const Contact = feet.Contact;
+pub const Feet = feet.Feet;
+pub const Ground = feet.Ground;
+pub const Leg = feet.Leg;
+pub const Probe = feet.Probe;
+pub const RigAim = gaze.RigAim;
+pub const max_legs = feet.max_legs;
 pub const max_aim_joints = ik.max_aim_joints;
 
 pub const Blend = blend_space.Blend;
@@ -128,6 +139,8 @@ test {
     _ = blend_space;
     _ = clip;
     _ = ik;
+    _ = feet;
+    _ = gaze;
     _ = machine;
     _ = motion;
     _ = player;
@@ -140,6 +153,7 @@ test {
     _ = @import("blend_tests.zig");
     _ = @import("direction_tests.zig");
     _ = @import("ik_tests.zig");
+    _ = @import("feet_tests.zig");
     _ = @import("machine_tests.zig");
     _ = @import("stack_tests.zig");
     _ = @import("player_tests.zig");

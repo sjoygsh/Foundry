@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-07
-**Current handoff: M36 Step 2 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 3, `anim`'s feet and aims (`Rig.legs`, `Rig.aims`, derived contacts, `Feet` and `Aim`). No set v3 or machine v2 record exists yet.
+**Current handoff: M36 Step 3 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 4, `asset`: `foundry:animation_set` v3 (legs, aims, blends) and `foundry:animation_machine` v2 (axes), with `Rigs` reading contacts and soles. No record, sample or panel uses any of M36 yet.
+
+**M36 Step 3 is done (2026-11-07): feet and aims in `anim`.**
+- `anim/feet.zig`: `Rig.legs` and `RigClip.contacts`, contacts read from a looping clip's foot heights by `deriveContacts`, and `Feet.probes` and `Feet.place`. The pelvis only drops, legs reach by `twoBone`, planted feet tilt by contact (0.5 rad at most), and locks release at 0.25 m and at contact's end.
+- `anim/gaze.zig`: `Rig.aims` and `Aim.apply`. The gaze sweeps at 6 rad/s, fades over 0.3 s, and lets go past its limit.
+- Flat ground, and a lock on a still foot, leave the pose bit for bit, and 1,200 ticks replay byte for byte.
+- Bar 2,844/2,854 (ten skips), 132/132 steps.
 
 **M36 Step 2 is done (2026-11-07): the two solvers.**
 - `anim/ik.zig`: `twoBone` reaches a hip, a knee and a foot toward a model-space point, bending toward a pole, held between a 1 mm reach and straight less 0.1 mm. `aim` turns up to four joints by their shares toward a point, within a limit.

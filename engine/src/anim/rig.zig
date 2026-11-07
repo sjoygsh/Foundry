@@ -8,6 +8,8 @@ const core = @import("core");
 
 const blend_mod = @import("blend.zig");
 const clip_mod = @import("clip.zig");
+const feet_mod = @import("feet.zig");
+const gaze_mod = @import("gaze.zig");
 const motion = @import("motion.zig");
 const player = @import("player.zig");
 const skeleton_mod = @import("skeleton.zig");
@@ -63,6 +65,9 @@ pub const RigClip = struct {
     /// Set for a blend space rather than a clip (`animation-ik.md` §7): `clip` is then a lap of one
     /// second with no tracks, and the blend says what plays. `blend.entryFor` makes one.
     blend: ?*const blend_mod.Blend = null,
+    /// Where each leg's foot is down in a lap, read from the clip when the rig was built
+    /// (`animation-ik.md` §4). Empty for a one-shot and a blend.
+    contacts: []const feet_mod.Contact = &.{},
 };
 
 /// Per-joint weights a layer is mixed by, named as a clip is (§6).
@@ -126,8 +131,11 @@ pub const Rig = struct {
     motion_joint: u16 = skeleton_mod.no_parent,
     /// Unsorted, and few, so a lookup is a walk.
     masks: []const Mask = &.{},
+    /// A figure's legs and aim chains (`animation-ik.md` §4, §5).
+    legs: []const feet_mod.Leg = &.{},
+    aims: []const gaze_mod.RigAim = &.{},
 
-    pub const ValidateError = Skeleton.ValidateError || Clip.ValidateError || blend_mod.ValidateError || error{
+    pub const ValidateError = Skeleton.ValidateError || Clip.ValidateError || blend_mod.ValidateError || feet_mod.LegError || gaze_mod.AimError || error{
         NoClips,
         TooManyClips,
         UnnamedClip,
@@ -188,6 +196,8 @@ pub const Rig = struct {
             if (blends > blend_mod.max_blends) return error.TooManyBlends;
             try blend_mod.validate(rig, entry);
         }
+        try feet_mod.validateLegs(rig);
+        try gaze_mod.validateAims(rig);
         if (rig.find(rig.start) == null) return error.UnknownStart;
         if (rig.find(rig.start).?.additive) return error.AdditiveStart;
         try rig.validateMasks();

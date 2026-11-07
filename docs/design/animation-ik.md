@@ -901,3 +901,62 @@ The name collision is M34's existing guard.
 
 **The bar.** `zig build test`: 2,835/2,845, ten skips, 132/132 steps, with nine new tests. Every other
 line of the bar passed.
+
+## Resolution — Step 3: feet and aims (2026-11-07)
+
+`anim` now covers §4 and §5:
+- `engine/src/anim/feet.zig` holds `Leg`, `Contact`, `deriveContacts`, `contactWeights`, `Probe`,
+  `Ground`, `Feet` and `LegState`;
+- `engine/src/anim/gaze.zig` holds `RigAim` and `Aim`;
+- `ik` gains `limitedTurn` and `turnJoint`;
+- the tests are in `engine/src/anim/feet_tests.zig`, on a hand-built two-legged figure.
+
+**In the rig.**
+- `Rig.legs` and `Rig.aims` are validated when a rig is, refusing `TooManyLegs`, `UnnamedLeg`,
+  `DuplicateLeg`, `NotAChain` and `InvalidLegRange`, and `TooManyAims`, `UnnamedAim`,
+  `DuplicateAim` and the chain's own refusals.
+- `RigClip.contacts` holds each leg's stretches of contact. A clip whose stretches name a leg the
+  rig lacks, fall outside `[0, 1]`, are empty, number more than four for one leg, or sit on a
+  one-shot or a blend is refused as `InvalidContacts`.
+- `soleOf` reads a foot's rest height, and `Rigs` fills `Leg.sole` with it in Step 4.
+
+**Sharpenings of §4:**
+- **Contacts are read by `deriveContacts`,** which `Rigs` calls when it builds a rig (Step 4). It
+  samples the clip without its travel held out, since only height counts. Sampling starts after a
+  sample with the foot up, so a stretch across the lap's end is one stretch, written `from > to`.
+- **A foot down all lap** is one stretch from 0 to 1. A leg with more than four stretches keeps its
+  first four.
+- **A pose's contact** is `contactWeights(rig, player, positions)`, from the base player, and the
+  game passes it to `place`. So `place` takes a `contacts` argument §4's signature did not show.
+  The court and the strafer pass their stack's base player.
+- **The pelvis** is the root above the first leg's hip. It drops along model −Y, read through the
+  skeleton's root.
+- **A leg's target** is the clip's foot plus its offset, taken before the pelvis drops. So a raised
+  foot reaches up past the drop, and a foot the clip lifts keeps its lift above the ground.
+- **Flat ground stays exact:** a ground height inside 0.1 mm is 0, and a leg whose target is within
+  0.01 mm of where it stands is not solved. So flat ground, and a lock on a still foot, leave the
+  pose bit for bit. A test holds both, and a bump of 0.03 mm.
+
+**Sharpenings of §5:**
+- **`Aim.apply`** takes the chain's index in `Rig.aims`.
+- **The first target, or one seen after a gaze faded out, is taken as it is.** Later ones are swept
+  at 6 rad/s.
+- **The limit is measured from where the clip faces the chain's last joint.** `beyond` says
+  whether the point is past it, for the panel.
+
+**Guards verified by mutation,** each failing a test before it was restored. Four first passed,
+because the tests were weaker than the guards, and each test was strengthened before its
+mutation counted:
+- **the pelvis that only drops:** it is held twice, by the lowest offset starting at 0 and by
+  `@min(0, …)`. A test with ground raised under both feet now fails when both are removed;
+- **the contact weighting of the tilt:** the gate at contact 0 hid it, so a half contact now
+  tilts half as far, within 1e-3;
+- **the lock's release distance:** an unreachable 1,000 m failed;
+- **the dead zone:** the flat test never produced an error to absorb, so the 0.03 mm bump now
+  fails without it.
+
+The test fixture's knees were bent 6 cm, because a straight leg cannot hold a foot that the body
+slides away from. The lock test holds only within the 8 cm the leg can reach.
+
+**The bar.** `zig build test`: 2,844/2,854, ten skips, 132/132 steps, with nine new tests including
+the 1,200-tick replay of feet and a gaze on moving, bumpy ground. Every other line of the bar passed.

@@ -185,6 +185,20 @@ pub fn aim(skeleton: Skeleton, pose: Pose, chain: AimChain, target: Vec3, weight
     }
 }
 
+/// The shortest turn from direction `from` toward `to`, held to at most `radians`. What a foot's tilt
+/// and a gaze's sweep use.
+pub fn limitedTurn(from: Vec3, to: Vec3, radians: f32) Quat {
+    const a = direction(from, Vec3.forward);
+    const b = held(a, direction(to, a), limits(@max(0, @min(radians, std.math.pi))));
+    return fromTo(a, b);
+}
+
+/// Turns `joint` by `turn`, a rotation in model space about the joint's own place.
+pub fn turnJoint(skeleton: Skeleton, pose: Pose, joint: u16, turn: Quat) void {
+    const parent = parentRotation(skeleton, pose, joint);
+    pose.local[joint].rotation = local(parent, turn).mul(pose.local[joint].rotation).normalize();
+}
+
 /// `limit`'s cosine, and the half-angle sine and cosine of a turn by it.
 const Limit = struct { cos: f32, half_sin: f32, half_cos: f32 };
 
@@ -297,6 +311,6 @@ fn anyPerpendicular(v: Vec3) Vec3 {
 }
 
 /// A model matrix's translation.
-fn positionOf(m: Mat4) Vec3 {
+pub fn positionOf(m: Mat4) Vec3 {
     return .init(m.cols[3][0], m.cols[3][1], m.cols[3][2]);
 }
