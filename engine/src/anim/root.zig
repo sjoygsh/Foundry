@@ -29,6 +29,7 @@
 
 pub const blend_space = @import("blend.zig");
 pub const clip = @import("clip.zig");
+pub const ik = @import("ik.zig");
 pub const machine = @import("machine.zig");
 pub const motion = @import("motion.zig");
 pub const player = @import("player.zig");
@@ -76,6 +77,11 @@ pub const max_step_events = player.max_step_events;
 
 pub const Report = report.Report;
 
+pub const AimChain = ik.AimChain;
+pub const AimJoint = ik.AimJoint;
+pub const TwoBone = ik.TwoBone;
+pub const max_aim_joints = ik.max_aim_joints;
+
 pub const Blend = blend_space.Blend;
 pub const BlendMix = blend_space.Mix;
 pub const BlendPoint = blend_space.Point;
@@ -121,6 +127,7 @@ pub const validateInfluences = skinning.validateInfluences;
 test {
     _ = blend_space;
     _ = clip;
+    _ = ik;
     _ = machine;
     _ = motion;
     _ = player;
@@ -132,6 +139,7 @@ test {
     _ = skinning;
     _ = @import("blend_tests.zig");
     _ = @import("direction_tests.zig");
+    _ = @import("ik_tests.zig");
     _ = @import("machine_tests.zig");
     _ = @import("stack_tests.zig");
     _ = @import("player_tests.zig");

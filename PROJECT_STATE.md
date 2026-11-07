@@ -1,7 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-07
-**Current handoff: M36 Step 1 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074, accepted 2026-11-07). Stop before Step 2, `anim`'s two solvers (`ik.twoBone` and `ik.aim`). No solver, feet, aim, set v3 or machine v2 record exists yet.
+**Current handoff: M36 Step 2 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 3, `anim`'s feet and aims (`Rig.legs`, `Rig.aims`, derived contacts, `Feet` and `Aim`). No set v3 or machine v2 record exists yet.
+
+**M36 Step 2 is done (2026-11-07): the two solvers.**
+- `anim/ik.zig`: `twoBone` reaches a hip, a knee and a foot toward a model-space point, bending toward a pole, held between a 1 mm reach and straight less 0.1 mm. `aim` turns up to four joints by their shares toward a point, within a limit.
+- No inverse trig runs. Weight 0 leaves a pose bit for bit, which the tests hold on keys that are unit only to an exporter's precision.
+- Bar 2,835/2,845 (ten skips), 132/132 steps.
 
 **M36 Step 1 is done (2026-11-07): blend spaces in `anim`.**
 - `anim/blend.zig`: a blend is an entry of `Rig.clips` with `blend` set, a one-second lap with no tracks. It mixes up to four loops on a line or a full grid at one fraction, re-anchored each tick at the lap its place has.

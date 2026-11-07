@@ -858,3 +858,46 @@ The name collision is M34's existing guard.
   answered null. The helper now lends three.
 - Every other line of the bar passed: `fmt`, the four `check`s, the four thirty-frame samples and
   `fdt-check`.
+
+## Resolution — Step 2: the two solvers (2026-11-07)
+
+`engine/src/anim/ik.zig` is new, with `TwoBone`, `AimChain`, `twoBone`, `aim`, `fromTo` and
+`modelOf`. Its tests are in `engine/src/anim/ik_tests.zig`, on a hand-built leg and neck.
+
+**As §3 has it:**
+- **The reach** is held between `min_reach` (1 mm) and the bones' sum less `straight_margin`
+  (0.1 mm). It is held below too, at their difference plus the margin, so a target at the hip folds
+  the leg as far as it can go and no further.
+- **The bend plane** is through the root, the target and the pole. A pole on the line falls back to
+  the clip's own middle joint.
+- **The two turns** are shortest arcs in model space. Each is turned into the joint's local frame
+  as `p⁻¹ · t · p`, with the middle read in its parent's frame after the root has turned. So the
+  root may be any ancestor of the middle, which a test proves with the pelvis as the root.
+- **Weight** slerps each changed local rotation. At 0, or for a weight that is not a number, the
+  pose is not touched. Above 1 it is the solve.
+
+**What §3 had not said:**
+- **No inverse trig runs.** The bend comes from the law of cosines and a square root. A turn between
+  two directions comes from their dot and cross products. The limit's cosine and half-angle come
+  from `core.math.trig.sinCosTurns`. `Quat.slerp` is the only library-dependent arithmetic, as in
+  every blend already.
+- **An aim limits the turn from where the head started.** Each joint is aimed from the head's
+  current place at the target. The direction is held within `limit` of the starting forward, and a
+  joint takes `share ÷ remaining` of what is left, so the last joint finishes the turn exactly.
+- **Only rotations change,** and a chain is assumed to have uniform scale. A skeleton root that
+  turns is read once, by `Transform.fromMat4Exact`, and a test reaches under a root turned 1.1 rad.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- **the pole's side:** a negated bend failed;
+- **the aim's limit:** an unheld direction failed;
+- **the reach clamp, after the test was tightened:** the clamped cosine alone already folds and
+  straightens the leg, so removing the clamp moved the reach only by the 0.1 mm margin, inside the
+  first test's 1e-4 tolerance. Both reach tests now hold the margin to 2e-5, and the mutation fails
+  them;
+- **weight 0 as identity, after the test pose was changed:** the first test pose's rotations
+  survived `slerp` at 0 bit for bit, so dropping the early return passed. The pose now holds a
+  clip's bend and keys that are unit only to an exporter's precision. Dropping the return then
+  fails for both solvers.
+
+**The bar.** `zig build test`: 2,835/2,845, ten skips, 132/132 steps, with nine new tests. Every other
+line of the bar passed.
