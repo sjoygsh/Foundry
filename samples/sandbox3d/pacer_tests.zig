@@ -68,7 +68,7 @@ const Fixture = struct {
     fn tick(self: *Fixture, n: u64) !void {
         try self.figure.step(testing.allocator, &self.orrery.world, &self.walk.world, &self.rigs, dt);
         self.orrery.step(.{ .tick = n, .delta = .fromNanos(16_666_667) });
-        try self.figure.evaluate(&self.orrery.world, &self.rigs);
+        try self.figure.evaluate(&self.orrery.world, &self.rigs, null, dt);
         self.figure.record(&self.orrery.world);
     }
 
@@ -246,7 +246,7 @@ test "pacer: saved in mid-stride, mid-turn and mid-fade, a load does the same th
         for (0..600) |n| {
             try figure.step(gpa, &fresh.world, &other.world, &f.rigs, dt);
             fresh.step(.{ .tick = n, .delta = .fromNanos(16_666_667) });
-            try figure.evaluate(&fresh.world, &f.rigs);
+            try figure.evaluate(&fresh.world, &f.rigs, null, dt);
             figure.record(&fresh.world);
         }
         try testing.expectEqual(run, figure.hash);
@@ -360,7 +360,7 @@ test "pacer: a reload's refresh keeps its place, and what it can't play is refus
     // No entity: nothing to do, and no error. A package with no pacer is a fine package.
     try f.figure.refresh(testing.allocator, &f.orrery.world, null, &f.walk.world, null, &f.rigs);
     try f.figure.step(testing.allocator, &f.orrery.world, &f.walk.world, &f.rigs, dt);
-    try f.figure.evaluate(&f.orrery.world, &f.rigs);
+    try f.figure.evaluate(&f.orrery.world, &f.rigs, null, dt);
 }
 
 test "pacer: an M34 save, from before machines, carries on to the bit, and the head fades in" {
@@ -400,7 +400,7 @@ test "pacer: an M34 save, from before machines, carries on to the bit, and the h
         for (0..600) |n| {
             try figure.step(gpa, &fresh.world, &other.world, &f.rigs, dt);
             fresh.step(.{ .tick = n, .delta = .fromNanos(16_666_667) });
-            try figure.evaluate(&fresh.world, &f.rigs);
+            try figure.evaluate(&fresh.world, &f.rigs, null, dt);
             figure.record(&fresh.world);
             // No pop: the head's layer begins at nothing and comes in at its fade's rate.
             if (looking and n == 0) try testing.expectApproxEqAbs(dt, stack.layers[1].weight, 1e-6);
@@ -445,4 +445,68 @@ test "pacer: pacer_back walks every other side backward, with no code, and a pin
     back.figure.hash = Figure.hash_seed;
     for (0..600) |n| try back.tick(20_000 + n);
     try testing.expectEqual(@as(u64, 0x59632bcff2461113), back.figure.hash);
+}
+
+test "pacer: a crate on its first side holds it up, and it turns there and walks the next" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var plain: Fixture = undefined;
+    try plain.init(null);
+    defer plain.deinit();
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    var block: pacer_mod.Block = .{};
+    defer block.deinit(gpa, &f.walk.world, null);
+    block.refresh(gpa, &f.engine.store, &f.walk.world, null);
+    try testing.expect(block.ready and !block.down());
+    try block.toggle(gpa, &f.walk.world);
+    try testing.expect(block.down());
+
+    var free: [3]Vec3 = undefined;
+    var held: [3]Vec3 = undefined;
+    try plain.corners(&free);
+    try f.corners(&held);
+    // Unblocked, the first side ends 0.9 m west. Held up by the crate, it turns where the crate
+    // stops it: the crate's east face, less the controller's radius.
+    try testing.expect(free[1].x < 1.85);
+    const stop = block.position.x + block.half.x + 0.22;
+    try testing.expectApproxEqAbs(stop, held[1].x, 0.03);
+    try testing.expect(f.figure.blocks >= 1 and plain.figure.blocks == 0);
+    // Then it walks the next side south, clear of the crate, as it does on any corner.
+    const next = held[2].sub(held[1]);
+    try testing.expect(next.dot(.init(0, 0, 1)) > 0.85);
+    // The count is the machine's, so it is saved; once it has turned it is back at nothing.
+    const machine = f.figure.machineOf(&f.rigs).?.*;
+    try testing.expectEqual(@as(f32, 0), anim.machine.get(f.stack(), machine, anim.clipName("blocked")).?);
+
+    // Lifted, it is gone from the walk world.
+    try block.toggle(gpa, &f.walk.world);
+    try testing.expect(!block.down());
+}
+
+test "pacer: it looks at a camera within reach, and lets go of one beyond it" {
+    if (comptime !options.available) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init(null);
+    defer f.deinit();
+    for (0..30) |n| try f.tick(n);
+    const world = scene.hierarchy.worldTransform(&f.orrery.world, f.orrery.role(.pacer).?).?;
+    // A camera a little to its left, ahead, at its eyes' height, inside 3 m.
+    const near = world.mulPoint(.init(-0.8, 1.6, -1.5));
+    for (0..30) |_| try f.figure.evaluate(&f.orrery.world, &f.rigs, near, dt);
+    try testing.expectEqual(@as(f32, 1), f.figure.aim.weight);
+    try testing.expect(!f.figure.aim.beyond);
+    const looking = f.figure.matrices[4];
+    try f.figure.evaluate(&f.orrery.world, &f.rigs, null, 0);
+    // A gaze that fades out over 0.3 s is still on its way; with no camera and no time it holds.
+    const far = world.mulPoint(.init(0, 1.6, -4));
+    for (0..30) |_| try f.figure.evaluate(&f.orrery.world, &f.rigs, far, dt);
+    try testing.expectEqual(@as(f32, 0), f.figure.aim.weight);
+    // Let go, the head is the clip's again; looking, it was not.
+    var clip: Figure = f.figure.*;
+    clip.aim = .{};
+    try clip.evaluate(&f.orrery.world, &f.rigs, null, 0);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&clip.matrices[4]), std.mem.asBytes(&f.figure.matrices[4]));
+    try testing.expect(!std.mem.eql(u8, std.mem.asBytes(&looking), std.mem.asBytes(&f.figure.matrices[4])));
 }

@@ -655,3 +655,73 @@ test "crowd: a run replays exactly from its recorded adoptions, however late a b
     manual.runAll();
     navigation.deinit(manual.tasks(), null, null);
 }
+
+test "crowd: the climber's feet land on the course within 1 cm, and on the floor they only take it down to the floor" {
+    if (comptime !options.available) return error.SkipZigTest;
+    var f: Fixture = undefined;
+    try f.init();
+    defer f.deinit();
+    const gpa = testing.allocator;
+    var m = try f.build();
+    defer m.deinit(gpa);
+    var rigs = asset.Rigs.init(gpa, &f.engine.assets);
+    defer rigs.deinit();
+    var demo = crowd_mod.CrowdDemo.init(gpa);
+    defer demo.deinit(null);
+    demo.refresh(&f.engine.store, null);
+    demo.bindFigure(&rigs, null);
+    demo.ground = &f.walk.world;
+    demo.adopt(&m);
+    const figure = &demo.figure;
+    const rig = rigs.get(figure.rig).?;
+    const s = demo.settings.?;
+    const size = s.height / s.climber_height;
+    var previous: [2]f32 = .{ 0, 0 };
+    var was_locked: [2]f32 = .{ 0, 0 };
+    var early: u32 = 0;
+    var worst: f32 = 0;
+    var landed: u32 = 0;
+    var raised: u32 = 0;
+    var floor: u32 = 0;
+    var scratch: [19]core.math.Transform = undefined;
+    var clip: [19]core.math.Transform = undefined;
+    for (0..7200) |_| {
+        _ = demo.step(crowd_dt);
+        if (!figure.placed) continue;
+        const view = demo.crowd.?.agent(demo.pawns[0].handle).?;
+        const to_world = figure.toWorld(view.position, size);
+        const pose: anim.Pose = .{ .local = figure.pose[0..19] };
+        // The clip's own pose, where its feet would be on flat ground at the pawn's height.
+        figure.player.evaluate(rig.*, .{ .local = &scratch }, .{ .local = &clip });
+        for (rig.legs, 0..) |leg, l| {
+            const state = figure.feet.legs[l];
+            const settled = @abs(state.offset - previous[l]) < 1e-6;
+            previous[l] = state.offset;
+            // A planted foot with no lock on it, or on the tick its lock takes hold, which is where
+            // it landed. A lock then holds it there while the clip's foot moves on.
+            const landing = state.locked > 0 and was_locked[l] == 0;
+            const free = state.locked == 0 or landing;
+            was_locked[l] = state.locked;
+            const ground = figure.grounds[l];
+            // A foot that lands within a few ticks of crossing an edge lands while its offset still
+            // eases toward the new height, as §4 has it so that nothing pops. Those are counted.
+            if (ground.hit and landing and !settled and state.contact >= 1) early += 1;
+            if (!ground.hit or !settled or state.contact < 1 or !free) continue;
+            const placed = anim.ik.positionOf(anim.ik.modelOf(rig.skeleton, pose, leg.chain.end));
+            const wanted = anim.ik.positionOf(anim.ik.modelOf(rig.skeleton, .{ .local = &clip }, leg.chain.end));
+            // How far the foot is above the ground, less how far the clip has it above its floor.
+            const sole = to_world.mulPoint(placed.sub(.init(0, leg.sole, 0)));
+            const gap = @abs((sole.y - ground.point.y) - (wanted.y - leg.sole) * size);
+            worst = @max(worst, gap);
+            landed += 1;
+            if (ground.point.y > 0.05) raised += 1 else {
+                floor += 1;
+                // On the floor the only correction is the pawn's own height above it.
+                try testing.expectApproxEqAbs(-view.position.y / size, state.offset, 1e-4);
+            }
+        }
+    }
+    try testing.expect(worst < 0.01);
+    try testing.expect(raised >= 20 and floor >= 200 and landed == raised + floor);
+    try testing.expect(early * 25 < landed);
+}

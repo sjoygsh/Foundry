@@ -570,12 +570,17 @@ pacer sandbox3d:pacer.main {
 # What `pacer.zig` decided in M34, as content: `stride` for a lap and a half, a cut into `turn`, and
 # a fade of 0.1 s back across a finished turn. Over the body, the head looks about, fading in over a
 # second. A mod that restates this changes the walk with no code (`testdata/mods/pacer_back`).
+#
+# Since M36 (`animation-ik.md` §9) the game says `blocked`, a sixth more for each tick running its
+# controller delivered less than half the travel `stride` asked for, so 1 is six ticks. Blocked, it
+# turns there and walks the next side.
 foundry:animation_machine sandbox3d:pacer.machine {
-    params [ { name "look" default 1 } ]
+    params [ { name "look" default 1 } { name "blocked" } ]
     layers [
         { name "body" entry "turn"
             states [ { name "stride" clip "stride" } { name "turn" clip "turn" } ]
             transitions [
+                { from "stride" to "turn" when [ { param "blocked" is 1 } ] }
                 { from "stride" to "turn" when [ { quantity "laps" at_least 1.5 } ] }
                 { from "turn" to "stride" fade 0.1 when [ { quantity "finished" is 1 } ] }
         ] }
@@ -587,4 +592,46 @@ foundry:transform sandbox3d:pacer.pose { translation { x 2.65  y 0.004  z 0.8 } 
 foundry:animator sandbox3d:pacer.animator { set sandbox3d:walker.set  machine sandbox3d:pacer.machine }
 foundry:entity sandbox3d:entity.pacer {
     components [ sandbox3d:pacer.pose  sandbox3d:pacer.animator  sandbox3d:pacer.main ]
+}
+# M36's strafer (`animation-ik.md` §12): a walker figure that circles a point on the floor while its
+# heading turns against its path, half a turn a lap, so over two laps it walks forward, sideways,
+# backward and sideways again, and `walk8` sweeps every direction. The game says its velocity in its
+# own frame, `side` to its right and `ahead`, and the machine places the blend there.
+foundry:animation_machine sandbox3d:strafer.machine {
+    params [ { name "side" } { name "ahead" } ]
+    layers [ { name "body" entry "walk" states [ { name "walk" clip "walk8" } ] } ]
+    axes [ { blend "walk8" x "side" y "ahead" } ]
+}
+@schema strafer {
+    model id
+    set id
+    machine id
+    centre { x f32 y f32 z f32 }
+    radius f32
+    speed f32
+    spin f32
+}
+strafer sandbox3d:strafer.main {
+    model sandbox3d:models.walker
+    set sandbox3d:walker.set
+    machine sandbox3d:strafer.machine
+    centre { x -0.25 y 0 z 1.25 }
+    radius 0.6
+    speed 0.9
+    spin 0.5
+}
+# M36: the crate K drops on the pacer's first side, and takes away again (`animation-ik.md` §9). It
+# is static collision in the walk world, drawn with the crowd's crate, whose model is 0.35 m a side
+# from its centre.
+@schema pacer_block {
+    model id
+    model_half f32
+    half { x f32 y f32 z f32 }
+    position { x f32 y f32 z f32 }
+}
+pacer_block sandbox3d:pacer.block {
+    model sandbox3d:models.crate
+    model_half 0.35
+    half { x 0.2 y 0.25 z 0.25 }
+    position { x 1.95 y 0.25 z 0.8 }
 }

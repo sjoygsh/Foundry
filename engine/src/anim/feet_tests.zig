@@ -654,3 +654,21 @@ test "report: legs and aims are added to the figure's own row, by name" {
     try t.expect(!full.rows[report_mod.max_rows - 1].feet);
     try t.expectEqual(@as(u8, 0), full.rows[report_mod.max_rows - 1].aim_count);
 }
+
+test "a figure drawn at another size looks as far as its legs reach, in world metres" {
+    var built: Built = undefined;
+    built.init();
+    const rig = built.rig();
+    var local: [joints]Transform = undefined;
+    evaluate(rig, &playing(rig, name_still, 0), &local);
+    var full: [feet_mod.max_legs]feet_mod.Probe = undefined;
+    var half: [feet_mod.max_legs]feet_mod.Probe = undefined;
+    const at_one = Feet.probes(rig, .{ .local = &local }, world(.zero, 0.3), &full);
+    const at_half = Feet.probes(rig, .{ .local = &local }, Mat4.trs(.zero, Quat.fromAxisAngle(.up, 0.3), .init(0.5, 0.5, 0.5)), &half);
+    for (at_one, at_half, rig.legs) |a, b, leg| {
+        try t.expectApproxEqAbs(leg.max_raise + leg.max_drop, a.distance, 1e-6);
+        try t.expectApproxEqAbs(0.5 * a.distance, b.distance, 1e-6);
+        try t.expectApproxEqAbs(@as(f32, 1), b.direction.length(), 1e-6);
+        try t.expectApproxEqAbs(0.5 * a.origin.y, b.origin.y, 1e-6);
+    }
+}

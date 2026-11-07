@@ -15,6 +15,11 @@
 //! `link_t` on each tick. It has no controller, so a pose is all it adds, and the pawn is still
 //! the crowd's. A game with no rig still has its pawn, drawn as a crate.
 //!
+//! **Since M36 its feet are placed** (`animation-ik.md` §12): rays down from each foot are cast in
+//! the walk world, which holds the course, and `anim.Feet` puts each foot on what they hit, with
+//! locking, since the crowd moves it. It still plays a bare `Player`, so IK needs no stack and no
+//! machine. A crossing's one-shot is left as its clip: the ladder's rungs are no floor.
+//!
 //! **A mesh reaches this crowd through `adopt`, at a frame boundary, before any tick** (ADR-0061's
 //! decision 4). The tests replay a recorded list of adoptions.
 
@@ -171,6 +176,11 @@ pub const Figure = struct {
     last: Vec3 = .zero,
     yaw: f32 = 0,
     joint_count: usize = 0,
+    /// Its feet, placed on the walk world's ground each tick it walks. Presentation, never saved.
+    feet: anim.Feet = .{},
+    /// What each foot's ray found this tick, and whether feet were placed: for the tests.
+    grounds: [anim.max_legs]anim.Ground = @splat(.{}),
+    placed: bool = false,
     scratch: [anim.max_joints]core.math.Transform = undefined,
     pose: [anim.max_joints]core.math.Transform = undefined,
     matrices: [anim.max_joints]Mat4 = undefined,
@@ -181,7 +191,7 @@ pub const Figure = struct {
     refused: u32 = 0,
 
     /// One tick, after the crowd's. `view` is where the crowd says the pawn now is.
-    fn step(self: *Figure, rig: *const anim.Rig, crowd: *const nav.Crowd, view: nav.AgentView, dt: f32) !void {
+    fn step(self: *Figure, rig: *const anim.Rig, crowd: *const nav.Crowd, view: nav.AgentView, dt: f32, ground: ?*physics.World, size: f32) !void {
         const moved = view.position.sub(self.last);
         self.last = view.position;
         const length = @sqrt(moved.x * moved.x + moved.z * moved.z);
@@ -218,8 +228,30 @@ pub const Figure = struct {
         const n = rig.skeleton.jointCount();
         const pose: anim.Pose = .{ .local = self.pose[0..n] };
         self.player.evaluate(rig.*, .{ .local = self.scratch[0..n] }, pose);
+        self.placed = false;
+        if (ground) |world| if (view.state != .on_link and rig.legs.len != 0) {
+            try self.placeFeet(rig, world, pose, self.toWorld(view.position, size), dt);
+        };
         anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
         self.joint_count = n;
+    }
+
+    /// Where the figure stands and faces, at the size it is drawn.
+    pub fn toWorld(self: *const Figure, position: Vec3, size: f32) Mat4 {
+        return Mat4.trs(position, Quat.fromAxisAngle(.up, self.yaw), .init(size, size, size));
+    }
+
+    /// `animation-ik.md` §14's steps 4 and 5 for a figure with no gaze: a ray down from each foot
+    /// into the static world, and the legs placed on what it found.
+    fn placeFeet(self: *Figure, rig: *const anim.Rig, world: *physics.World, pose: anim.Pose, to_world: Mat4, dt: f32) !void {
+        var rays: [anim.max_legs]anim.Probe = undefined;
+        const probes = anim.Feet.probes(rig.*, pose, to_world, &rays);
+        for (probes, 0..) |probe, l| {
+            const hit = world.raycast(probe.origin, probe.direction, probe.distance, .{ .mask = 1 }) catch null;
+            self.grounds[l] = if (hit) |h| .{ .hit = true, .point = h.point, .normal = h.normal } else .{};
+        }
+        self.feet.place(rig.*, pose, to_world, self.grounds[0..probes.len], anim.feet.contactWeights(rig.*, &self.player, .none), dt, .{});
+        self.placed = true;
     }
 
     fn kindOf(_: *const Figure, crowd: *const nav.Crowd, view: nav.AgentView) usize {
@@ -242,6 +274,8 @@ pub const CrowdDemo = struct {
     figure: Figure = .{},
     /// Null for a crowd of crates.
     rigs: ?*asset.Rigs = null,
+    /// Where the climber's feet find their ground: the walk world. Null places none.
+    ground: ?*physics.World = null,
     /// How far along its slide the crate is, 0 to 1, and which way it is going.
     crate_at: f32 = 0,
     crate_target: f32 = 0,
@@ -400,7 +434,7 @@ pub const CrowdDemo = struct {
         crowd.step(dt);
         if (self.figure.stride_speed > 0) {
             if (self.rigs.?.get(self.figure.rig)) |rig| if (crowd.agent(self.pawns[0].handle)) |view| {
-                self.figure.step(rig, crowd, view, dt) catch |err| {
+                self.figure.step(rig, crowd, view, dt, self.ground, s.height / s.climber_height) catch |err| {
                     self.figure.refused += 1;
                     log.warn("the climber stopped animating ({t})", .{err});
                 };
@@ -421,8 +455,7 @@ pub const CrowdDemo = struct {
                 const v = crowd.agent(p.handle) orelse continue;
                 if (i == 0 and self.figure.joint_count != 0 and !self.figure.model.isNone()) {
                     const f = &self.figure;
-                    const size = s.height / s.climber_height;
-                    try content.drawModel(.{ .model = f.model, .world = Mat4.trs(v.position, Quat.fromAxisAngle(.up, f.yaw), .init(size, size, size)), .skin = f.matrices[0..f.joint_count] });
+                    try content.drawModel(.{ .model = f.model, .world = f.toWorld(v.position, s.height / s.climber_height), .skin = f.matrices[0..f.joint_count] });
                     continue;
                 }
                 try content.drawModel(.{ .model = self.model, .world = Mat4.trs(v.position.add(.init(0, s.height * 0.5, 0)), Quat.identity, scale) });

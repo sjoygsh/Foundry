@@ -13,6 +13,13 @@
 //! the pacer's and puts the base layer where M34's `turning` and `ticks` had it. The figure carries
 //! on to the bit, and the head's layer fades in from nothing.
 //!
+//! **Since M36 it knows when it is blocked, and looks at you** (`animation-ik.md` §9, §12). Each tick
+//! it compares the travel its controller delivered with what `stride` asked for, and keeps the run of
+//! ticks it got less than half in the machine's `blocked` parameter, a sixth a tick. So the count is
+//! saved with the animator, and a load carries on counting. The machine turns at 1. Its head turns to
+//! the camera within 3 m, by the set's `head` aim, after the pose: presentation, never saved. It has
+//! no feet placed, since it walks flat floor on travel that already matches its steps.
+//!
 //! **Everything that is state is in the world.** `Pace` and `foundry:animator` save with the
 //! orrery, and `foundry:transform` holds its feet. So `Figure` only holds what a load can make
 //! again: handles, a pose, and the character in the walk world.
@@ -41,6 +48,14 @@ pub const machine_id = core.ContentId.fromString("sandbox3d:pacer.machine");
 /// More than this is a mistake, and a square that would leave the room anyway.
 const max_strides: f32 = 64;
 const max_fall: f32 = 20;
+const blocked_param = anim.clipName("blocked");
+/// Ticks running it must be held up before `blocked` reaches 1.
+pub const blocked_ticks: f32 = 6;
+/// A tick asked for less than this is a turn on the spot, which nothing can block.
+const still: f32 = 1e-4;
+const head_aim = anim.clipName("head");
+/// How close the camera must be for the pacer to look at it.
+pub const gaze_reach: f32 = 3;
 const gravity: f32 = 9.81;
 
 pub const Pace = struct {
@@ -83,6 +98,10 @@ pub const Figure = struct {
     report: anim.Report = .{},
     /// This tick's move, as the controller was asked.
     motion: anim.Motion = .{},
+    /// Its gaze: presentation, never saved, so a load starts it again from nothing.
+    aim: anim.Aim = .{},
+    /// Ticks it ended with `blocked` at 1: for the tests.
+    blocks: u32 = 0,
     ticks: u64 = 0,
     footfalls: u32 = 0,
     hash: u64 = hash_seed,
@@ -136,7 +155,7 @@ pub const Figure = struct {
             .mask = 1,
         }, transform.translation, 0);
         self.feet = transform.translation;
-        try self.evaluate(world, rigs);
+        try self.evaluate(world, rigs, null, 0);
     }
 
     /// One tick: advance through the machine, and carry out the move. The caller propagates.
@@ -166,8 +185,10 @@ pub const Figure = struct {
         self.motion = .{ .translation = wish.translation, .yaw = wish.yaw };
         pace.velocity = @max(-max_fall, pace.velocity - gravity * dt);
         const along = Quat.fromAxisAngle(.up, pace.yaw).rotate(wish.translation);
+        const was = self.feet;
         const result = (try walk.moveCharacter(gpa, self.character, along.add(.init(0, pace.velocity * dt, 0)), &.{})) orelse return error.NoPace;
         self.feet = result.feet;
+        self.noteBlocked(world, e, machine.*, along, result.feet.sub(was));
         if (result.grounded) pace.velocity = 0;
         pace.yaw = @mod(pace.yaw + wish.yaw, 2 * std.math.pi);
 
@@ -177,13 +198,33 @@ pub const Figure = struct {
         self.ticks += 1;
     }
 
-    /// The pose, a function of the world and the rig alone.
-    pub fn evaluate(self: *Figure, world: *scene.World, rigs: *const asset.Rigs) !void {
+    /// Keeps the run of ticks the controller delivered less than half the asked-for travel, in the
+    /// machine's `blocked`: a sixth a tick, so six running is 1. A machine without `blocked` is told
+    /// nothing, and a tick with no travel asked is not held up.
+    fn noteBlocked(self: *Figure, world: *scene.World, e: scene.Entity, machine: anim.Machine, asked: Vec3, delivered: Vec3) void {
+        const stack = animation.stack(world, e) orelse return;
+        const want = @sqrt(asked.x * asked.x + asked.z * asked.z);
+        const got = @sqrt(delivered.x * delivered.x + delivered.z * delivered.z);
+        const before = anim.machine.get(stack, machine, blocked_param) orelse return;
+        const held = want > still and got < 0.5 * want;
+        const count: f32 = if (held) @min(blocked_ticks, @round(before * blocked_ticks) + 1) else 0;
+        anim.machine.set(stack, machine, blocked_param, count / blocked_ticks) catch return;
+        if (count == blocked_ticks) self.blocks += 1;
+    }
+
+    /// The pose, a function of the world and the rig alone, and then the gaze toward `eye`, the
+    /// camera's, when there is one within reach. `dt` steps the gaze. Neither touches the world.
+    pub fn evaluate(self: *Figure, world: *scene.World, rigs: *const asset.Rigs, eye: ?Vec3, dt: f32) !void {
         const e = self.entity orelse return;
         errdefer self.joint_count = 0;
         const rig = rigs.get(self.rig) orelse return error.MissingRig;
         const n = animation.evaluate(world, e, animation.rigSource(rigs), &self.scratch, &self.pose) orelse return error.NoAnimator;
-        anim.skinMatrices(rig.skeleton, .{ .local = self.pose[0..n] }, self.matrices[0..n]);
+        const pose: anim.Pose = .{ .local = self.pose[0..n] };
+        if (aimOf(rig.*)) |chain| if (hierarchy.worldTransform(world, e)) |to_world| {
+            const near = if (eye) |at| at.sub(to_world.mulPoint(.zero)).length() <= gaze_reach else false;
+            self.aim.apply(rig.*, chain, pose, to_world, eye, if (near) 1 else 0, dt);
+        };
+        anim.skinMatrices(rig.skeleton, pose, self.matrices[0..n]);
         self.joint_count = n;
     }
 
@@ -236,6 +277,98 @@ fn adopt(animator: *animation.Animator, pace: *const Pace) void {
         .ticks = if (pace.turning) 0 else @as(u64, pace.ticks) + 1,
     };
 }
+
+/// The set's `head` aim, if it has one.
+fn aimOf(rig: anim.Rig) ?usize {
+    for (rig.aims, 0..) |entry, i| if (entry.name == head_aim) return i;
+    return null;
+}
+
+/// The crate K drops on the pacer's first side (`sandbox3d:pacer.block`): static collision in the walk
+/// world while it is down, and the crowd's crate drawn there.
+pub const Block = struct {
+    pub const record_id = core.ContentId.fromString("sandbox3d:pacer.block");
+
+    model_id: core.ContentId = .none,
+    model_half: f32 = 1,
+    half: Vec3 = .zero,
+    position: Vec3 = .zero,
+    model: render3d.ModelHandle = .none,
+    body: physics.BodyHandle = .none,
+    /// Whether the record was read, so K has something to drop.
+    ready: bool = false,
+
+    pub fn deinit(self: *Block, gpa: std.mem.Allocator, walk: *physics.World, content: ?*render3d.Content) void {
+        if (!self.body.isNone()) _ = walk.removeBody(gpa, self.body);
+        if (!self.model.isNone()) if (content) |c| c.releaseModel(self.model);
+        self.* = .{};
+    }
+
+    /// At each content refresh: the record again, and the crate lifted. One that is refused is
+    /// said once, and K then drops nothing.
+    pub fn refresh(self: *Block, gpa: std.mem.Allocator, store: *const @import("data").Store, walk: *physics.World, content: ?*render3d.Content) void {
+        self.deinit(gpa, walk, content);
+        const record = store.lookup(record_id) orelse return;
+        self.read(record.fields) catch |err| {
+            log.warn("{f} is refused ({t}); K drops nothing", .{ record_id, err });
+            self.* = .{};
+            return;
+        };
+        if (content) |c| self.model = c.acquireModel(self.model_id) catch |err| blk: {
+            log.warn("the pacer's crate is not drawn: {f} ({t})", .{ self.model_id, err });
+            break :blk .none;
+        };
+        self.ready = true;
+    }
+
+    fn read(self: *Block, fields: @import("data").fpk.Fields) !void {
+        self.model_id = (try fields.idAt(try field(fields, "model"))) orelse return error.InvalidBlock;
+        self.model_half = @floatCast((try fields.floatAt(try field(fields, "model_half"))) orelse return error.InvalidBlock);
+        self.half = try vector(fields, "half");
+        self.position = try vector(fields, "position");
+        if (self.model_id.isNone() or !(self.model_half > 0) or !std.math.isFinite(self.model_half)) return error.InvalidBlock;
+        if (!(self.half.x > 0 and self.half.y > 0 and self.half.z > 0) or self.half.length() > 10) return error.InvalidBlock;
+    }
+
+    pub fn down(self: *const Block) bool {
+        return !self.body.isNone();
+    }
+
+    /// Drops the crate, or takes it away.
+    pub fn toggle(self: *Block, gpa: std.mem.Allocator, walk: *physics.World) !void {
+        if (!self.ready) return;
+        if (self.down()) {
+            _ = walk.removeBody(gpa, self.body);
+            self.body = .none;
+            return;
+        }
+        self.body = try walk.addBody(gpa, .{ .shape = .{ .box = .{ .half_extents = self.half } }, .pose = .{ .position = self.position, .rotation = .identity }, .kind = .static, .user = record_id.hash });
+    }
+
+    pub fn draw(self: *const Block, content: *render3d.Content) !void {
+        if (!self.down() or self.model.isNone()) return;
+        const h = self.half;
+        const m = self.model_half;
+        try content.drawModel(.{ .model = self.model, .world = Mat4.trs(self.position, Quat.identity, .init(h.x / m, h.y / m, h.z / m)) });
+    }
+};
+
+fn field(fields: @import("data").fpk.Fields, name: []const u8) !u32 {
+    for (fields.fields, 0..) |f, i| if (std.mem.eql(u8, f.name, name)) return @intCast(i);
+    return error.InvalidBlock;
+}
+
+fn vector(fields: @import("data").fpk.Fields, name: []const u8) !Vec3 {
+    const p = (try fields.nestedAt(try field(fields, name))) orelse return error.InvalidBlock;
+    var out: [3]f32 = undefined;
+    for ([_][]const u8{ "x", "y", "z" }, &out) |axis, *v| {
+        v.* = @floatCast((try p.floatAt(try field(p, axis))) orelse return error.InvalidBlock);
+        if (!std.math.isFinite(v.*)) return error.InvalidBlock;
+    }
+    return .init(out[0], out[1], out[2]);
+}
+
+const log = core.log.scoped(.sandbox3d);
 
 fn playsTurn(machine: anim.Machine, state: u64) bool {
     if (machine.layers.len == 0) return false;

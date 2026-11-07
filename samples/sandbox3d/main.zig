@@ -56,6 +56,8 @@
 //! - `FOUNDRY_SANDBOX3D_EFFECTS=on|off` makes M29's effects corner (`effects.zig`) or leaves it
 //!   out; P faces it from the patch and B fires its sparks;
 //! - **M** slides a crate into the crowd's way (`crowd.zig`, M33), and `m@frame` presses it;
+//! - **K** drops a crate on the pacer's square, which it turns at, and lifts it again
+//!   (`pacer.zig`, M36), and `k@frame` presses it;
 //! - `FOUNDRY_SANDBOX3D_NAV=show` starts with M32's navigation mesh drawn (`nav.zig`), which N
 //!   shows and hides, and `off` builds none, measuring the same frames as a baseline.
 //!
@@ -124,6 +126,7 @@ const generated = @import("generated.zig");
 const effects_mod = @import("effects.zig");
 const nav_mod = @import("nav.zig");
 const crowd_mod = @import("crowd.zig");
+const strafer_mod = @import("strafer.zig");
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -218,7 +221,7 @@ const PacerProof = struct {
         fn tick(self: *Run) !void {
             try self.figure.step(self.gpa, &self.orrery.world, self.walk, self.rigs, self.delta.toSecondsF32());
             self.orrery.step(.{ .tick = self.ticks, .delta = self.delta });
-            try self.figure.evaluate(&self.orrery.world, self.rigs);
+            try self.figure.evaluate(&self.orrery.world, self.rigs, null, 0);
             self.figure.record(&self.orrery.world);
             self.ticks += 1;
         }
@@ -589,7 +592,7 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
     });
 
     const recorder = engine.profiler() orelse return;
-    for ([_][]const u8{ "animation", "render.skin", "abi.instances", "animation.animators" }) |name| {
+    for ([_][]const u8{ "animation", "render.skin", "abi.instances", "animation.animators", "animation.strafer" }) |name| {
         var values: [240]i64 = undefined;
         var work: [240]i64 = undefined;
         var count: usize = 0;
@@ -608,10 +611,10 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
             }
         }
         // The cost run's line, only when it ran.
-        if (count == 0 and std.mem.eql(u8, name, "animation.animators")) continue;
+        if (count == 0 and (std.mem.eql(u8, name, "animation.animators") or std.mem.eql(u8, name, "animation.strafer"))) continue;
         const measured = core.profile.summarise(values[0..count], &work);
         const instances = if (sample.native) |native| native.instances.instances.count() else 0;
-        log.info("{s}: {d} objects, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, if (std.mem.eql(u8, name, "abi.instances")) instances else if (std.mem.eql(u8, name, "animation.animators")) animators_mod.count else sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
+        log.info("{s}: {d} objects, {d} frames, median {d:.4}ms p95 {d:.4}ms", .{ name, if (std.mem.eql(u8, name, "abi.instances")) instances else if (std.mem.eql(u8, name, "animation.animators")) animators_mod.count else if (std.mem.eql(u8, name, "animation.strafer")) @as(usize, 1) else sample.walkers.len, measured.count, ms(measured.median_ns), ms(measured.p95_ns) });
     }
     var totals: [240]i64 = undefined;
     var scratch: [240]i64 = undefined;
@@ -853,6 +856,10 @@ const Sample = struct {
     walkers: []Walker,
     rigs: asset.Rigs,
     pacer: pacer_mod.Figure = .{},
+    /// The crate K drops on the pacer's square (`animation-ik.md` §9).
+    pacer_block: pacer_mod.Block = .{},
+    /// M36's strafer, circling on `walk8` (`animation-ik.md` §12).
+    strafer: strafer_mod.Strafer = .{},
     /// The 32-animator cost run, when asked for.
     animators: ?animators_mod.Animators = null,
     /// The tour's save, and what the run went on to do after it.
@@ -1084,6 +1091,8 @@ const Sample = struct {
         self.course = self.follow(self.course, previous_course, if (self.walk.settings) |s| s.course else .none, first);
         self.crowd.refresh(&engine.store, if (self.content) |*content| content else null);
         self.crowd.bindFigure(&self.rigs, if (self.content) |*content| content else null);
+        // The climber's feet find the course in the walk world (`animation-ik.md` §12).
+        self.crowd.ground = &self.walk.world;
         // After the props, whose collision it is built from too.
         const asked = engine.os.monotonicNanos(); // Measurement only.
         // The crowd was rebuilt, so it must be given the mesh again even if none arrives new.
@@ -1095,6 +1104,8 @@ const Sample = struct {
                 log.warn("walker disabled ({t})", .{err});
         };
         if (self.pacer.entity != null) self.refreshPacer(engine);
+        self.pacer_block.refresh(self.gpa, &engine.store, &self.walk.world, if (self.content) |*content| content else null);
+        self.strafer.refresh(&engine.store, &self.rigs, if (self.content) |*content| content else null);
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -1149,14 +1160,22 @@ const Sample = struct {
         {
             const pacer_scope = engine.beginScope("animation.advance");
             defer pacer_scope.end();
+            const blocks = self.pacer.blocks;
             try self.pacer.step(self.gpa, &self.orrery.world, &self.walk.world, &self.rigs, s.delta.toSecondsF32());
+            if (self.pacer.blocks != blocks) log.info("the pacer is blocked at ({d:.3}, {d:.3}) and turns", .{ self.pacer.feet.x, self.pacer.feet.z });
         }
         if (self.animators) |*bench| self.stepAnimators(engine, bench, s.delta.toSecondsF32());
+        if (self.strafer.active()) {
+            const strafer_scope = engine.beginScope("animation.strafer");
+            defer strafer_scope.end();
+            try self.strafer.step(&self.rigs, &self.walk.world, if (self.tour == null) self.eye() else null, dt);
+        }
         // The game translates `app`'s step into `scene`'s tick: the number and the fixed
         // delta, and nothing a system could read a device through.
         self.orrery.step(.{ .tick = s.tick, .delta = s.delta });
         if (self.pacer.entity != null) {
-            try self.pacer.evaluate(&self.orrery.world, &self.rigs);
+            // The tour proves the pose replays to the bit, so it has no camera to look at.
+            try self.pacer.evaluate(&self.orrery.world, &self.rigs, if (self.tour == null) self.eye() else null, dt);
             if (self.tour != null) try self.pacer_proof.note(self.gpa, &self.pacer, self.orrery);
         }
         if (self.effects) |effects| {
@@ -1308,6 +1327,11 @@ const Sample = struct {
         if ((in.wasPressed(.m) and !typing) or scripted.m) {
             self.crowd.moveCrate();
             log.info("m: the crate slides", .{});
+        }
+        if ((in.wasPressed(.k) and !typing) or scripted.k) {
+            if (self.pacer_block.toggle(self.gpa, &self.walk.world)) |_| {
+                log.info("k: the pacer's crate {s}", .{if (self.pacer_block.down()) "drops" else "is lifted"});
+            } else |err| log.warn("k: the pacer's crate could not drop ({t})", .{err});
         }
         if ((in.wasPressed(.r) and !typing) or scripted.r) {
             log.info("r: reloading every package", .{});
@@ -1524,6 +1548,8 @@ const Sample = struct {
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.effects) |effects| try effects.draw();
         if (self.content) |*content| try self.crowd.draw(content, self.crate);
+        if (self.content) |*content| try self.pacer_block.draw(content);
+        if (self.content) |*content| try self.strafer.draw(content);
         try self.navigation.draw(&self.world);
         if (self.content) |*content| for (self.walkers, 0..) |*walker, i| {
             // The sixteen-walker cost run fans their visual instances out. Each still owns
@@ -1653,6 +1679,8 @@ const Sample = struct {
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
         self.pacer.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null, &self.rigs);
+        self.pacer_block.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null);
+        self.strafer.deinit(&self.rigs, if (self.content) |*c| c else null);
         self.pacer_proof.deinit(self.gpa);
         if (self.animators) |*bench| bench.deinit(self.gpa, &self.rigs);
         self.gpa.free(self.walkers);
@@ -1738,13 +1766,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n, m };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false, m: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n, m, k };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false, m: bool = false, k: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n m); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n m k); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -1889,6 +1917,7 @@ test {
     _ = @import("pacer_tests.zig");
     _ = @import("props_tests.zig");
     _ = @import("nav_tests.zig");
+    _ = @import("strafer_tests.zig");
     _ = @import("native_tests.zig");
     _ = gallery_mod;
     _ = generated;

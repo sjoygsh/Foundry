@@ -1144,3 +1144,116 @@ copies the rig's clips into a buffer of any size.
 **The bar:** see PROJECT_STATE. `zig build test`: 2,863/2,873, ten skips, 132/132 steps, two new
 tests. The samples' content changed, so `court` and `room` were staged with `dist`, ReleaseSafe on
 Metal.
+
+## Resolution — Step 7: `sandbox3d`: feet, the strafer, the pacer's gaze and its block (2026-11-08)
+
+§9 and §12 are built:
+- the climber's feet in `crowd.zig`;
+- the strafer, new in `strafer.zig` with `sandbox3d:strafer.machine` and `sandbox3d:strafer.main`;
+- the pacer's `blocked`, its gaze and its crate in `pacer.zig`, the crate a new record,
+  `sandbox3d:pacer.block`;
+- key **K** in `main.zig`;
+- the tests are in `nav_tests.zig`, `pacer_tests.zig` and a new `strafer_tests.zig`.
+
+Four things §12 said turned out otherwise, and one clip fix went back into Step 6's walks.
+
+**The climber.**
+- **How its feet are placed:** rays go down from each foot into the walk world's static layer
+  (mask 1). `anim.Feet` places the feet with locking on every tick it walks. On a link it plays its
+  one-shot as the clip has it, since a ladder's rungs are no floor.
+- **A sharpening of `anim`:** `Feet.probes` now gives its distance in world metres. The climber is
+  drawn at 0.71 of the walker's size, so a ray in model metres would have looked 30% too far. A test
+  holds a half-size figure's rays at half the length.
+- **A correction to §12: on the floor its pose is not the clip's.** The crowd stands its pawn
+  1.37 cm above the floor, which is the navigation mesh's height there. So on the floor the feet take
+  the figure down to it: every settled leg's offset there is the pawn's height over the figure's
+  size, within 0.1 mm. On a floor the body stands on, the pose is the clip's bit for bit, which
+  `anim`'s tests hold and the strafer below shows.
+- **What "within 1 cm" measures:** the foot's height above the ground, less the clip's own height
+  for that foot above its floor. M24's `stride` never puts a foot flat on its floor: a foot that
+  counts as down sits 1–4 cm above it, and placement keeps that lift on purpose (§4).
+  - Over two minutes of the crowd, every landing on a settled offset is exact: 2,105 of them, 25 on
+    the steps, the ramp and the platform.
+  - A foot that lands within a few ticks of crossing an edge lands while its offset still eases at
+    §4's 2 m/s, so that nothing pops. That happened to 21 landings, missing by up to 12.6 cm. The
+    test bounds those under 4%.
+
+**The strafer.**
+- **A correction to §12: the sweep.** Facing the centre one lap and the path the next turns its own
+  velocity only from ahead to one side, a quarter of the directions. Instead its heading turns
+  steadily against its path, `spin` 0.5 turns a lap, so over two laps it walks forward, sideways,
+  backward and sideways again. A test sees all eight eighths of a turn.
+- **Where it is:** it circles at 0.9 m/s round (−0.25, 0, 1.25), 0.6 m out. That is clear floor: a
+  map of the walk world's heights found a 0.3 m block where §12's first guess had put it.
+- **A correction to Step 6: the walks' gait.** Step 6 copied `stride`'s gait, whose planted foot
+  rises and swings forward and back again. So the contacts read from it fell in the swing, with the
+  foot moving 2.5 m/s while "down". The eight walks are now regenerated:
+  - the pelvis rides the planted leg's arc, so a planted foot stays at its rest height;
+  - the swinging knee bends back 0.8 rad;
+  - the hips swing `asin(v ÷ 4L)`, so a planted foot moves back by the walk's travel.
+  - Footfalls are still at 0 and 0.5. `clip11`–`clip18` are re-pinned. Every earlier file and the
+    buffer's first 29,800 bytes are unchanged.
+- **A correction to §12: its feet are not locked.**
+  - Inside `walk8` the mixed walks' planted foot slides up to 0.8 m/s, because a blend mixes the
+    hips' rotations, not the feet.
+  - So a locked foot reaches its 0.25 m reach in mid-contact and is let go. Its catch-up then moved
+    a joint 11.3 cm in a tick (6.8 m/s).
+  - Unlocked, or with no feet at all, the fastest joint moves 3.4 cm a tick (2.1 m/s), and the test
+    bounds it at 3 m/s.
+  - The climber locks, and so will the warden, since each plays one clip at a speed its rate
+    matches.
+  - `Strafer.lock` keeps the choice in one place.
+- **On the flat floor its pose is the blend's, bit for bit, on every tick,** against a second
+  strafer with no ground.
+- **It looks at the camera** with the `head` aim, and lets go once the camera is behind it.
+- **It replays to the bit.** Its 1,200-tick hash is pinned at `27f549beaaf0e20b`.
+- **The tour gives it no camera,** as it gives the pacer none.
+
+**The pacer.**
+- **`blocked` is a count, kept in the parameter.** It rises a sixth for each tick running that the
+  controller delivered less than half the travel `stride` asked for, so six ticks is 1. A tick that
+  asks for none, such as a turn on the spot, resets it.
+  - The machine's new first transition, `stride` → `turn` when `blocked` is 1, does the rest.
+  - Keeping the count in the saved parameter means a load carries on counting. §9 said 0 or 1, and
+    the rule it gives for reaching 1 is the same.
+  - `pacer_back` gains the same transition from both its walking states.
+- **The crate:**
+  - it is the record `sandbox3d:pacer.block`, a static box in the walk world on the first side,
+    which **K** drops and lifts;
+  - the pacer turns where it stops, at the crate's east face plus the controller's 0.22 m radius,
+    within 3 cm;
+  - it then walks the next side;
+  - the run logs each block.
+- **The gaze** turns its head to the camera inside 3 m, after the pose and over the `look` layer, and
+  lets go beyond. The tour gives it no camera, since its proof compares the run's pose hash with a
+  replay's.
+- **A correction to §9: the pacer's pins did not move.** `47f67027ff3a12b0`, `ef5c24337f5f2925` and
+  `pacer_back`'s `59632bcff2461113` all hold.
+  - **Why:** they hash the pose, the feet, the motion, the heading and the footfalls, never the
+    save's bytes, and without a crate `blocked` stays 0 and changes no tick.
+  - **So** the masked comparison §9 asked for is the pins themselves, unmasked.
+  - **The tour's three saves** still load, and `blocked` takes its default.
+- **It still places no feet,** as §12 says.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the probes' world scale;
+- the pacer's half-travel test for being held up;
+- the climber placing its feet at all;
+- the strafer's spin (its sweep test and its pin failed);
+- the pacer's gaze reach.
+
+**From the relocated ReleaseSafe install on Metal,** windowed:
+- **The tour passes all three saves:**
+  - mid-stride `e46c09dc62b1eeac`;
+  - mid-turn `222e0a9b12fd152c`;
+  - the M34 save `47f67027ff3a12b0`.
+  - The save is still 9,280 bytes, since a stack's parameters are fixed slots.
+  - The walker's `655e865f98779129` and the player's `cb99ccfcf2b6d6c3` hold.
+- **With K pressed on frame 60,** the pacer is blocked at (2.375, 0.800) and turns there. On its new
+  path it is blocked again at (2.775, 1.685), by the room, and turns there too. A second loop
+  repeats both.
+- **The strafer's tick, p95 in the paced loop:** 0.062 ms (tour) and 0.066 ms (crate run) for
+  advance, evaluate, two rays, feet, gaze and skin matrices, against §16's 0.10 ms.
+
+**The bar.** `zig build test`: 2,871/2,881, ten skips, 132/132 steps, with eight new tests. Every
+other line passed.

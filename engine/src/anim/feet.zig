@@ -238,13 +238,17 @@ pub const Feet = struct {
     pelvis: f32 = 0,
 
     /// One world-space ray a leg: from `max_raise` above the posed foot's sole to `max_drop` below
-    /// it. Returns the first `rig.legs.len` of `out`.
+    /// it, in world metres, so a figure drawn at another size looks as far as its legs reach.
+    /// Returns the first `rig.legs.len` of `out`.
     pub fn probes(rig: Rig, pose: Pose, to_world: Mat4, out: *[max_legs]Probe) []Probe {
-        const up = direction(to_world.mulDirection(Vec3.up));
+        const scaled = to_world.mulDirection(Vec3.up);
+        const up = direction(scaled);
+        const size = scaled.length();
+        const scale: f32 = if (std.math.isFinite(size) and size > 1e-9) size else 1;
         for (rig.legs, 0..) |leg, l| {
             const foot = ik.positionOf(ik.modelOf(rig.skeleton, pose, leg.chain.end));
             const top = foot.add(.init(0, leg.max_raise - leg.sole, 0));
-            out[l] = .{ .origin = to_world.mulPoint(top), .direction = up.neg(), .distance = leg.max_raise + leg.max_drop };
+            out[l] = .{ .origin = to_world.mulPoint(top), .direction = up.neg(), .distance = (leg.max_raise + leg.max_drop) * scale };
         }
         return out[0..rig.legs.len];
     }

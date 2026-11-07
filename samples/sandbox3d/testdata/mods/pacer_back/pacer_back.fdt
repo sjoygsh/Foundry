@@ -1,9 +1,10 @@
 # M35's content-only machine mod (`docs/design/animation-states.md` §13): the pacer's machine,
 # restated whole so that every other side is `stride` played at speed -1. The figure walks those
 # sides backward, its travel reversed, and turns left at every corner as before, so its path is no
-# longer a square. Nothing in the sample's code knows.
+# longer a square. Nothing in the sample's code knows. Since M36 it turns where it is blocked, as
+# the pacer's own machine does.
 foundry:animation_machine sandbox3d:pacer.machine {
-    params [ { name "look" default 1 } ]
+    params [ { name "look" default 1 } { name "blocked" } ]
     layers [
         { name "body" entry "turn"
             states [
@@ -14,8 +15,10 @@ foundry:animation_machine sandbox3d:pacer.machine {
             ]
             transitions [
                 { from "turn" to "stride" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "stride" to "turn_back" when [ { param "blocked" is 1 } ] }
                 { from "stride" to "turn_back" when [ { quantity "laps" at_least 1.5 } ] }
                 { from "turn_back" to "back" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "back" to "turn" when [ { param "blocked" is 1 } ] }
                 { from "back" to "turn" when [ { quantity "laps" at_least 1.5 } ] }
         ] }
         { name "look" mode "additive" weight_param "look" weight_fade 1 entry "look"

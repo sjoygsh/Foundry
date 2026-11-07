@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-08
-**Current handoff: M36 Step 6 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 7, `sandbox3d`: the climber's feet, the strafer on `walk8`, and the pacer's gaze and block. No sample plays a walk, a blend, feet or a gaze yet.
+**Current handoff: M36 Step 7 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 8, the court: the warden's `move` blend, feet and gaze, and a build for the owner to play. §13's "rate 1 at 1 m/s" is wrong (1.67), and Step 8 corrects it.
+
+**M36 Step 7 is done (2026-11-08): `sandbox3d`'s feet, strafer, gaze and block.**
+- **The climber** places locked feet on the course through walk-world rays. Settled landings are exact, 2,105 of them, 25 on the steps, ramp and platform. 21 landings in two minutes come down while their offset still eases after an edge (§4's no-pop rule), missing by up to 12.6 cm. On the floor the feet take it down the crowd's 1.37 cm. `Feet.probes` now measures in world metres.
+- **The strafer** (new `strafer.zig`) circles on `walk8`, its heading turning half a turn a lap against its path, so it sweeps every direction. §12's face-the-centre alternation only swept a quarter. Its feet are unlocked: a lock caught up at 6.8 m/s, against 2.1 m/s unlocked. On the floor its pose is the blend's bit for bit. Pin `27f549beaaf0e20b`.
+- **Step 6's eight walks were regenerated** with a planted-foot gait, so `clip11`–`clip18` are re-pinned. Older bytes are unchanged.
+- **The pacer** counts `blocked` in the saved parameter and turns at K's crate (`sandbox3d:pacer.block`). It looks at the camera within 3 m. Its pins did not move, since they hash the walk, not the save.
+- **The relocated ReleaseSafe Metal tour** passes all three saves. With K, the pacer turns at the crate. The strafer's tick is 0.062–0.066 ms p95 against 0.10.
+- Bar 2,871/2,881 (ten skips), 132/132 steps, eight new tests.
 
 **M36 Step 6 is done (2026-11-08): the clips.**
 - `scripts/m36/clips.py` appends eight walks to the walker, `walk.n` to `walk.nw`. That is one more than §11 said: each travels its place on a 3 × 3 grid of m/s, so `walk8`'s travel is its position everywhere. `stride` (0.6 m a lap) stays out of the grid.
