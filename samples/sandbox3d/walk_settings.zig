@@ -17,6 +17,8 @@ pub const Settings = struct {
     gravity: f32,
     turn_rate: f32,
     look_rate: f32,
+    /// M37's jump, metres a second off the ground; 0 for none.
+    jump_speed: f32 = 0,
     course: core.ContentId,
     collision: [max_collision]core.ContentId = @splat(.none),
     len: usize = 0,
@@ -46,6 +48,7 @@ pub const Settings = struct {
             .turn_rate = try bounded(fields, "turn_rate", 0.001, 20),
             .look_rate = try bounded(fields, "look_rate", 0.00001, 1),
             .course = try id(fields, "course"),
+            .jump_speed = try bounded(fields, "jump_speed", 0, 30),
         };
         if (!out.valid()) return error.InvalidWalk;
         const list = (fields.listAt(try index(fields, "collision")) catch return error.InvalidWalk) orelse return error.InvalidWalk;

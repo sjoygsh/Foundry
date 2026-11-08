@@ -53,7 +53,7 @@ test "walk tour: compiled room and course pass all five stages and byte-exact fr
     defer first.deinit(&assets);
     first.refresh(&store, &assets, dt);
     try testing.expect(!first.character.isNone());
-    try testing.expectEqual(@as(usize, 2), first.settings.?.len);
+    try testing.expectEqual(@as(usize, 3), first.settings.?.len);
     try testing.expect(!first.collisions[0].body.isNone() and !first.collisions[1].body.isNone());
     var tour: Tour = .{};
     while (!tour.done()) try tour.advance(&first, dt);

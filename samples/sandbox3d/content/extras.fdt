@@ -1,0 +1,61 @@
+# M37's corner (`docs/design/collision-extras.md` §11), west of the room around (-20, 0, 0) and
+# away from every tour path: a lift, a turntable, a crate to push, a door, a one-sided ledge and
+# a dense rock that collides as a few boxes. The models are written by scripts/m37/make_corner.py;
+# the moving pieces are bodies the sample makes (`samples/sandbox3d/extras.zig`), and none of it is
+# a navigation source or a prop.
+
+# What the corner is made of. `physics3d` reports these IDs and never reads them; the sample
+# names the one under the player.
+@schema surface { name string }
+surface sandbox3d:surface.stone { name "stone" }
+surface sandbox3d:surface.wood { name "wood" }
+surface sandbox3d:surface.metal { name "metal" }
+
+# The ground: stone underfoot, a metal platform and wall, and a ledge met from above alone. Its
+# collision is version 2, and joins the walk's own list (`sandbox3d:walk.main`).
+foundry:model_import sandbox3d:models.corner {
+    source "models/corner.gltf"
+    collision true
+    collision_exclude [ "LedgeSlab" ]
+    surfaces [
+        { material "Stone" surface sandbox3d:surface.stone }
+        { material "Metal" surface sandbox3d:surface.metal }
+        { material "Ledge" surface sandbox3d:surface.wood one_sided true }
+    ]
+}
+
+# The rock is drawn dense and collides as its proxy, which its model names.
+foundry:collision_import sandbox3d:models.rock_proxy {
+    source "models/rock_proxy.gltf"
+    surfaces [ { material "Proxy" surface sandbox3d:surface.stone } ]
+}
+foundry:model_import sandbox3d:models.rock {
+    source "models/rock.gltf"
+    collision_mesh sandbox3d:models.rock_proxy
+}
+foundry:model_import sandbox3d:models.disc { source "models/disc.gltf" }
+
+# The pieces: which models draw them, what each is made of, and where the rock stands and how
+# large. The places and motions of the moving pieces are the sample's, beside the generator's.
+@schema extras {
+    box_model id
+    disc_model id
+    rock id
+    rock_position { x f32 y f32 z f32 }
+    rock_scale f32
+    lift_surface id
+    turntable_surface id
+    crate_surface id
+    door_surface id
+}
+extras sandbox3d:extras.main {
+    box_model sandbox3d:models.crate
+    disc_model sandbox3d:models.disc
+    rock sandbox3d:models.rock
+    rock_position { x -20 y 0 z 3 }
+    rock_scale 1.5
+    lift_surface sandbox3d:surface.metal
+    turntable_surface sandbox3d:surface.wood
+    crate_surface sandbox3d:surface.wood
+    door_surface sandbox3d:surface.wood
+}

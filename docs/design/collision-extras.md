@@ -989,3 +989,126 @@ Three of these first broke compilation through unused captures. They were rerun 
 compiles.
 
 **The bar:** see `PROJECT_STATE.md`.
+
+## Resolution — Step 7: the corner, and the tilted tour (2026-11-09)
+
+`sandbox3d` now covers §11. The code is `extras.zig` (the pieces), `corner_tour.zig` (the six
+stages, the tilt and the comparison), and changes to `walk.zig`, `walk_settings.zig` and
+`main.zig`. The content is `content/extras.fdt`, and `walk.main` gains the corner's collision and a
+jump. The models are written by `scripts/m37/make_corner.py`, which borrows M20's glTF writer and
+writes none of M20's files. The tests are in `extras_tests.zig`.
+
+**The corner** is centred on (−20, 0, 0), west of the room and the crate grid, and far from every
+tour path, square, corner and crowd lane:
+- **The ground** is `sandbox3d:models.corner`:
+  - a stone floor, a metal platform beside the lift, and a metal wall behind the crate;
+  - a ledge whose collision is its top quad alone, wood and one-sided, over a slab that
+    `collision_exclude` keeps drawn only, since its underside would otherwise be a ceiling.
+  Its collision is version 2. It joins `walk.main`'s list, so the walk world holds it, and it is
+  neither a navigation source nor a prop.
+- **The lift** is a metal box whose top goes from 0.1 m to the platform's 1.0 m. It waits a second
+  at each end and takes a second and a half each way.
+- **The turntable** is a wooden sixteen-sided hull, turned about `up` a quarter-turn a second,
+  counted in whole turns so its angle stays small.
+- **The crate** is a wooden box, pushed at 0.5, 1 mm off the floor as Step 4's test had it.
+- **The door** is a wooden leaf hinged at its edge, its foot 0.1 m clear of the floor. It swings shut
+  for two seconds and open for two, at a quarter-turn a second. Each tick it is swept by
+  `shapeSweep` and moved by `moveBody` to where the sweep stopped, so it stops at the player.
+- **The rock** is `sandbox3d:models.rock`, 768 triangles drawn. Its import names
+  `sandbox3d:models.rock_proxy`, two boxes of 24 triangles. The sample reads the rock's compiled
+  `foundry:model` for its `collision` and places that at scale 1.5.
+
+`sandbox3d:extras.main` names the models that draw the pieces, the rock, its place and scale, and
+each moving piece's surface. The places and motions are the sample's, as M28's and M29's corners'
+are, and repeat the generator's numbers.
+
+**Sharpened, §11's "join the walk world's own list":** the corner's ground joins the list. The rock
+cannot, because the list has no pose or scale. So the sample makes the rock's body, in the walk
+world, from the collision its model names. Neither is a navigation source or a prop.
+
+**The walk.**
+- **Surfaces:** `addCollisionMesh` is the consumer's half of §9, since `asset` cannot see
+  `physics3d`. It turns each `.fcol` v2 attribute into a surface index and a one-sided flag for
+  `addMeshWith`. Every collision the walk loads, and the rock, goes through it. A v1 mesh gives
+  empty attributes, so nothing that was plain changes.
+- **The jump:** `walk` gains `jump_speed` (default 0, so older records still read), and `Intent`
+  gains `jump`, held on space. A jump leaves only from the ground. `walk.main` sets 4.5 m/s.
+- **The turntable turns the view:** the walk adds `carried_yaw` to its yaw.
+- **The frame:** `Walk.frame`, identity except in the tilted tour. The world's geometry and `up`
+  are turned by it. `teleport`, each move and `result` are in the upright frame, so a tour reads the
+  same in either. A world that has a frame sets its `up` before its first character.
+- **What is underfoot:** `Walk.surface` is the ground's surface. The overlay draws "on stone" (or
+  wood, metal, none) a line above its counts, and the log says "walk: on …" when it changes.
+
+**The order of a tick** is §13's:
+- the pieces move first, in their own span, `corner.pieces`;
+- then the player.
+In the tour, `CornerTour.prepare` moves them and `move` moves the player, so the frame loop times
+the player's move alone. The corner's bodies are made last in a refresh, so every body before them
+keeps the handle it had.
+
+**The tour.** M23's five stages are unchanged. M37's six follow, once those, the plinth's and the
+orbiter's proofs are done. Each begins with the corner set back (`Extras.reset`, by `setPose`,
+which carries nobody) and a teleport:
+- **lift:** standing on it, carried up for 200 ticks; `carried` was reported, and the feet end
+  within 1 cm of 1.0 m;
+- **turntable:** standing 0.5 m off its centre; over a second, `carried_yaw` sums to π/2 within
+  1e-3;
+- **crate:** walking into it toward the wall:
+  - it moves at 0.5 of the walk's pace within 1% on at least 15 ticks;
+  - it moves at least 0.5 m;
+  - it ends still for 20 ticks, its face within 1 cm of the wall's;
+- **door:** standing in its swing as it shuts:
+  - every tick it never overlaps the player and never moves them by 1 mm;
+  - at the end, its last sweep met the player at fraction 0, which is within `cast_tolerance`;
+  - it stands more than 0.2 rad open;
+- **ledge:** a jump from under it; no ceiling, and landing on it within 1 cm, on wood;
+- **rock:** walking at it; blocked, and stopped within 1 cm of the proxy's scaled face plus the
+  radius and skin, with its body's mesh 24 triangles.
+
+The feet end each stage at: the platform (1.005 m), the disc (0.105 m), 0.29 m short of the wall
+behind the crate, still at the door, the ledge (1.205 m), and 1.99 m along at the rock, each 5 mm up
+for the skin.
+
+**Sharpened, the rock's "blocked":** the walls a blocked move reports can be 0 on a tick
+where the move is refused outright, so the rock stage counts a wall on any tick of the stage, as M23's
+plinth proof counts being held up.
+
+**The tilted tour.** `FOUNDRY_SANDBOX3D_WALK=tilted` is the tour, and then both tours again in a
+fresh walk and corner whose frame is Step 1's tilt, 0.7 rad about (1, 0.3, 0.5). Every tick of each
+trace is compared with the frame loop's, in the upright frame, within 5 mm, and every stage must
+pass in both. The worst ticks were 0.01 mm (M23's) and 0.1 mm (M37's). `extras_tests.zig` holds the
+same comparison.
+
+**Pins.** The corner's tour is pinned at `832fe43a3a82db13`. Every older pin holds:
+- the player's `cb99ccfcf2b6d6c3`;
+- the walker's `655e865f98779129`;
+- the pacer's three (`e46c09dc62b1eeac`, `222e0a9b12fd152c`, `47f67027ff3a12b0`);
+- the strafer's, the navigation and the crowd pins, in the bar's tests.
+`walk_tests.zig`'s count of the walk's collisions is three, not two.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the one-sided flag, and the surface index, in `addCollisionMesh`;
+- the frame turned back in `Walk.step`, and the tilted world's `up` (the tilted test);
+- the door moved only as far as its sweep allows;
+- the rock's scale;
+- the jump;
+- the turntable's rate (its quarter-turn check);
+- the crate's push ratio.
+
+**From the relocated ReleaseSafe install on Metal,** windowed:
+- **The tour:** M23's five, M37's six and the corner's replay pass. The corner tour's hash is
+  `832fe43a3a82db13`. The player's, the walker's and the pacer's three pins hold.
+- **The tilted tour (`FOUNDRY_SANDBOX3D_WALK=tilted`):** it passes, worst 0.01 mm and 0.1 mm from
+  upright.
+
+**Budgets, p95 in the paced 60 Hz loop:**
+- **The player's move:** 0.231 ms and 0.233 ms over 1,300 moves, both tours, carried and pushing,
+  against 0.25 ms. The frame pacing was a median of 16.67 ms.
+- **The door's sweep:** 0.014 ms against 0.05 ms.
+- **`addMesh` with surfaces, and the court's tick,** are Step 8's, since the court's level is what
+  gains surfaces. The corner's ground is a few dozen triangles.
+
+**The bar.** `zig build test`: 2,917/2,927, ten skips, 132/132 steps, with three new tests. Every
+check, the four samples and `fdt-check` passed. No release stages `sandbox3d`, and the room's and
+the court's content did not change, so no release was staged.

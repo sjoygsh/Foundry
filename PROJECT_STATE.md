@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 6 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 7, `sandbox3d`: the corner (lift, turntable, crate, door, one-way ledge, scaled proxy rock) and the tilted tour, with move budgets read in the paced loop. None of the corner exists yet.
+**Current handoff: M37 Step 7 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 8, the court: footsteps by surface, which the owner plays. The court has no surfaces yet.
+
+**M37 Step 7 is done (2026-11-09): the sandbox's corner, and the tilted tour.**
+- A corner at (−20, 0, 0), from `scripts/m37/make_corner.py` and `content/extras.fdt` (`extras.zig`):
+  - stone ground, a metal platform and wall, and a one-sided wooden ledge, all in the walk's collision list as `.fcol` v2;
+  - a lift, a turntable, a crate pushed at 0.5, and a door that stops where its sweep meets the player;
+  - a dense rock that collides as its two-box proxy at scale 1.5, read from its model's `collision`.
+- The walk copies surfaces and one-sided faces into `physics3d` (`addCollisionMesh`), jumps on space (`jump_speed`), turns with a turntable, and names the surface underfoot in the overlay and the log. **L** goes to the corner.
+- Six tour stages follow M23's five (`corner_tour.zig`), pinned at `832fe43a3a82db13`. `FOUNDRY_SANDBOX3D_WALK=tilted` reruns both tours in a world turned 0.7 rad, matching every tick within 0.1 mm. Every older pin holds.
+- From a relocated, read-only ReleaseSafe install on Metal, windowed, both modes pass. Paced p95: the player's move 0.231 ms (budget 0.25), the door's sweep 0.014 ms (budget 0.05).
+- Nine guards verified by mutation. Bar 2,917/2,927 (ten skips), 132/132 steps, three new tests; every check, sample and `fdt-check` passed.
 
 **M37 Step 6 is done (2026-11-09): surfaces, proxies, and a model that names its collision.**
 - `foundry:model_import` v3 gains `surfaces` (material name to surface ID and one-sided flag) and `collision_mesh` (a proxy). Derived collision with a surface or a one-sided face is `.fcol` v2. Its table is in mapping order, each surface once, and each triangle takes its primitive's material. Plain derived collision is still v1, byte for byte.

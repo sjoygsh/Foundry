@@ -147,6 +147,8 @@ walker sandbox3d:walker.main {
     walk_speed f32 gravity f32 turn_rate f32 look_rate f32
     course id
     collision [id]
+    # M37: how fast a jump leaves the ground (space), 0 for none (`collision-extras.md` §11).
+    jump_speed f32 (default 0)
 }
 
 # M32: the walker's navigation mesh (`docs/design/navigation.md` §9.1), a recipe the sample builds
@@ -231,7 +233,12 @@ walk sandbox3d:walk.main {
     max_slope 0.785398 step_height 0.35 snap_distance 0.3
     walk_speed 3 gravity 9.81 turn_rate 1.5 look_rate 0.004
     course sandbox3d:models.course
-    collision [ sandbox3d:models.room.collision sandbox3d:models.course.collision ]
+    collision [
+        sandbox3d:models.room.collision
+        sandbox3d:models.course.collision
+        sandbox3d:models.corner.collision
+    ]
+    jump_speed 4.5
 }
 
 foundry:material sandbox3d:materials.glass {

@@ -1,0 +1,141 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Foundry scripts/m20/make_scene.py"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Rock",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "rock",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2,
+            "COLOR_0": 3
+          },
+          "indices": 4,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Rock",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.42,
+          0.4,
+          0.37,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7
+      }
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 1536,
+      "type": "VEC3",
+      "min": [
+        -0.3932565126276076,
+        -0.022627612654387785,
+        -0.47040000000000004
+      ],
+      "max": [
+        0.39325651262760764,
+        0.7426276126543878,
+        0.4368
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 1536,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 1536,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5121,
+      "count": 1536,
+      "type": "VEC4",
+      "normalized": true
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5123,
+      "count": 2160,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 18432,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 18432,
+      "byteLength": 18432,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36864,
+      "byteLength": 12288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 49152,
+      "byteLength": 6144,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 55296,
+      "byteLength": 4320,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "rock.bin",
+      "byteLength": 59616
+    }
+  ]
+}
