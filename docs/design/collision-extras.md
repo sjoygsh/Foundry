@@ -1190,3 +1190,6 @@ windowed:**
 **The bar.** `zig build test`: 2,918/2,928, ten skips, 132/132 steps, with one new test. Every
 check, the four samples and `fdt-check` passed, and `make_court_steps.py --check` holds. The court
 was staged with `dist`, since its content changed.
+
+**The owner played it (2026-11-09), which is the exit's last clause.** They played the staged
+ReleaseSafe build, `zig-out/dist/court/Foundry Court.app`, on the Mac, and reported "Fanatstic".

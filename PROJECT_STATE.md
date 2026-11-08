@@ -1,7 +1,7 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 8 of 10 is committed** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). The owner's play of the staged court, the exit's last clause, is still to come. Then stop before Step 9, Windows/Vulkan on the PC.
+**Current handoff: M37 Step 8 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). The owner played the staged court on 2026-11-09 and reported "Fanatstic". Stop before Step 9, Windows/Vulkan on the PC.
 
 **M37 Step 8 is done (2026-11-09): the court's footsteps by surface.**
 - The level's import maps `Paving` to `court:surface.paving` and `Stone` to `court:surface.stone`. Its collision is `.fcol` v2, with the same 132 triangles.
