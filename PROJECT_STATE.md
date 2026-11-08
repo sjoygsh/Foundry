@@ -1,7 +1,25 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 8 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). The owner played the staged court on 2026-11-09 and reported "Fanatstic". Stop before Step 9, Windows/Vulkan on the PC.
+**Current handoff: M37 Step 9 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 10, closing M37. The PC still holds `src\Foundry-m37` and `m37`, which Step 10 deletes by exact name.
+
+**M37 Step 9 is done (2026-11-09): Windows/Vulkan on the owner's PC (i3-10105F, Arc A750).**
+- From a fresh clone at `a7ec9c8`, at `-j2` and below normal:
+  - null 2,897/2,916 (19 skips), 128/128 steps;
+  - Vulkan 3,178/3,208 (30 skips), 232/232 steps;
+  - ReleaseSafe pin suites 714/714.
+- On x86_64 the corner's `832fe43a3a82db13`, the player's, walker's, pacer's, navigation and court pins hold.
+- From a relocated, read-only ReleaseSafe install, windowed, 14 runs pass, five of them under synchronization validation with clean logs:
+  - the tour, six times;
+  - the tilted tour, twice, within 0.1 mm;
+  - the court's three endings, eight runs, with footsteps by surface as on the Mac.
+- p95 on the i3, all within budget except one:
+  - move 0.090–0.114 ms (budget 0.25);
+  - door sweep 0.008 ms (budget 0.05);
+  - level `addMesh` 0.15–0.17 ms (budget 5);
+  - court tick 0.125–0.215 ms (budget 0.25).
+- The exception: the 80-frame `caught` ending read 0.250 and 0.273 ms, as M35 and M36 did there. It goes to M100.
+- Scripts: `scripts/m37/windows.ps1`, `m37-setup.ps1`, `m37-launch.ps1`.
 
 **M37 Step 8 is done (2026-11-09): the court's footsteps by surface.**
 - The level's import maps `Paving` to `court:surface.paving` and `Stone` to `court:surface.stone`. Its collision is `.fcol` v2, with the same 132 triangles.

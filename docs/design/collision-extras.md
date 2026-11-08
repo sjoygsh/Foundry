@@ -1193,3 +1193,63 @@ was staged with `dist`, since its content changed.
 
 **The owner played it (2026-11-09), which is the exit's last clause.** They played the staged
 ReleaseSafe build, `zig-out/dist/court/Foundry Court.app`, on the Mac, and reported "Fanatstic".
+
+## Resolution — Step 9: Windows/Vulkan (2026-11-09)
+
+`scripts/m37/windows.ps1` comes from M36's, with `m37-setup.ps1` and `m37-launch.ps1` beside it,
+as M36's were. The setup clones the repository into its own directory on the PC and checks out
+M37's commits from a git bundle, since they are not pushed. The launcher runs the desktop half from
+a scheduled task in the owner's session.
+
+The script drops M36's path, crate and animator runs, which M37 did not touch. It adds the corner's
+six stages, their replay pin, the tilted tour, the move and door lines, and the court's `addMesh`
+and footstep lines. It ran on the owner's Arc A750 PC, an i3-10105F, from a fresh clone at
+`a7ec9c8`, at `-j2` and below normal priority, with the 50% CPU cutoff on. The PC read 21–24%
+before each half.
+
+**The native suites:**
+- null 2,897/2,916 (19 skips), 128/128 steps;
+- Vulkan 3,178/3,208 (30 skips), 232/232 steps;
+- the ReleaseSafe pin suites (`physics3d`, `nav`, `anim`, `rigs`, `scene`, `sandbox3d` and
+  `court`) 714/714.
+
+So on x86_64 at ReleaseSafe, these pins hold:
+- the corner's `832fe43a3a82db13` and the tilted comparison;
+- the player's, the walker's and the pacer's three;
+- the navigation and crowd pins;
+- the court's four digests and its footsteps test.
+
+**Both samples ran from a relocated, read-only ReleaseSafe install,** windowed in the desktop
+session. One run of each kind was also under Khronos validation with synchronization, and every
+validation log holds its one info line and nothing else.
+- **The tour, six times:**
+  - M23's five stages, the walker, the pacer's three saves and the corner's six stages pass with
+    the Mac's values;
+  - the corner's replay is `832fe43a3a82db13`;
+  - the surfaces underfoot are the Mac's.
+- **The tilted tour, twice:** it passes, worst 0.00001 m and 0.00010 m from upright, as on the Mac.
+- **The court's three endings, eight runs:** each replay matched a fresh simulation, and nothing
+  was dropped. Footsteps by surface are the Mac's: `win` 142 by surface and 2 by the set's own,
+  `caught` 2, `fell` 11.
+- **The install's hash tree was unchanged,** and no scripted run wrote preferences.
+
+**§16's budgets on the i3, p95 in the paced loop:**
+
+| What | Readings | Budget |
+| --- | --- | --- |
+| The player's move, carried and pushing, 1,300 moves a run | 0.090–0.114 ms | 0.25 ms |
+| The door's `shapeSweep`, 600 a run | 0.0074–0.0080 ms | 0.05 ms |
+| The level's `addMesh` with surfaces | 0.146–0.165 ms | 5 ms |
+| The court's whole game tick, `win` ×4 and `fell` ×2 | 0.125–0.215 ms | 0.25 ms |
+| The court's whole game tick, `caught` (76–80 frames) | **0.250 ms and 0.273 ms** | 0.25 ms |
+| The warden's `render.skin` | 0.039–0.127 ms | 0.25 ms |
+
+**The short `caught` ending sits on its line and over it under validation,** as in M35
+(0.154–0.321 ms) and M36 (0.287 ms) on this i3. Its 76–80 frames make its p95 the worst four
+frames. Every long ending sits under its line, and so does every reading of the move, which
+was M23's tight one. The reading goes to M100 with M35's and M36's, as §16 says.
+
+**Linux** compiles in the bar's cross-check. Nothing here is Linux-specific (§14).
+
+**The PC** keeps `%USERPROFILE%\src\Foundry-m37` and `%USERPROFILE%\m37` until Step 10, which
+deletes those two exact paths and nothing else.
