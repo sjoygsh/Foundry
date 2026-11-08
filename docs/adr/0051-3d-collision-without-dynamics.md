@@ -29,6 +29,11 @@ is byte-exact on the same machine.
 **No rigid-body dynamics.** Mass, integration, stacking, joints, ragdolls, vehicles, pushing and
 carrying platforms wait for a game that needs them.
 
+> **2026-11-09, M37:** carrying platforms and pushing are no longer waiting. They are
+> [ADR-0075](0075-platforms-and-pushing-without-dynamics.md)'s, built without dynamics: a rider is
+> carried by a kinematic body's recorded motion, and a push is a bounded ratio, one level deep.
+> Mass, integration, stacking, joints, ragdolls and vehicles remain M51's and M52's.
+
 ## Consequences
 
 - The capability a walkable 3D game needs is covered without a solver or a dependency.
@@ -49,5 +54,6 @@ carrying platforms wait for a game that needs them.
 
 - A game needs simulated objects, stacking, joints, ragdolls or vehicles. That is a new ADR,
   weighing Jolt against a solver.
-- A game needs moving platforms, or characters that push each other.
+- ~~A game needs moving platforms, or characters that push each other.~~ Answered by ADR-0075
+  in M37 (2026-11-09).
 - Triangle-mesh queries are measured too slow for a shipped level.

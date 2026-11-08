@@ -50,6 +50,11 @@ mesh by a generational handle (I1).
 
 **Collision poses are rigid.** Scale is baked at import; `physics3d` poses carry none.
 
+> **2026-11-09, M37:** poses are still rigid, and a body may now scale its mesh or hull
+> ([ADR-0076](0076-collision-geometry-gains-surfaces-scale-and-proxies.md)). Proxies are a second
+> producer of the same record, `foundry:collision_import`, as the revisit below foresaw. `.fcol`
+> version 2 carries surfaces and one-sided faces, so a baked tree, M38's, takes a later version.
+
 ## Consequences
 
 - **Nothing at runtime knows collision came from glTF.** A hand-placed `.fcol`, derived through

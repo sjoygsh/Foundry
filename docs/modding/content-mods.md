@@ -599,6 +599,63 @@ route. How an agent moves, what it sees and what it does on arrival are the game
 are what a mod overrides there: the court's warden has a speed, a sight range and a sight angle in
 `court:warden.main`.
 
+### Collision: surfaces, one-sided faces and proxies
+
+What a game collides against is a model's collision, and three things about it are yours to
+write. All three are on the model's import record, so an override restates the import.
+
+```
+@schema surface { step id  land id  warden_step id }   # the court's own schema
+surface court:surface.stone { step court:sounds.step_stone  land court:sounds.land_stone  warden_step court:sounds.warden_step_stone }
+
+foundry:model_import court:models.court {
+    source "models/court.gltf"
+    collision true
+    surfaces [
+        { material "Paving" surface court:surface.paving }
+        { material "Stone" surface court:surface.stone }
+    ]
+}
+
+# The sandbox's rock: drawn dense, colliding as two boxes.
+foundry:collision_import sandbox3d:models.rock_proxy {
+    source "models/rock_proxy.gltf"
+    surfaces [ { material "Proxy" surface sandbox3d:surface.stone } ]
+}
+foundry:model_import sandbox3d:models.rock {
+    source "models/rock.gltf"
+    collision_mesh sandbox3d:models.rock_proxy
+}
+```
+
+- **A surface** is any record's content ID, given to the triangles of a glTF material, which
+  `surfaces` names **by name**. The engine reports it in every hit and never reads it. What it
+  means is the game's: the court looks up a `court:surface` record for its footsteps, and the
+  sandbox names its stone, wood and metal for the overlay.
+- **`one_sided true`** on a mapping makes its triangles solid from the front alone, the side their
+  winding faces. A character jumps up through a one-sided ledge and lands on top of it.
+- **A proxy** is a simpler collision for a dense model. A `foundry:collision_import` compiles a
+  glTF of its own into a collision mesh of the same ID, with `surfaces`, `exclude` and `front` as an
+  import has them. A model's `collision_mesh` names it, and the compiled `foundry:model`'s
+  `collision` field then points at the proxy. A model has `collision true` or a `collision_mesh`,
+  never both.
+- **What `fpack` refuses,** each by its record:
+  - a material the glTF does not have, or one named twice;
+  - a surface that is no record, dependencies included;
+  - surfaces with no collision;
+  - collision and a proxy together;
+  - a `collision_mesh` that is not a collision import.
+- **Plain collision keeps its bytes.** Collision with no surface and no one-sided face is still
+  version 1, so adding a mapping is the only thing that changes a mesh.
+
+**The order a game runs a world in,** once a tick, is what makes platforms, doors and footsteps
+agree. Each of the three steps is the game's:
+1. It moves the kinematic bodies. Platforms move by `moveBody`. A door is swept first, then moved
+   as far as the sweep allows.
+2. It moves the characters, in a fixed order. Each is carried by what it stands on, pushes what
+   it meets at that body's ratio, and slides.
+3. It reads what they stand on, `ground.surface`, and plays or does what that surface means.
+
 ## 10. Skeletal animation
 
 A skinned model's clips come from its import, and they carry no meaning of their own. What a clip

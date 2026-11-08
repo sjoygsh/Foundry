@@ -1,6 +1,6 @@
 # ADR-0076: Collision geometry gains surfaces, one-sided faces, runtime scale and proxies
 
-**Status:** Accepted 2026-11-09, when the owner requested M37 Step 1
+**Status:** Accepted 2026-11-09, when the owner requested M37 Step 1; implemented in M37 (2026-11-09, tag `m37`)
 **Date:** 2026-11-09
 **Informed by:** ADR-0055, ADR-0057, `docs/design/collision3d.md`, `docs/design/collision-extras.md`
 

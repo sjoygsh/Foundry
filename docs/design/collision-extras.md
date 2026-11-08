@@ -1,7 +1,8 @@
 # Design: M37 — Character and collision extras: moving platforms, pushing, surfaces, one-sided faces, rotational sweeps, runtime scale, proxies and the up axis
 
-**Status:** Accepted 2026-11-09, when the owner asked for Step 1, with §19 as written. Each step's
-Resolution follows §19.
+**Status:** Accepted 2026-11-09, when the owner asked for Step 1, with §19 as written. **Complete
+2026-11-09, tag `m37`.** Each step's Resolution follows §19, and the dated notes below say where the
+code sharpened this text.
 **Date:** 2026-11-09
 **Baseline:** `6058f66`, tag `m36`. M0–M36 are complete.
 **Decisions:**
@@ -135,6 +136,10 @@ with every step it takes, and that is a different controller, not a field. Rende
 tour's inputs rotated with it. Every stage passes, and every feet position, rotated back, is within
 0.1 mm of the upright tour's.
 
+> **2026-11-09, at the close:** the comparison's bound is 5 mm, not 0.1 mm. Floating-point ties
+> at thresholds differ in a turned frame (Step 1's Resolution). The sandbox's worst tick was
+> 0.1 mm.
+
 ## 4. Runtime scale (`physics3d`)
 
 **A body carries a scale, for the shapes that need one.**
@@ -244,6 +249,10 @@ standing on it is carried by that motion when it next moves (ADR-0075).
 
 **The order a game runs.** It moves its platforms and doors first, then its characters, each tick.
 The sandbox and the court follow it, and `content-mods.md` will say it.
+
+> **2026-11-09, at the close:** `moveBody` leaves a body's own riders, characters whose ground it
+> is, to the carry, so a lift moves its rider once, not twice (Step 4's Resolution).
+> `content-mods.md` §9 now gives §13's order.
 
 **Why recorded motion and not velocity.** `physics3d` has no time (ADR-0051), so a velocity would
 need a `dt` it does not have. The pose a game moved a body to is what the game already says, and
@@ -358,6 +367,11 @@ the navigation and crowd pins hold. The test of that is the pins themselves.
 and `up` are turned by a fixed tilt, and compares every tick with the upright tour turned the same
 way (§3).
 
+> **2026-11-09, at the close:** only the corner's ground joins the walk world's list. The rock
+> cannot, since the list holds no pose or scale. The sample makes its body from the collision its
+> model names. The rock stage counts a wall on any tick of the stage, not just its last (Step 7's
+> Resolution).
+
 ## 12. The court
 
 **Its footsteps sound by surface.**
@@ -369,6 +383,10 @@ way (§3).
 - **What must not move:** `win`, `caught`, `fell` and the soundtrack keep their body digests every
   tick, and the soundtrack's events keep theirs. A surface chooses which sound plays, and nothing
   that moves. The navigation mesh is built from the same triangles, so its pin holds.
+
+> **2026-11-09, at the close:** the court has no steps and two materials, so it has two
+> surfaces, paving and stone. Stone is heard on the low wall's top. A `court:surface` names three
+> sounds (a stride, a landing and the warden's footfall), not one (Step 8's Resolution).
 
 **Nothing else in the court changes.** It has no lift, crate or door: the sandbox demonstrates
 capability, and the court is a game whose level is its own.
@@ -1253,3 +1271,50 @@ was M23's tight one. The reading goes to M100 with M35's and M36's, as §16 says
 
 **The PC** keeps `%USERPROFILE%\src\Foundry-m37` and `%USERPROFILE%\m37` until Step 10, which
 deletes those two exact paths and nothing else.
+
+## Resolution — Step 10: Close M37 (2026-11-09)
+
+Every document now names M37 complete:
+- `CLAUDE.md`:
+  - §4.1's two rows say implemented;
+  - §4.3's `physics3d`, `asset` and `author` lines name the up axis, scale, sweeps, surfaces,
+    one-sided faces, platforms and pushing, `.fcol` v2, `foundry:model` v3's `collision` and
+    `foundry:collision_import`;
+  - §9's row adds M37.
+- The roadmap's M37 line says complete, and M48's gains M37's bodies, hits, sweeps, scale and up.
+- The design index says complete. The README says what a figure now does and points to M38.
+- ADR-0075 and ADR-0076 say implemented.
+
+**The contract discrepancies, each resolved by a dated note:**
+- `collision3d.md` §15's eight rows are struck through: moving platforms and pushing, proxies, a
+  model naming its collision, runtime scale, one-sided triangles, surfaces, rotational sweeps and
+  the up axis. Each points here, and a surface's friction is named M50's.
+- ADR-0051's "pushing and carrying platforms wait" and its revisit point to ADR-0075.
+- ADR-0057's "rigid poses" notes body scale and proxies (ADR-0076), and that the baked tree, M38's,
+  takes a later `.fcol` version, since v2 went to surfaces.
+- `agents.md` §14's moving-mesh row notes that M37's platforms carry characters, and that a
+  navigation mesh moving with one remains a game's.
+- In this document:
+  - §3 notes the tilted bound of 5 mm;
+  - §7 notes that `moveBody` leaves riders to the carry, and that the guide now gives §13's order;
+  - §11 notes the rock's body and its wall count;
+  - §12 notes the two surfaces and three sounds.
+- `docs/modding/3d.md`'s prop note says a body may now scale its mesh, while `sandbox3d:prop` still keeps a
+  solid prop at scale 1.
+
+**The guide:** `docs/modding/content-mods.md` §9 gains "Collision: surfaces, one-sided faces and
+proxies". It covers `surfaces` by material name, `one_sided`, a proxy through
+`foundry:collision_import` and `collision_mesh`, and what `fpack` refuses. It ends with §13's
+order of a tick, which a game runs a world in.
+
+**`AGENTS.md`:** its costs gain M37's readings on both machines, the corner's pin, the tilted tour,
+and `scripts/m37/windows.ps1`. The bar itself is unchanged.
+
+**What M37 leaves, each to a named milestone:** §18 stands as written. Readings over their line,
+the i3's short `caught` ending among them, are M100's, as M35's and M36's were.
+
+**The PC is cleaned:** `src\Foundry-m37` and `m37` are removed by exact name, and nothing else is
+touched. No Foundry scratch is left on the Mac.
+
+Nothing but documents changed after Step 9, which changed only scripts and documents. So the code's
+bar stands at Step 8's: 2,918/2,928, ten skips, 132/132 steps. Tagged `m37`, not pushed.

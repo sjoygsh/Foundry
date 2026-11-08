@@ -1318,24 +1318,25 @@ overlay grant, no new dependency. Linux is compile-only.
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
 
-> **2026-11-09:** M37's rows are designed in [`collision-extras.md`](collision-extras.md).
+> **2026-11-09:** M37's rows are designed in [`collision-extras.md`](collision-extras.md), and at
+> its close the same day each is struck through with what was built.
 
 | Deferred | Returns when |
 | --- | --- |
 | Rigid-body dynamics, stacking, joints, ragdolls, vehicles | A game needs a simulated object (ADR-0051; Jolt weighed then) |
-| Moving platforms carrying a character; characters pushing | A game needs either (ADR-0051) |
+| ~~Moving platforms carrying a character; characters pushing~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §7, §8, ADR-0075): `moveBody` carries a rider by recorded motion; pushing is a ratio, one level deep, with no dynamics |
 | ~~Pointer capture (relative mouse) in `platform`~~ | **Done in M26** (Step 1, 2026-10-03; [`playable3d.md`](playable3d.md) §4), run on Linux under Xorg, GNOME and sway in Steps 7 and 12 |
-| Collision authored separately from the visual model (a proxy import, or deriving from a `foundry:mesh`) | A model whose render mesh is measured too dense to collide against within §11.4's budget, or an author asks for a simpler proxy |
-| A model record that names its collision | A game needs to find a model's collision from the model alone |
-| Runtime scale of collision geometry | A game scales a collidable model at runtime |
+| ~~Collision authored separately from the visual model (a proxy import, or deriving from a `foundry:mesh`)~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §9, §10, ADR-0076): `foundry:collision_import` compiles a proxy, which `model_import`'s `collision_mesh` names |
+| ~~A model record that names its collision~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §9, ADR-0076): `foundry:model` v3's `collision` |
+| ~~Runtime scale of collision geometry~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §4, ADR-0076): a body scales its mesh or hull; poses stay rigid |
 | The BVH baked into `.fcol` | `addMesh` measured above 5 ms on a shipped level |
 | A broadphase over bodies | A query measured over budget at a body count a game has |
 | Specialised pair routines (analytic capsule–triangle) | A profile shows GJK as the cost of a move above §11.4's budget |
 | Hull faces, hull assets | A game stands characters on hulls, or content needs hulls |
-| One-sided triangles | A measured need, such as a one-way wall |
-| Per-triangle surface ids (footsteps, friction) | A game needs a surface type from a hit |
-| Rotational sweeps | A game rotates a box through geometry and needs the hit |
-| Configurable up axis | A game with gravity other than −Y |
+| ~~One-sided triangles~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §6): a flag per triangle in `.fcol` v2, met from its front alone |
+| ~~Per-triangle surface ids (footsteps, friction)~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §6, §9): a content ID per triangle, reported by every query; the court's footsteps use them. A friction the controller applies is M50's |
+| ~~Rotational sweeps~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §5): `shapeSweep`, by conservative advancement |
+| ~~Configurable up axis~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §3): one up a world, `setUp`; an up that changes each step is M50's |
 | Heightfield terrain | A game with terrain a mesh is measured too large for |
 | A physics panel in the overlay | Debugging a game's collision needs one, and `debug` is granted `physics3d` by the owner's decision |
 | ~~Jump in the sample~~ | **Done in M26**: the court's jump is sample policy over the unchanged controller (`playable3d.md` §5.3); the controller's walk off an edge was finished in M26 Step 8 |

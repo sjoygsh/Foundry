@@ -477,7 +477,7 @@ court and a whole chase tick. The tests assert the M5's budgets, 50 µs for a pa
 crowd step, and the i3's are three times those (3.4–5.2 µs and 0.026 ms there at M33). `nav-test`
 also asserts the crowd pin in every mode.
 
-M34's, M35's and M36's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
+M34's, M35's, M36's and M37's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
 Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sample's figures change:
 - `FOUNDRY_SANDBOX3D_ANIMATORS=32 FOUNDRY_SANDBOX3D_FRAMES=900 bin/sandbox3d` prints the pacer's
   `animation`, its `render.skin`, and `animation.animators`, 32 animators each on the pacer's
@@ -500,15 +500,30 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
   is blocked and turns. `anim-test`, `rigs-test`,
   `scene-test` and `court-test`, whose four script digests leave out the warden's pose, hold the
   rest.
+- **M37's collision costs.** Run them when `physics3d`'s controller, sweeps or collision loading
+  change.
+  - The tour now ends with the corner's six stages and their replay, `832fe43a3a82db13`. It
+    prints `character:`, the player's move carried and pushing, and `door:`, one `shapeSweep` a
+    tick, against 0.25 and 0.05 ms. They read 0.231 and 0.014 ms on the M5, and 0.090–0.114 and
+    0.008 ms on the i3.
+  - `FOUNDRY_SANDBOX3D_WALK=tilted` reruns both tours in a world turned 0.7 rad. Every tick must
+    match upright within 5 mm, and the worst was 0.1 mm.
+  - The court prints `collision: addMesh of the level` at load, against 5 ms: 0.05–0.06 ms on the
+    M5 and 0.15–0.17 ms on the i3.
+  - The court also prints `footsteps:`, its footsteps by surface and by the sound set. Its tick read
+    0.153–0.176 ms on the M5, 0.125–0.215 ms on the i3, and 0.250–0.273 ms for the i3's short
+    `caught`. That last reading is M100's.
 
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
 `scripts/m33/windows.ps1` runs M33's, with the crowd, `marsh` and the warden's endings, and
 `scripts/m34/windows.ps1` runs M34's, with the tour, `pacer_quick`, the cost runs and the endings,
 `scripts/m35/windows.ps1` runs M35's, adding the three saves, `pacer_back`'s mirrored square
-and the warden's machine, and `scripts/m36/windows.ps1` runs M36's, adding the crate, the strafer's
-cost and the walks' pins. `m36-setup.ps1` clones and checks out unpushed commits from a bundle,
-and `m36-launch.ps1` runs the desktop half from the scheduled task.
+and the warden's machine, `scripts/m36/windows.ps1` runs M36's, adding the crate, the strafer's
+cost and the walks' pins, and `scripts/m37/windows.ps1` runs M37's: the corner, the tilted tour
+and the court's footsteps and `addMesh`. Each milestone's `-setup.ps1` clones and checks out
+unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from the scheduled
+task.
 Run it from a scheduled task, not over SSH alone: a dropped session ends what it started.
 
 ### Staging a release

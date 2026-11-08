@@ -1,6 +1,6 @@
 # ADR-0075: Moving platforms carry by recorded motion, and pushing is bounded, without dynamics
 
-**Status:** Accepted 2026-11-09, when the owner requested M37 Step 1
+**Status:** Accepted 2026-11-09, when the owner requested M37 Step 1; implemented in M37 (2026-11-09, tag `m37`)
 **Date:** 2026-11-09
 **Informed by:** ADR-0013, ADR-0051, `docs/design/collision3d.md`, `docs/design/collision-extras.md`
 

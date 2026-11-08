@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 9 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 10, closing M37. The PC still holds `src\Foundry-m37` and `m37`, which Step 10 deletes by exact name.
+**Current handoff: M37 is complete** (2026-11-09, tag `m37`, not pushed; [`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before M38's design, Collision at scale. The PC holds no Foundry clone.
+
+**M37 Step 10 is done (2026-11-09): M37 closed.**
+- `CLAUDE.md` §4.1, §4.3 and §9, the roadmap (M37 complete, M48 gains M37's surface), the design index, the README and ADR-0075/0076 say implemented.
+- Dated notes resolve `collision3d.md` §15's eight rows, ADR-0051's pushing line, ADR-0057's rigid-pose line, `agents.md` §14's moving-mesh row, and this design's §3, §7, §11 and §12.
+- `docs/modding/content-mods.md` §9 gains surfaces, one-sided faces, proxies and the order a game runs a world in. `AGENTS.md`'s costs gain M37's readings; the bar is unchanged.
+- The PC's `src\Foundry-m37` and `m37` are removed by exact name. Only documents changed after Step 8, so the code's bar stands at 2,918/2,928 (ten skips), 132/132 steps.
 
 **M37 Step 9 is done (2026-11-09): Windows/Vulkan on the owner's PC (i3-10105F, Arc A750).**
 - From a fresh clone at `a7ec9c8`, at `-j2` and below normal:

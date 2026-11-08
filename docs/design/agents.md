@@ -759,7 +759,7 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | A reload's landmark upload passing 16.67 ms on the i3 (Step 11) | M60 | Not navigation's: `uploads.pump` takes 7–14 ms of the frame a person asked for with **r**. Streaming is the first work that needs uploads inside a frame's budget |
 | Two agents meeting in a passage one wide | Not planned for the engine | No avoidance solves it. The engine reports `blocked`, and who backs up is a game's policy |
 | Senses and game AI | Not planned for the engine | The warden's sight is the court's, in a sample (ADR-0017). A second game with the same needs would be a new decision |
-| Moving a mesh with what carries it (a lift, a ship) | Not planned for the engine | M37's moving platforms move characters. A link timed to a platform is a game's, by replacing the link's recipe at a rebuild |
+| Moving a mesh with what carries it (a lift, a ship) | Not planned for the engine | M37's moving platforms move characters. A link timed to a platform is a game's, by replacing the link's recipe at a rebuild. **2026-11-09:** M37 is complete, and its platforms carry characters by `moveBody` ([`collision-extras.md`](collision-extras.md) §7); a navigation mesh that moves with one remains a game's |
 
 ## 16. Decisions acceptance fixes
 
