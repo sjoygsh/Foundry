@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 5 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 6, `author`: surfaces, proxies, and a model that names its collision. `model_import` v3, deriving v2 `.fcol` and compiling `foundry:collision_import` do not exist yet.
+**Current handoff: M37 Step 6 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 7, `sandbox3d`: the corner (lift, turntable, crate, door, one-way ledge, scaled proxy rock) and the tilted tour, with move budgets read in the paced loop. None of the corner exists yet.
+
+**M37 Step 6 is done (2026-11-09): surfaces, proxies, and a model that names its collision.**
+- `foundry:model_import` v3 gains `surfaces` (material name to surface ID and one-sided flag) and `collision_mesh` (a proxy). Derived collision with a surface or a one-sided face is `.fcol` v2. Its table is in mapping order, each surface once, and each triangle takes its primitive's material. Plain derived collision is still v1, byte for byte.
+- A model that derives collision names `<model>.collision`, and one that names a proxy names that. `foundry:collision_import` is compiled in the private import package into the `foundry:collision_mesh` of its own ID, at `<stem>/proxy0.fcol`. It never ships, and its materials need no NORMAL.
+- Refusals each name their record: an unknown or repeated material, a surface that is no record, surfaces without collision, collision with a proxy, and a `collision_mesh` that is not one. Surface and proxy references are checked once the package is whole, dependencies included.
+- One pin text updated: the M23 opt-in fixture's model text gains its `collision` line. Its `.fcol` hash holds, and no package or digest pin moved.
+- Ten guards verified by mutation. Bar 2,914/2,924 (ten skips), 132/132 steps, three new tests; every check, sample and `fdt-check` passed.
 
 **M37 Step 5 is done (2026-11-09): `.fcol` version 2 and the records.**
 - `.fcol` v2 appends a surface table (at most 65,535 IDs) and a u32 per triangle (index or 0xFFFF, one-sided in bit 16). `read` takes v1 and v2, and refuses the cap, the length, an index past the table, reserved bits and an absent ID in the table. `writeWith` writes v2 only when there is something to add, so a plain mesh is still `write`'s v1, its hash pin held. `View` and `CollisionMesh` carry `surfaces` and `triangle_attributes`.

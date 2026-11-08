@@ -168,7 +168,14 @@ test "collision import: opt-in fixture is pinned, and off emits the old products
         try testing.expectEqualStrings(a.path, b.path);
         try testing.expectEqualSlices(u8, a.bytes, b.bytes);
     }
-    try testing.expect(std.mem.startsWith(u8, after.source, before.source));
+    // The model's text changes by one line, naming its collision (model v3, M37); every
+    // other byte is the old text's.
+    const line = "    collision demo:hero.collision\n";
+    const at = std.mem.indexOf(u8, after.source, line).?;
+    const unnamed = try std.mem.concat(testing.allocator, u8, &.{ after.source[0..at], after.source[at + line.len ..] });
+    defer testing.allocator.free(unnamed);
+    try testing.expect(std.mem.startsWith(u8, unnamed, before.source));
+    try testing.expect(std.mem.indexOf(u8, before.source, line) == null);
     try testing.expect(std.mem.indexOf(u8, after.source, "foundry:collision_mesh demo:hero.collision") != null);
     try testing.expectEqual(@as(u64, 0xc854ac2cc345318d), core.id.fnv1a64(after.assets[after.assets.len - 1].bytes));
     const view = try asset.collision_mesh.read(after.assets[after.assets.len - 1].bytes, .default);

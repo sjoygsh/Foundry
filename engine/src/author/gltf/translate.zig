@@ -26,6 +26,13 @@ pub const MaterialMapping = struct {
     material: []const u8,
 };
 
+/// What a glTF material's triangles collide as (`collision-extras.md` §10).
+pub const SurfaceMapping = struct {
+    material: []const u8,
+    surface: core.ContentId,
+    one_sided: bool = false,
+};
+
 pub const Settings = struct {
     model_id: []const u8,
     source: []const u8,
@@ -33,6 +40,12 @@ pub const Settings = struct {
     materials: []const MaterialMapping = &.{},
     collision: bool = false,
     collision_exclude: []const []const u8 = &.{},
+    surfaces: []const SurfaceMapping = &.{},
+    /// The spelling of a proxy the model names as its collision, instead of deriving one.
+    collision_mesh: ?[]const u8 = null,
+    /// A `foundry:collision_import`: only the `foundry:collision_mesh` of `model_id`'s own ID
+    /// and its `.fcol`. Nothing drawn is emitted, and materials need nothing a renderer would.
+    proxy: bool = false,
 };
 
 pub const ImageInput = struct {
@@ -86,6 +99,8 @@ const Context = struct {
     limits: document.Limits,
     diags: *Diagnostics,
     collision_placements: []?Mat4 = &.{},
+    /// Each mesh's `.fmesh` bytes, by mesh index, which collision is read back from.
+    mesh_bytes: []const []const u8 = &.{},
     rig: ?skin_import.Rig = null,
 
     fn translate(self: *Context) Error!Result {
@@ -93,10 +108,25 @@ const Context = struct {
         self.rig = try (skin_import.Context{ .gpa = self.gpa, .arena = self.arena, .doc = self.doc, .buffers = self.buffers, .source = self.settings.source, .diags = self.diags, .limits = self.limits }).prepare(if (self.settings.front == .plus_z) Mat4.rotationY(std.math.pi) else Mat4.identity);
         var out: std.ArrayList(u8) = .empty;
         var generated: std.ArrayList(GeneratedAsset) = .empty;
+        const mesh_bytes = try self.arena.alloc([]const u8, self.doc.meshes.len);
+        self.mesh_bytes = mesh_bytes;
+
+        if (self.settings.proxy) {
+            // A proxy draws nothing: its meshes are read for their triangles alone, and the
+            // model it walks is thrown away once the placements are known.
+            for (mesh_bytes, 0..) |*bytes, i| bytes.* = try self.translateMesh(@intCast(i));
+            var discarded: std.ArrayList(u8) = .empty;
+            const slots = try self.arena.alloc([]const u8, self.doc.materials.len + @intFromBool(self.hasPrimitiveWithoutMaterial()));
+            @memset(slots, "");
+            try self.emitModel(&discarded, slots);
+            try self.emitCollision(&out, &generated);
+            return .{ .source = out.items, .assets = generated.items };
+        }
 
         for (self.doc.meshes, 0..) |_, i| {
             const path = try self.generatedPath("mesh", i, asset.schemas.mesh_extension);
             const bytes = try self.translateMesh(@intCast(i));
+            mesh_bytes[i] = bytes;
             try generated.append(self.arena, .{ .path = path, .bytes = bytes });
             const id = try self.generatedId("mesh", i);
             try out.print(self.arena, "{s} {s} {{ source ", .{ asset.schemas.mesh_name, id });
@@ -153,7 +183,21 @@ const Context = struct {
             for (self.doc.nodes) |node| if (node.name) |name| {
                 if (std.mem.eql(u8, excluded, name)) matched = true;
             };
-            if (!matched) return self.fail("model_import.collision_exclude", excluded, "names no node in the file", .{});
+            if (!matched) {
+                const path = try std.fmt.allocPrint(self.arena, "{s} '{s}' {s}", .{ self.recordNoun(), self.settings.model_id, if (self.settings.proxy) "exclude" else "collision_exclude" });
+                return self.fail(path, excluded, "names no node in the file", .{});
+            }
+        }
+        const surfaces_path = try std.fmt.allocPrint(self.arena, "{s} '{s}' surfaces", .{ self.recordNoun(), self.settings.model_id });
+        for (self.settings.surfaces, 0..) |mapping, i| {
+            var matched = false;
+            for (self.doc.materials) |material| if (material.name) |name| {
+                if (std.mem.eql(u8, mapping.material, name)) matched = true;
+            };
+            if (!matched) return self.fail(surfaces_path, mapping.material, "names no material in the file", .{});
+            for (self.settings.surfaces[0..i]) |earlier| {
+                if (std.mem.eql(u8, earlier.material, mapping.material)) return self.fail(surfaces_path, mapping.material, "is named twice; a material has one surface", .{});
+            }
         }
         if (!isVersion2(self.doc.asset.version)) return self.fail("asset.version", null, "must be glTF 2.x", .{});
         if (self.doc.asset.minVersion) |minimum| {
@@ -496,6 +540,8 @@ const Context = struct {
     }
 
     fn isMappedMaterial(self: *Context, material: document.Material) bool {
+        // A proxy's materials only say which surface a triangle is, so nothing is lit.
+        if (self.settings.proxy) return true;
         const name = material.name orelse return false;
         for (self.settings.materials) |mapping| if (std.mem.eql(u8, mapping.name, name)) return true;
         return false;
@@ -714,6 +760,12 @@ const Context = struct {
             }
         }
         try out.appendSlice(self.arena, " ]\n");
+        // Version 3 names what the model collides as, so a game finds it from the model.
+        if (self.settings.collision) {
+            try out.print(self.arena, "    collision {s}.collision\n", .{self.settings.model_id});
+        } else if (self.settings.collision_mesh) |proxy| {
+            try out.print(self.arena, "    collision {s}\n", .{proxy});
+        }
         if (self.rig) |rig| {
             try out.print(self.arena, "    skeleton {s}.skeleton\n    clips [", .{self.settings.model_id});
             for (rig.clips, 0..) |clip, i| {
@@ -727,21 +779,44 @@ const Context = struct {
     }
 
     fn emitCollision(self: *Context, out: *std.ArrayList(u8), generated: *std.ArrayList(GeneratedAsset)) Error!void {
+        const noun: []const u8 = if (self.settings.proxy) "collision_import" else "model_import.collision";
         var positions: std.ArrayList(Vec3) = .empty;
         defer positions.deinit(self.gpa);
         var indices: std.ArrayList(u32) = .empty;
         defer indices.deinit(self.gpa);
+        var attributes: std.ArrayList(u32) = .empty;
+        defer attributes.deinit(self.gpa);
         var dropped: u64 = 0;
+
+        // The surface table, in the order the mappings name surfaces, each once; and what a
+        // triangle drawn with each glTF material is, the last slot being the default material.
+        var table: std.ArrayList(core.ContentId) = .empty;
+        defer table.deinit(self.gpa);
+        const by_material = try self.arena.alloc(u32, self.doc.materials.len + 1);
+        @memset(by_material, asset.collision_mesh.plain_attribute);
+        for (self.settings.surfaces) |mapping| {
+            const index: u32 = for (table.items, 0..) |known, i| {
+                if (known.eql(mapping.surface)) break @intCast(i);
+            } else blk: {
+                try table.append(self.gpa, mapping.surface);
+                break :blk @intCast(table.items.len - 1);
+            };
+            const attribute = index | if (mapping.one_sided) asset.collision_mesh.one_sided_bit else 0;
+            for (self.doc.materials, 0..) |material, i| {
+                const name = material.name orelse continue;
+                if (std.mem.eql(u8, name, mapping.material)) by_material[i] = attribute;
+            }
+        }
         // Node array order, not traversal order. Model flattening validated the default
         // scene already; inactive and excluded subtrees have no placement here.
         for (self.collision_placements, 0..) |placement, node_index| {
             const matrix = placement orelse continue;
             const mesh_index = self.doc.nodes[node_index].mesh.?;
-            var view = asset.mesh_file.read(generated.items[mesh_index].bytes, .default) catch
+            var view = asset.mesh_file.read(self.mesh_bytes[mesh_index], .default) catch
                 return self.failNode(@intCast(node_index), "has invalid generated collision input", .{});
             const mesh = view.mesh();
             if (positions.items.len + mesh.vertex_count > asset.collision_mesh.Limits.default.max_vertices)
-                return self.fail("model_import.collision", null, "exceeds the collision vertex limit", .{});
+                return self.fail(noun, null, "exceeds the collision vertex limit", .{});
             const base: u32 = @intCast(positions.items.len);
             for (mesh.streams) |stream| {
                 if (stream.semantic != .position) continue;
@@ -765,7 +840,10 @@ const Context = struct {
                     try positions.append(self.gpa, p);
                 }
             }
-            for (mesh.submeshes) |submesh| {
+            const primitives = self.doc.meshes[mesh_index].primitives;
+            for (mesh.submeshes, primitives) |submesh, primitive| {
+                // Submesh i is primitive i, as `translateMesh` builds them.
+                const attribute = by_material[primitive.material orelse self.doc.materials.len];
                 var at = submesh.first_index;
                 const end = at + submesh.index_count;
                 while (at < end) : (at += 3) {
@@ -782,21 +860,32 @@ const Context = struct {
                         continue;
                     }
                     if (indices.items.len / 3 >= asset.collision_mesh.Limits.default.max_triangles)
-                        return self.fail("model_import.collision", null, "exceeds the collision triangle limit", .{});
+                        return self.fail(noun, null, "exceeds the collision triangle limit", .{});
                     try indices.appendSlice(self.gpa, &triangle);
+                    try attributes.append(self.gpa, attribute);
                 }
             }
         }
-        if (dropped != 0) try self.warn("model_import.collision", null, "dropped {d} degenerate triangle(s)", .{dropped});
-        if (indices.items.len == 0) return self.fail("model_import.collision", null, "derives an empty collision mesh", .{});
-        // Private generated path; identity is the model ID plus the unnumbered segment.
-        const numbered = try self.generatedPath("collision", 0, asset.schemas.collision_mesh_extension);
-        const bytes = asset.collision_mesh.write(self.arena, positions.items, indices.items) catch |err| switch (err) {
+        if (dropped != 0) try self.warn(noun, null, "dropped {d} degenerate triangle(s)", .{dropped});
+        if (indices.items.len == 0) return self.fail(noun, null, "derives an empty collision mesh", .{});
+        // Private generated path. A model's collision is its ID plus the unnumbered segment; a
+        // proxy's is its own ID, and its file a `proxy` beside a model's from the same source.
+        const numbered = try self.generatedPath(if (self.settings.proxy) "proxy" else "collision", 0, asset.schemas.collision_mesh_extension);
+        // Version 2 only when a triangle has a surface or one side: `writeWith` writes every
+        // plain mesh as version 1, byte for byte, so existing collision keeps its bytes.
+        const bytes = asset.collision_mesh.writeWith(self.arena, positions.items, indices.items, .{
+            .surfaces = table.items,
+            .triangle_attributes = attributes.items,
+        }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return self.fail("model_import.collision", null, "cannot encode collision geometry: {s}", .{@errorName(err)}),
+            else => return self.fail(noun, null, "cannot encode collision geometry: {s}", .{@errorName(err)}),
         };
         try generated.append(self.arena, .{ .path = numbered, .bytes = bytes });
-        try out.print(self.arena, "{s} {s}.collision {{ source ", .{ asset.schemas.collision_mesh_name, self.settings.model_id });
+        if (self.settings.proxy) {
+            try out.print(self.arena, "{s} {s} {{ source ", .{ asset.schemas.collision_mesh_name, self.settings.model_id });
+        } else {
+            try out.print(self.arena, "{s} {s}.collision {{ source ", .{ asset.schemas.collision_mesh_name, self.settings.model_id });
+        }
         try self.writeString(out, numbered);
         try out.appendSlice(self.arena, " }\n");
     }
@@ -830,6 +919,10 @@ const Context = struct {
             " {{ mesh {s} submesh {d} slot {d} translation {{ x {d} y {d} z {d} }} rotation {{ x {d} y {d} z {d} w {d} }} scale {{ x {d} y {d} z {d} }} }}",
             .{ mesh_id, submesh, slot, transform.translation.x, transform.translation.y, transform.translation.z, transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w, transform.scale.x, transform.scale.y, transform.scale.z },
         );
+    }
+
+    fn recordNoun(self: *const Context) []const u8 {
+        return if (self.settings.proxy) "collision import" else "model import";
     }
 
     fn hasPrimitiveWithoutMaterial(self: *const Context) bool {

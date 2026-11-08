@@ -222,23 +222,26 @@ const material_mapping_type: data.FieldType = .{ .nested = &.{
 const material_mappings_type: data.FieldType = .{ .list = &material_mapping_type };
 const exclusion_name_type: data.FieldType = .string;
 
-/// The build-only model authoring form (M20 Step 4); v2 adds opt-in collision (M23 Step 3).
-/// No runtime path understands glTF or this record.
+/// The build-only model authoring form (M20 Step 4); v2 adds opt-in collision (M23 Step 3);
+/// v3 (M37, `collision-extras.md` §10) maps materials to surfaces in the derived collision, or
+/// names a proxy instead. No runtime path understands glTF or this record.
 pub const model_import: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_import_name),
-    .version = 2,
+    .version = 3,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
         .{ .name = "materials", .type = material_mappings_type, .presence = .optional },
         .{ .name = "collision", .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
         .{ .name = "collision_exclude", .type = .{ .list = &exclusion_name_type }, .since = 2, .presence = .optional },
+        .{ .name = "surfaces", .type = surface_mappings_type, .since = 3, .presence = .optional },
+        .{ .name = "collision_mesh", .type = .id, .since = 3, .presence = .optional },
     },
 };
 
 /// What a glTF material's triangles collide as (`collision-extras.md` §10): a surface ID and
-/// whether they are one-sided. `foundry:collision_import` has it now, and `foundry:model_import`
-/// version 3 shares it.
+/// whether they are one-sided. `foundry:collision_import` and `foundry:model_import` version 3
+/// share it.
 const surface_mapping_type: data.FieldType = .{ .nested = &.{
     .{ .name = "material", .type = .string },
     .{ .name = "surface", .type = .id },
@@ -362,8 +365,8 @@ pub const kinds = [_]Kind{
 pub const records = [_]Schema{ material, model };
 
 /// Engine-defined authoring records that are compiled into others and never shipped, beside
-/// `foundry:model_import`, which is a kind because an extension derives it. The compiler makes
-/// `collision_import` build-only at M37 Step 6.
+/// `foundry:model_import`, which is a kind because an extension derives it. The compiler checks
+/// both into its private import package, so neither reaches an FPK.
 pub const build_only = [_]Schema{collision_import};
 
 /// The kind a file extension derives, or null if that extension is not an asset.
@@ -614,6 +617,33 @@ test "model_import v1 extends to v2 with collision disabled and no exclusions" {
     _ = try registry.register(gpa, model_import);
     try testing.expect(!package.records()[0].value(model_import, 3).?.bool);
     try testing.expect(package.records()[0].value(model_import, 4) == null);
+}
+
+test "model_import v2 extends to v3 with no surfaces and no proxy" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    _ = try registry.register(gpa, .{ .id = model_import.id, .version = 2, .fields = model_import.fields[0..5] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords("foundry:model_import test:old { source \"model.gltf\" collision true }", &registry, &package, &diags);
+    _ = try registry.register(gpa, model_import);
+    try testing.expect(package.records()[0].value(model_import, 3).?.bool);
+    try testing.expect(package.records()[0].value(model_import, 5) == null);
+    try testing.expect(package.records()[0].value(model_import, 6) == null);
+    try compileRecords(
+        "foundry:model_import test:new { source \"model.gltf\" collision true surfaces [ { material \"Grass\" surface test:grass one_sided true } ] }",
+        &registry,
+        &package,
+        &diags,
+    );
+    const entry = package.records()[1].value(model_import, 5).?.list[0].nested;
+    try testing.expectEqualStrings("Grass", entry[0].value.string);
+    try testing.expect(entry[2].value.bool);
+    try compileRecords("foundry:model_import test:proxied { source \"model.gltf\" collision_mesh test:proxy }", &registry, &package, &diags);
+    try testing.expect(package.records()[2].value(model_import, 6).?.id.eql(core.ContentId.fromString("test:proxy")));
 }
 
 test "model v2 reads under v3 with no collision, and v3 names one" {

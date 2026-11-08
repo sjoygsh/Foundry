@@ -193,8 +193,9 @@ pub fn compile(
         };
     }
 
-    // 3. Every authored runtime record. `foundry:model_import` is checked into a private
-    //    authoring package instead: it is replaced by a model and never reaches the FPK.
+    // 3. Every authored runtime record. `foundry:model_import` and `foundry:collision_import`
+    //    are checked into a private authoring package instead: each is replaced by what it
+    //    compiles into, and never reaches the FPK.
     var imports = data.Package.init(gpa, identity.name, identity.version, options.limits) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => unreachable, // the same identity constructed `pkg` above
@@ -228,11 +229,14 @@ pub fn compile(
 
     // 3c. glTF authoring inputs become ordinary Foundry records and runtime assets. The
     //     generated text takes the same parser/checker path as handwritten content.
-    const imported_source = compileModels(gpa, arena.allocator(), os, dir, options, &walk, &loader, &imports, docs.items, &pkg, registry, diags) catch |err| switch (err) {
+    var references: std.ArrayList(ImportReference) = .empty;
+    var models_failed = false;
+    const imported_source = compileModels(gpa, arena.allocator(), os, dir, options, &walk, &loader, &imports, docs.items, &pkg, registry, &references, diags) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.IoFailed => return error.IoFailed,
         error.ContentInvalid => blk: {
             failed = true;
+            models_failed = true;
             break :blk null;
         },
     };
@@ -274,6 +278,12 @@ pub fn compile(
             error.ContentInvalid => failed = true,
         };
     }
+
+    // 4b. What the imports named that their text does not carry: a surface lives in a
+    //     `.fcol`'s bytes, so no checker sees it. Checked once every record is in, so a proxy,
+    //     a derived `.fcol` and a dependency's record all count; skipped when an import failed,
+    //     whose records would be missing for that reason alone.
+    if (!models_failed and !try checkImportReferences(gpa, references.items, &pkg, options.dependencies, diags)) failed = true;
 
     if (failed or diags.failed) return error.ContentInvalid;
 
@@ -996,9 +1006,59 @@ pub fn normalizePackagePath(arena: Allocator, path: []const u8) Allocator.Error!
 fn filterRecords(arena: Allocator, records: []const data.parser.RecordDecl, imports: bool) Allocator.Error![]const data.parser.RecordDecl {
     var out: std.ArrayList(data.parser.RecordDecl) = .empty;
     for (records) |record| {
-        if (record.schema.eql(asset.schemas.model_import.id) == imports) try out.append(arena, record);
+        const build_only = record.schema.eql(asset.schemas.model_import.id) or record.schema.eql(asset.schemas.collision_import.id);
+        if (build_only == imports) try out.append(arena, record);
     }
     return out.items;
+}
+
+/// An ID an import names that must be a record by the time the package is whole
+/// (`collision-extras.md` §10): a surface, or the proxy a model names as its collision.
+const ImportReference = struct {
+    record: data.Record,
+    noun: []const u8,
+    kind: enum { surface, collision_mesh },
+    id: core.ContentId,
+    spelling: []const u8,
+};
+
+/// Whether every reference names a record in this package or a dependency, and every
+/// `collision_mesh` a `foundry:collision_mesh`. A proxy has compiled into one by now.
+fn checkImportReferences(
+    gpa: Allocator,
+    references: []const ImportReference,
+    pkg: *const data.Package,
+    dependencies: ?*const dependency.Set,
+    diags: *Diagnostics,
+) Allocator.Error!bool {
+    var ok = true;
+    for (references) |reference| {
+        const wanted: ?data.SchemaId = switch (reference.kind) {
+            .surface => null,
+            .collision_mesh => asset.schemas.collision_mesh.id,
+        };
+        if (recordInView(pkg, dependencies, reference.id, wanted)) continue;
+        ok = false;
+        const origin = reference.record.origin;
+        switch (reference.kind) {
+            .surface => try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' maps a material to surface '{s}', which names no record in this package or its dependencies", .{ reference.noun, reference.record.text, reference.spelling }),
+            .collision_mesh => try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' names collision_mesh '{s}', which is no foundry:collision_mesh or foundry:collision_import in this package or its dependencies", .{ reference.noun, reference.record.text, reference.spelling }),
+        }
+    }
+    return ok;
+}
+
+fn recordInView(pkg: *const data.Package, dependencies: ?*const dependency.Set, id: core.ContentId, schema: ?data.SchemaId) bool {
+    if (pkg.lookup(id)) |record| return if (schema) |wanted| record.schema_id.eql(wanted) else true;
+    const set = dependencies orelse return false;
+    for (set.items()) |*package| {
+        var i: u32 = 0;
+        while (package.reader.record(i)) |view| : (i += 1) {
+            if (!view.id.eql(id)) continue;
+            return if (schema) |wanted| view.schema_id.eql(wanted) else true;
+        }
+    }
+    return false;
 }
 
 const GltfReader = struct {
@@ -1041,6 +1101,7 @@ fn compileModels(
     docs: []const Document,
     pkg: *const data.Package,
     _: *Registry,
+    references: *std.ArrayList(ImportReference),
     diags: *Diagnostics,
 ) (error{ ContentInvalid, IoFailed } || Allocator.Error)!?[]const u8 {
     if (walk.models.items.len == 0 and imports.records().len == 0) return null;
@@ -1057,9 +1118,10 @@ fn compileModels(
     defer written.deinit(gpa);
     var failed = false;
 
-    const schema = asset.schemas.model_import;
     for (imports.records()) |record| {
-        const settings = importSettings(arena, record, schema, docs, diags, gpa) catch |err| switch (err) {
+        const proxy = record.schema_id.eql(asset.schemas.collision_import.id);
+        const noun: []const u8 = if (proxy) "collision import" else "model import";
+        const settings = importSettings(arena, record, docs, references, diags, gpa) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.ContentInvalid => {
                 failed = true;
@@ -1069,12 +1131,12 @@ fn compileModels(
         const normalized_maybe = normalizePackagePath(arena, settings.source) catch return error.OutOfMemory;
         const normalized = normalized_maybe orelse {
             failed = true;
-            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' has a source outside the package", .{record.text});
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has a source outside the package", .{ noun, record.text });
             continue;
         };
         if (!containsPath(walk.models.items, normalized)) {
             failed = true;
-            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' names '{s}', which is not a .gltf or .glb file in this package", .{ record.text, normalized });
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' names '{s}', which is not a .gltf or .glb file in this package", .{ noun, record.text, normalized });
             continue;
         }
         try claimed.put(gpa, normalized, {});
@@ -1151,17 +1213,22 @@ fn importOne(
     }
 }
 
+/// A `foundry:model_import` or a `foundry:collision_import` as the translator takes it. The IDs
+/// it names that must be records are appended to `references`, checked once the package is
+/// whole.
 fn importSettings(
     arena: Allocator,
     record: data.Record,
-    schema: data.Schema,
     docs: []const Document,
+    references: *std.ArrayList(ImportReference),
     diags: *Diagnostics,
     gpa: Allocator,
 ) error{ ContentInvalid, OutOfMemory }!gltf.translate.Settings {
+    const proxy = record.schema_id.eql(asset.schemas.collision_import.id);
+    const schema = if (proxy) asset.schemas.collision_import else asset.schemas.model_import;
+    const noun: []const u8 = if (proxy) "collision import" else "model import";
     const source_index = schema.fieldIndex(asset.schemas.source_field).?;
     const front_index = schema.fieldIndex("front").?;
-    const mappings_index = schema.fieldIndex("materials").?;
     const source = record.value(schema, source_index).?.string;
     const front_text = record.value(schema, front_index).?.string;
     const front: gltf.translate.Front = if (std.mem.eql(u8, front_text, "-z"))
@@ -1169,9 +1236,38 @@ fn importSettings(
     else if (std.mem.eql(u8, front_text, "+z"))
         .plus_z
     else {
-        try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' has front '{s}'; expected '-z' or '+z'", .{ record.text, front_text });
+        try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has front '{s}'; expected '-z' or '+z'", .{ noun, record.text, front_text });
         return error.ContentInvalid;
     };
+
+    var surfaces: []gltf.translate.SurfaceMapping = &.{};
+    if (record.value(schema, schema.fieldIndex("surfaces").?)) |value| {
+        surfaces = try arena.alloc(gltf.translate.SurfaceMapping, value.list.len);
+        for (value.list, surfaces) |entry, *mapping| {
+            const id = namedValue(entry.nested, "surface").?.id;
+            const spelling = findSpelling(docs, id.hash) orelse {
+                try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' contains a surface ID whose spelling was lost", .{ noun, record.text });
+                return error.ContentInvalid;
+            };
+            mapping.* = .{
+                .material = namedValue(entry.nested, "material").?.string,
+                .surface = id,
+                .one_sided = namedValue(entry.nested, "one_sided").?.bool,
+            };
+            try references.append(arena, .{ .record = record, .noun = noun, .kind = .surface, .id = id, .spelling = spelling });
+        }
+    }
+    if (proxy) {
+        var excluded: []const []const u8 = &.{};
+        if (record.value(schema, schema.fieldIndex("exclude").?)) |value| {
+            const names = try arena.alloc([]const u8, value.list.len);
+            for (value.list, names) |entry, *name| name.* = entry.string;
+            excluded = names;
+        }
+        return .{ .model_id = record.text, .source = source, .front = front, .collision = true, .collision_exclude = excluded, .surfaces = surfaces, .proxy = true };
+    }
+
+    const mappings_index = schema.fieldIndex("materials").?;
     var mappings: []gltf.translate.MaterialMapping = &.{};
     if (record.value(schema, mappings_index)) |value| {
         mappings = try arena.alloc(gltf.translate.MaterialMapping, value.list.len);
@@ -1192,7 +1288,27 @@ fn importSettings(
         for (value.list, names) |entry, *name| name.* = entry.string;
         excluded = names;
     }
-    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings, .collision = collision, .collision_exclude = excluded };
+    // Surfaces say what derived collision is made of, so they need collision to derive; a
+    // proxy's surfaces are its own record's.
+    if (surfaces.len != 0 and !collision) {
+        try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' maps surfaces but derives no collision; set collision true, or give the surfaces to the proxy's foundry:collision_import", .{record.text});
+        return error.ContentInvalid;
+    }
+    var collision_mesh: ?[]const u8 = null;
+    if (record.value(schema, schema.fieldIndex("collision_mesh").?)) |value| {
+        // A model has one collision: derived from what it draws, or a proxy, never both.
+        if (collision) {
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' sets collision true and names collision_mesh; a model has one collision, so derive it or name a proxy", .{record.text});
+            return error.ContentInvalid;
+        }
+        const spelling = findSpelling(docs, value.id.hash) orelse {
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "model import '{s}' contains a collision_mesh ID whose spelling was lost", .{record.text});
+            return error.ContentInvalid;
+        };
+        collision_mesh = spelling;
+        try references.append(arena, .{ .record = record, .noun = noun, .kind = .collision_mesh, .id = value.id, .spelling = spelling });
+    }
+    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings, .collision = collision, .collision_exclude = excluded, .surfaces = surfaces, .collision_mesh = collision_mesh };
 }
 
 fn namedValue(values: []const data.NamedValue, name: []const u8) ?data.Value {
@@ -2658,6 +2774,161 @@ test "fpack imports an explicit glTF model end to end and deterministically" {
     const rendered = try f.rendered(&diagnostic);
     try testing.expect(std.mem.indexOf(u8, rendered, "dropped 1 degenerate") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "empty collision mesh") != null);
+}
+
+/// Two triangles in one mesh, drawn with "Grass" and "Stone", neither lit-ready: no NORMAL.
+fn writeTwoMaterialModel(f: *Fixture) !void {
+    var bin: [72]u8 = @splat(0);
+    const corners = [_][3]f32{ .{ 0, 0, 0 }, .{ 1, 0, 0 }, .{ 0, 1, 0 }, .{ 2, 0, 0 }, .{ 3, 0, 0 }, .{ 2, 1, 0 } };
+    for (corners, 0..) |corner, v| for (corner, 0..) |c, lane| {
+        std.mem.writeInt(u32, bin[(v * 3 + lane) * 4 ..][0..4], @bitCast(c), .little);
+    };
+    try f.write("models/two.bin", &bin);
+    try f.write("models/two.gltf",
+        \\{"asset":{"version":"2.0"},
+        \\ "buffers":[{"uri":"two.bin","byteLength":72}],
+        \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36}],
+        \\ "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}],
+        \\ "materials":[{"name":"Grass"},{"name":"Stone"}],
+        \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0},{"attributes":{"POSITION":1},"material":1}]}],
+        \\ "nodes":[{"name":"Ground","mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
+    );
+}
+
+const surface_records =
+    \\@schema surface { sound string }
+    \\surface demo:surface.grass { sound "grass" }
+    \\surface demo:surface.stone { sound "stone" }
+    \\foundry:material demo:shared {}
+    \\
+;
+const shared_materials = "materials [ { name \"Grass\" material demo:shared } { name \"Stone\" material demo:shared } ]";
+
+test "a model import maps materials to surfaces, a proxy compiles into its record, and a model names its collision" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try writeTwoMaterialModel(f);
+    const grass = core.ContentId.fromString("demo:surface.grass");
+    const stone = core.ContentId.fromString("demo:surface.stone");
+
+    // Plain derived collision is still version 1, byte for byte what `write` makes of it, and
+    // the model now names it.
+    try f.write("models.fdt", surface_records ++ "foundry:model_import demo:hero { source \"models/two.gltf\" collision true " ++ shared_materials ++ " }");
+    try f.compileIt("demo:content");
+    {
+        const bytes = try f.readGenerated("models/two/collision0.fcol");
+        defer testing.allocator.free(bytes);
+        try testing.expectEqual(@as(?u32, 1), asset.collision_mesh.versionOf(bytes));
+        const view = try asset.collision_mesh.read(bytes, .default);
+        const positions = try testing.allocator.alloc(core.math.Vec3, view.positions.len);
+        defer testing.allocator.free(positions);
+        @memcpy(positions, view.positions);
+        const indices = try testing.allocator.alloc(u32, view.indices.len);
+        defer testing.allocator.free(indices);
+        @memcpy(indices, view.indices);
+        const plain = try asset.collision_mesh.write(testing.allocator, positions, indices);
+        defer testing.allocator.free(plain);
+        try testing.expectEqualSlices(u8, plain, bytes);
+        var package = try f.open();
+        defer package.deinit();
+        const model = recordNamed(&package, "demo:hero").?;
+        const fields = package.fieldsOf(model, package.schemaFor(model.schema_id).?.*);
+        try testing.expectEqual(core.ContentId.fromString("demo:hero.collision"), (try fields.idAt(4)).?);
+    }
+
+    // Surfaces make it version 2: a table in the order the mappings name them, and each
+    // triangle the attribute of the material it is drawn with.
+    try f.write("models.fdt", surface_records ++ "foundry:model_import demo:hero { source \"models/two.gltf\" collision true " ++ shared_materials ++
+        " surfaces [ { material \"Stone\" surface demo:surface.stone } { material \"Grass\" surface demo:surface.grass one_sided true } ] }");
+    try f.compileIt("demo:content");
+    const first = try testing.allocator.dupe(u8, f.bytes.items);
+    defer testing.allocator.free(first);
+    {
+        const bytes = try f.readGenerated("models/two/collision0.fcol");
+        defer testing.allocator.free(bytes);
+        try testing.expectEqual(@as(?u32, 2), asset.collision_mesh.versionOf(bytes));
+        const view = try asset.collision_mesh.read(bytes, .default);
+        try testing.expectEqual(@as(usize, 2), view.surfaces.len);
+        try testing.expect(view.surfaces[0].eql(stone));
+        try testing.expect(view.surfaces[1].eql(grass));
+        try testing.expectEqual(@as(usize, 2), view.triangle_attributes.len);
+        try testing.expectEqual(@as(u32, 1 | asset.collision_mesh.one_sided_bit), view.triangle_attributes[0]);
+        try testing.expectEqual(@as(u32, 0), view.triangle_attributes[1]);
+    }
+    try f.compileIt("demo:content");
+    try testing.expectEqualSlices(u8, first, f.bytes.items);
+
+    // A proxy: its own ID, its own file, no lit material needed, and a model naming it. The
+    // glTF is claimed by both, so no model is derived from the file as well.
+    try f.write("models.fdt", surface_records ++
+        \\foundry:collision_import demo:proxy { source "models/two.gltf" exclude [] surfaces [ { material "Stone" surface demo:surface.stone } ] }
+        \\foundry:model_import demo:hero { source "models/two.gltf" collision_mesh demo:proxy
+    ++ " " ++ shared_materials ++ " }");
+    try f.compileIt("demo:content");
+    {
+        const bytes = try f.readGenerated("models/two/proxy0.fcol");
+        defer testing.allocator.free(bytes);
+        const view = try asset.collision_mesh.read(bytes, .default);
+        try testing.expectEqual(@as(usize, 1), view.surfaces.len);
+        try testing.expectEqual(@as(usize, 2), view.triangle_attributes.len);
+        try testing.expectEqual(asset.collision_mesh.plain_attribute, view.triangle_attributes[0]);
+        try testing.expectEqual(@as(u32, 0), view.triangle_attributes[1]);
+        var package = try f.open();
+        defer package.deinit();
+        try testing.expect(recordNamed(&package, "demo:proxy").?.schema_id.eql(asset.schemas.collision_mesh.id));
+        try testing.expect(recordNamed(&package, "demo:hero.collision") == null);
+        try testing.expect(recordNamed(&package, "demo:models.two") == null);
+        for (0..package.record_count) |i| {
+            try testing.expect(!package.record(@intCast(i)).?.schema_id.eql(asset.schemas.collision_import.id));
+        }
+        const model = recordNamed(&package, "demo:hero").?;
+        const fields = package.fieldsOf(model, package.schemaFor(model.schema_id).?.*);
+        try testing.expectEqual(core.ContentId.fromString("demo:proxy"), (try fields.idAt(4)).?);
+    }
+    var store = data.Store.init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package_handle = try store.add(testing.allocator, "demo:content", f.bytes.items, &f.registry, &f.diags);
+    var assets = asset.Registry.init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.registerLoader(testing.allocator, asset.collisionMeshLoader());
+    try assets.mount(testing.allocator, package_handle, f.gen);
+    const handle = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:proxy"));
+    const loaded = asset.collision_mesh.fromPayload(assets.payloadOf(handle).?);
+    try testing.expect(loaded.surfaceOf(1).eql(stone));
+    try testing.expect(loaded.surfaceOf(0).eql(.none));
+    assets.release(handle);
+}
+
+test "every refusal of a surface, a proxy and a model's collision names its record" {
+    const model = "foundry:model_import demo:hero { source \"models/two.gltf\" " ++ shared_materials ++ " ";
+    const cases = [_]struct { text: []const u8, says: []const u8 }{
+        .{ .text = model ++ "collision true surfaces [ { material \"Typo\" surface demo:surface.grass } ] }", .says = "model import 'demo:hero' surfaces ('Typo') names no material in the file" },
+        .{ .text = model ++ "collision true surfaces [ { material \"Grass\" surface demo:surface.grass } { material \"Grass\" surface demo:surface.stone } ] }", .says = "model import 'demo:hero' surfaces ('Grass') is named twice" },
+        .{ .text = model ++ "collision true surfaces [ { material \"Grass\" surface demo:surface.mud } ] }", .says = "model import 'demo:hero' maps a material to surface 'demo:surface.mud', which names no record" },
+        .{ .text = model ++ "surfaces [ { material \"Grass\" surface demo:surface.grass } ] }", .says = "model import 'demo:hero' maps surfaces but derives no collision" },
+        .{ .text = model ++ "collision true collision_mesh demo:proxy }\nfoundry:collision_import demo:proxy { source \"models/two.gltf\" }", .says = "model import 'demo:hero' sets collision true and names collision_mesh" },
+        .{ .text = model ++ "collision_mesh demo:shared }", .says = "model import 'demo:hero' names collision_mesh 'demo:shared', which is no foundry:collision_mesh" },
+        .{ .text = model ++ "collision_mesh demo:nothing }", .says = "model import 'demo:hero' names collision_mesh 'demo:nothing'" },
+        .{ .text = model ++ "collision true collision_exclude [ \"Typo\" ] }", .says = "model import 'demo:hero' collision_exclude ('Typo') names no node" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" exclude [ \"Typo\" ] }", .says = "collision import 'demo:proxy' exclude ('Typo') names no node" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" surfaces [ { material \"Typo\" surface demo:surface.grass } ] }", .says = "collision import 'demo:proxy' surfaces ('Typo') names no material" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" surfaces [ { material \"Grass\" surface demo:surface.mud } ] }", .says = "collision import 'demo:proxy' maps a material to surface 'demo:surface.mud'" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/none.gltf\" }", .says = "collision import 'demo:proxy' names 'models/none.gltf', which is not a .gltf" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" front \"+x\" }", .says = "collision import 'demo:proxy' has front '+x'" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" exclude [ \"Ground\" ] }", .says = "collision_import derives an empty collision mesh" },
+    };
+    for (cases) |case| {
+        var g = try Fixture.init();
+        defer g.deinit();
+        try writeTwoMaterialModel(g);
+        const text = try std.mem.concat(testing.allocator, u8, &.{ surface_records, case.text });
+        defer testing.allocator.free(text);
+        try g.write("models.fdt", text);
+        try testing.expectError(error.ContentInvalid, g.compileIt("demo:content"));
+        var buf: [4096]u8 = undefined;
+        const rendered = try g.rendered(&buf);
+        try testing.expect(std.mem.indexOf(u8, rendered, case.says) != null);
+    }
 }
 
 test "mixing records and version 3 sounds compile, and one out of range is refused at its line" {

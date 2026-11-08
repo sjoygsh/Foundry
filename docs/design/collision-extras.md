@@ -905,3 +905,87 @@ loop at Step 7, and on the i3 at Step 9.
   full table of 65,536 whose file does hold it was added.
 
 **The bar:** see `PROJECT_STATE.md`.
+
+## Resolution — Step 6: surfaces, proxies, and a model that names its collision (2026-11-09)
+
+`author` now covers §10. The code is in `compiler.zig` and `gltf/translate.zig`, with tests in
+`compiler.zig` and the one pin in `gltf/root.zig` updated.
+
+**`foundry:model_import` version 3** gains `surfaces` (the shared `surface_mappings_type`) and
+`collision_mesh` (an optional ID). A version 2 import reads with neither.
+
+**Deriving surfaces.**
+- The surface table lists the surfaces in the order the mappings name them, each once, so two
+  materials mapped to one surface share an index.
+- Each kept triangle takes the attribute of the glTF material its primitive is drawn with. Submesh i
+  is primitive i, as `translateMesh` builds them. A material no mapping names gives the plain
+  attribute.
+- The `.fcol` is written by `writeWith`. That writes version 1 for a plain mesh, so a model with no
+  surfaces keeps its bytes. The test compares it with `write` over the same triangles, and the
+  M23 fixture's hash pin `0xc854ac2cc345318d` holds.
+
+**A model names its collision.** A model that derives collision writes `collision <model>.collision`.
+One that names a proxy writes `collision <proxy>`. So every derived model's record gains one line,
+while its `.fcol` bytes are unchanged. `gltf/root.zig`'s opt-in pin said the old text was a prefix
+of the new. It now says that once the one `collision` line is taken out, the text is the old text
+followed by the collision record. No package or digest pin moved.
+
+**The proxy.**
+- **Routing:** `foundry:collision_import` joins `model_import` in the compiler's private import
+  package, so it never reaches an FPK. The test checks the package holds no such record.
+- **Compiling:** it compiles through the same translator with `Settings.proxy`. Its meshes are read
+  for triangles only. The model walk runs into a buffer that is thrown away, to place the nodes.
+  It emits only `foundry:collision_mesh <its ID>`, at `<source stem>/proxy0.fcol`. The file is
+  named `proxy` so it never meets a model's `collision0.fcol` from the same glTF.
+- **Sharpened:** a proxy's materials need nothing a renderer would, so a lit material without
+  NORMAL is accepted. §10 did not say. A proxy exported plain would otherwise have been refused.
+- **Claiming:** a proxy claims its glTF, so the file derives no model of its own unless a
+  `model_import` names it.
+
+**The refusals.** Each names the record (`model import 'x'` or `collision import 'x'`) and is
+tested:
+- a mapping whose material is not in the file;
+- a material named twice;
+- a surface that is no record in the package or its dependencies;
+- `surfaces` without `collision true`;
+- `collision true` together with `collision_mesh`;
+- a `collision_mesh` that names something other than a `foundry:collision_mesh`, or nothing.
+- **For a proxy:** a bad `front`, a source that is not a glTF in the package, an `exclude` that
+  names no node, and a proxy that derives nothing.
+- **Sharpened:** the `collision_exclude` refusal now names its record too. Its old text survives as
+  the tail of the new.
+
+**Checking the references.** A surface lives only in `.fcol` bytes, so no checker sees it.
+- The surface and `collision_mesh` references are checked after derivation, once every record is in
+  the package. So a proxy's compiled record, an authored `.fcol` and a dependency's record all
+  count.
+- A `collision_mesh` must be a `foundry:collision_mesh`, which a proxy has compiled into by then. A
+  surface may be any record.
+- The check is skipped when an import has already failed, since its records would be missing for
+  that reason alone.
+
+**What the tests hold:**
+- one glTF with two primitives, "Grass" and "Stone", makes three products:
+  - plain collision, which stays version 1, equal to `write`, and is named by the model;
+  - surfaced collision, version 2, with the table in mapping order, a one-sided Grass triangle, and
+    the same package bytes on a second compile;
+  - a proxy with one surface, loaded through the asset registry, whose triangles report the surface
+    and none;
+- fourteen refusals, each matched to its text and record.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the one-sided bit;
+- the material-to-attribute mapping;
+- the reference check;
+- its `foundry:collision_mesh` schema test;
+- a proxy's unlit materials;
+- surfaces needing collision;
+- a material named twice;
+- one collision per model;
+- the model naming its collision;
+- the proxy routed as build-only.
+
+Three of these first broke compilation through unused captures. They were rerun in a form that
+compiles.
+
+**The bar:** see `PROJECT_STATE.md`.
