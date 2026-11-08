@@ -1,7 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-08
-**Current handoff: M36 Step 8 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). The owner played the staged court build on the Mac on 2026-11-08 and reported "Alls well". Stop before Step 9, Windows/Vulkan.
+**Last updated:** 2026-11-09
+**Current handoff: M36 Step 9 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 10, Close M36. The PC still holds `src\Foundry-m36` and `m36`, which the close removes.
+
+**M36 Step 9 is done (2026-11-09): Windows/Vulkan.**
+- `scripts/m36/windows.ps1`, with `m36-setup.ps1` and `m36-launch.ps1`, ran on the Arc A750 and i3 from a fresh clone at `3dfe476` (M36 by bundle).
+- Suites: null 2,852/2,871 (19 skips) 128/128; Vulkan 3,133/3,163 (30 skips) 232/232; ReleaseSafe pin suites 475/475, so the walker's walks, the strafer, the pacer and the court digests hold on x86_64.
+- Both samples relocated, windowed, every validation log clean. The tour's pins equal the Mac's, K's crate blocks at (2.375, 0.800), and the three endings replay.
+- The pacer's square is now checked by side, since PC load made 600 frames run 606–625 ticks.
+- i3 p95: strafer 0.045–0.075 ms (0.10), skin 0.088–0.099, 32 animators 0.047–0.087, court tick 0.094–0.132, but `caught` 0.287 (0.25), as M35's short ending was, and that goes to M100.
 
 **M36 Step 8 is done (2026-11-08): the warden's blend, feet and gaze.**
 - `court:warden.machine` plays `move` (idle, stride and run by `speed`) and keeps the jump. At 1 m/s it is the stride alone at rate 1.67 (§13 corrected), half and half at 1.43, and the run from 1.86.

@@ -1333,3 +1333,66 @@ line passed. `room` and `court` were staged with `dist`, since the content chang
 
 **The owner played it (2026-11-08), which is the exit's last clause.** They played the staged
 ReleaseSafe build, `zig-out/dist/court/Foundry Court.app`, on the Mac, and reported "Alls well".
+
+## Resolution — Step 9: Windows/Vulkan (2026-11-09)
+
+`scripts/m36/windows.ps1` comes from M35's, with two helpers beside it:
+- `m36-setup.ps1` clones the repository into its own directory on the PC and checks out M36's
+  commits from a git bundle, since they are not pushed;
+- `m36-launch.ps1` runs the desktop half from a scheduled task in the owner's session.
+
+The script adds the crate run, the strafer's cost line and the new pins to M35's. It ran on the
+owner's Arc A750 PC, an i3-10105F, from a fresh clone at `3dfe476`, at `-j2` and below normal
+priority, with the 50% CPU cutoff on.
+
+**The native suites:**
+- null 2,852/2,871 (19 skips), 128/128 steps;
+- Vulkan 3,133/3,163 (30 skips), 232/232 steps;
+- the ReleaseSafe pin suites, `anim`, `rigs`, `scene`, `sandbox3d` and `court`, 475/475.
+
+The last hold, on x86_64, the walker's eight new clips, the strafer's sweep `27f549beaaf0e20b`,
+the pacer's three pins and the court's four digests.
+
+**Both samples ran from a relocated, read-only ReleaseSafe install,** windowed in the desktop
+session, each run also under Khronos validation with synchronization, and every validation log is
+clean:
+- **The tour passes all three saves with the Mac's values:** mid-stride `e46c09dc62b1eeac`, mid-turn
+  `222e0a9b12fd152c`, and M34's `47f67027ff3a12b0`. The walker's `655e865f98779129` and the player's
+  `cb99ccfcf2b6d6c3` hold. With `pacer_quick` the tour passes with `9cdfec98342c5bea` and mid-turn
+  `b026642288afb59c`, M35's own values.
+- **K's crate:** the pacer is blocked at (2.375, 0.800), as on the Mac, and turns there.
+- **The warden's three endings** pass, each with its replay matched to a fresh simulation, and
+  nothing dropped.
+
+**A correction to the script: the pacer's square is checked by side, not by fixed corner.**
+- M35's check wanted the stands at frames 200 to 560 on exact corners, give or take a tick or two.
+  The PC was busy, with the Epic launcher at 33–35%, and single frames of 84–150 ms made the paced
+  loop run 606–625 ticks in 600 frames. So the first three stands came 6–25 ticks along.
+- Every stand still lay on the square, or on its mirror under `pacer_back`. The last was always the
+  start corner, (2.6500, 0.8000), exactly.
+- So the script now requires each stand on its side, in order, with the last exactly at the start
+  corner. That is what the run proves; the tick a frame lands on was never the walk's.
+- Two runs first stopped at the 50% cutoff while the launcher was busy, and passed when rerun into
+  fresh evidence.
+- **A fault in the launcher, found and fixed:** a comma-joined `-Only` reached the script as one
+  name, ran nothing, and reported a pass. It now splits the list.
+
+**§16's budgets on the i3, p95 in the paced loop, three 900-frame cost runs and five endings:**
+
+| What | Readings | Budget |
+| --- | --- | --- |
+| The strafer: advance, evaluate, two rays, feet, gaze and skin matrices | 0.045–0.075 ms | 0.10 ms |
+| `render.skin`, one figure | 0.088–0.099 ms | 0.25 ms |
+| 32 animators, each a two-layer machine, no pose | 0.047–0.087 ms | 0.10 ms, M100's |
+| The court's whole game tick, `win` ×3 and `fell` | 0.094–0.132 ms | 0.25 ms |
+| The court's whole game tick, `caught` (78 frames) | **0.287 ms** | 0.25 ms |
+| The warden's `render.skin` | 0.049–0.051 ms | 0.25 ms |
+
+**The short `caught` ending is over its line,** as M35 found on the i3 (0.154–0.321 ms). Its 78
+frames make its p95 the worst four frames. The long endings, with the warden's two rays and its
+feet, sit at less than half their budget. The reading goes to M100 with M35's, as §16 says, and a
+pose's correction does not go to the jobs.
+
+**Linux** compiles in the bar's cross-check. Nothing here is Linux-specific (§15).
+
+**The Mac's bar** is Step 8's, 2,873/2,883, since nothing outside `scripts/` changed after it.
