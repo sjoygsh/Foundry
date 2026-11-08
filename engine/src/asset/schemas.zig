@@ -200,14 +200,17 @@ const model_clip_type: data.FieldType = .{ .nested = &.{
     .{ .name = "clip", .type = .id },
 } };
 
+/// Version 3 (M37, `collision-extras.md` §9) names the model's collision: a
+/// `foundry:collision_mesh`, so a game finds what a model collides as from the model alone.
 pub const model: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_name),
-    .version = 2,
+    .version = 3,
     .fields = &.{
         .{ .name = "slots", .type = model_slots_type },
         .{ .name = "parts", .type = model_parts_type },
         .{ .name = "skeleton", .type = .id, .since = 2, .presence = .optional },
         .{ .name = "clips", .type = .{ .list = &model_clip_type }, .since = 2, .presence = .optional },
+        .{ .name = "collision", .type = .id, .since = 3, .presence = .optional },
     },
 };
 
@@ -230,6 +233,36 @@ pub const model_import: Schema = .{
         .{ .name = "materials", .type = material_mappings_type, .presence = .optional },
         .{ .name = "collision", .type = .bool, .since = 2, .presence = .{ .default = .{ .bool = false } } },
         .{ .name = "collision_exclude", .type = .{ .list = &exclusion_name_type }, .since = 2, .presence = .optional },
+    },
+};
+
+/// What a glTF material's triangles collide as (`collision-extras.md` §10): a surface ID and
+/// whether they are one-sided. `foundry:collision_import` has it now, and `foundry:model_import`
+/// version 3 shares it.
+const surface_mapping_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "material", .type = .string },
+    .{ .name = "surface", .type = .id },
+    .{ .name = "one_sided", .type = .bool, .presence = .{ .default = .{ .bool = false } } },
+} };
+pub const surface_mappings_type: data.FieldType = .{ .list = &surface_mapping_type };
+
+pub const collision_import_name = "foundry:collision_import";
+
+/// A proxy (`collision-extras.md` §9): collision authored apart from what is drawn, from a glTF
+/// file, compiled into the `foundry:collision_mesh` of its own ID. Build-only, as
+/// `foundry:model_import` is (ADR-0055), so no runtime path reads it. `front` and `exclude` are
+/// `model_import`'s `front` and `collision_exclude`; `surfaces` maps materials to surfaces.
+///
+/// No extension derives one: a `.gltf` derives a `model_import`, and a proxy is a choice an
+/// author writes down.
+pub const collision_import: Schema = .{
+    .id = SchemaId.fromStringUnchecked(collision_import_name),
+    .version = 1,
+    .fields = &.{
+        .{ .name = source_field, .type = .string },
+        .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
+        .{ .name = "exclude", .type = .{ .list = &exclusion_name_type }, .presence = .optional },
+        .{ .name = "surfaces", .type = surface_mappings_type, .presence = .optional },
     },
 };
 
@@ -328,6 +361,11 @@ pub const kinds = [_]Kind{
 /// Engine-defined record schemas with no source bytes of their own.
 pub const records = [_]Schema{ material, model };
 
+/// Engine-defined authoring records that are compiled into others and never shipped, beside
+/// `foundry:model_import`, which is a kind because an extension derives it. The compiler makes
+/// `collision_import` build-only at M37 Step 6.
+pub const build_only = [_]Schema{collision_import};
+
 /// The kind a file extension derives, or null if that extension is not an asset.
 ///
 /// `extension` is without the dot and is matched case-sensitively, because derivation
@@ -358,6 +396,7 @@ pub fn kindForSchema(schema_id: SchemaId) ?*const Kind {
 pub fn registerAll(gpa: Allocator, registry: *Registry) (data.schema.RegisterError || Allocator.Error)!void {
     for (&kinds) |kind| _ = try registry.register(gpa, kind.schema);
     for (&records) |schema| _ = try registry.register(gpa, schema);
+    for (&build_only) |schema| _ = try registry.register(gpa, schema);
 }
 
 /// A string field of `record`, read against `newest` and filled from its default when the
@@ -466,12 +505,12 @@ test "the engine's asset schemas register, and register twice without complaint"
     defer registry.deinit(gpa);
 
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, kinds.len + records.len), registry.count());
+    try testing.expectEqual(@as(u32, kinds.len + records.len + build_only.len), registry.count());
 
     // The engine registers these at startup and `fpack` registers them at compile time; a
     // process that does both must not be a conflict.
     try registerAll(gpa, &registry);
-    try testing.expectEqual(@as(u32, kinds.len + records.len), registry.count());
+    try testing.expectEqual(@as(u32, kinds.len + records.len + build_only.len), registry.count());
 
     const found = registry.lookup(SchemaId.fromStringUnchecked("foundry:texture")).?;
     try testing.expectEqualStrings(source_field, found.fields[0].name);
@@ -575,4 +614,61 @@ test "model_import v1 extends to v2 with collision disabled and no exclusions" {
     _ = try registry.register(gpa, model_import);
     try testing.expect(!package.records()[0].value(model_import, 3).?.bool);
     try testing.expect(package.records()[0].value(model_import, 4) == null);
+}
+
+test "model v2 reads under v3 with no collision, and v3 names one" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    // A v2 model compiled against the v2 schema, as an older package holds it.
+    var old_registry: Registry = .init(gpa, .default);
+    defer old_registry.deinit(gpa);
+    _ = try old_registry.register(gpa, .{ .id = model.id, .version = 2, .fields = model.fields[0..4] });
+    _ = try old_registry.register(gpa, material);
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords("foundry:model test:old { slots [] parts [] }", &old_registry, &package, &diags);
+    try testing.expectEqual(@as(usize, 4), package.records()[0].values.len);
+    try testing.expect(package.records()[0].value(model, 4) == null);
+    try compileRecords("foundry:model test:new { slots [] parts [] collision test:new.collision }", &registry, &package, &diags);
+    try testing.expectEqual(@as(usize, 5), package.records()[1].values.len);
+    try testing.expect(package.records()[1].value(model, 4).?.id.eql(core.ContentId.fromString("test:new.collision")));
+}
+
+test "collision_import accepts a proxy record and refuses wrong types" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords(
+        \\foundry:collision_import test:rock.proxy {
+        \\  source "rock_proxy.gltf"
+        \\  exclude [ "Moss" ]
+        \\  surfaces [ { material "Stone" surface test:surface.stone } { material "Ledge" surface test:surface.wood one_sided true } ]
+        \\}
+        \\foundry:collision_import test:plain { source "plain.glb" }
+    , &registry, &package, &diags);
+    const proxy = package.records()[0];
+    try testing.expectEqualStrings("-z", proxy.value(collision_import, 1).?.string);
+    try testing.expectEqual(@as(usize, 2), proxy.value(collision_import, 3).?.list.len);
+    try testing.expect(package.records()[1].value(collision_import, 3) == null);
+
+    var bad_package = try data.Package.init(gpa, "test:bad", 1, .default);
+    defer bad_package.deinit(gpa);
+    var bad_diags: data.Diagnostics = .init(gpa, .default);
+    defer bad_diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, compileRecords(
+        \\foundry:collision_import test:bad.a { source "a.gltf" surfaces [ { material "M" surface "not-an-id" } ] }
+        \\foundry:collision_import test:bad.b { source "b.gltf" surfaces [ { material "M" surface test:s one_sided "yes" } ] }
+        \\foundry:collision_import test:bad.c { surfaces [] }
+        \\foundry:model test:bad.d { slots [] parts [] collision "not-an-id" }
+    , &registry, &bad_package, &bad_diags));
+    try testing.expect(bad_diags.count() >= 4);
 }

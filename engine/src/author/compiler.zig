@@ -485,6 +485,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.schemas.texture_name,
     asset.schemas.mesh_name,
     asset.schemas.collision_mesh_name,
+    asset.schemas.collision_import_name,
     asset.schemas.skeleton_name,
     asset.schemas.animation_name,
     asset.schemas.material_name,
@@ -2500,7 +2501,8 @@ test "fpack derives animation assets and loads them by content ID beside model v
     try loaded_clip.checkJointCount(loaded_skeleton.parents.len);
     try testing.expectEqualSlices(f32, &.{ 0, 1 }, loaded_clip.tracks[0].times);
     const model = store.lookup(core.ContentId.fromString("demo:hero")).?;
-    try testing.expectEqual(@as(u32, 2), model.schema.version);
+    // Compiled as the newest model, version 3 since M37, its skeleton and clips where v2 put them.
+    try testing.expectEqual(asset.schemas.model.version, model.schema.version);
     try testing.expectEqual(core.ContentId.fromString("demo:rig.body"), (try model.fields.idAt(2)).?);
     const clips = (try model.fields.listAt(3)).?;
     const entry = (try clips.nestedAt(0)).?;

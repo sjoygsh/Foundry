@@ -836,3 +836,72 @@ cross product after scale and pose, so a body turned over faces the other way.
 loop at Step 7, and on the i3 at Step 9.
 
 **The bar:** see `PROJECT_STATE.md`.
+
+## Resolution — Step 5: `.fcol` version 2 and the records (2026-11-09)
+
+`asset` now covers §9. The tests are in `collision_mesh.zig` and `schemas.zig`.
+
+**`.fcol` version 2,** as §9 lays it out, after version 1's header and arrays:
+- a u32 count, at most `max_surfaces` (65,535);
+- that many content-ID hashes, as little-endian u64s;
+- a u32 per triangle: the surface index in bits 0–15, `no_surface` (0xFFFF) for none, and
+  `one_sided_bit` (bit 16). `plain_attribute` (0xFFFF) is a version 1 triangle.
+
+**Reading:**
+- `format_version` is now 2. `read` accepts 1 and 2, and anything else is `UnsupportedVersion`.
+- A version 1 file must end at its indices, so a version 1 header over version 2's tail is
+  `Malformed`.
+- A version 2 file is `Malformed` when:
+  - its count passes the cap;
+  - its length is not exactly what the count and triangles say;
+  - an index passes its table, or reserved bits (17–31) are set;
+  - **a table entry is the absent ID.** §9 did not list this; no compiler emits it, and a table of
+    `none` would report nothing.
+- `View` gains `surfaces` (`[]align(1) const core.ContentId`) and `triangle_attributes`, empty for
+  version 1. `copy` and `CollisionMesh` carry them, with `surfaceOf` and `oneSidedAt`.
+- `surfaceIndex` and `oneSided` read an attribute. Converting to `physics3d.mesh.Attributes`'
+  u16 and bool slices is the consumer's, above both modules, at Steps 7 and 8.
+
+**Writing:** `writeWith(gpa, positions, indices, Attributes)`.
+- It writes version 2 only when there is a surface, or a triangle that is not plain. Otherwise it
+  writes version 1, byte for byte `write`'s, whose hash pin holds. So §10's rule, that a derived
+  mesh keeps its bytes when it has neither, is the writer's.
+- It refuses everything the reader would, as `InvalidMesh`.
+
+**The records:**
+- **`foundry:model` is version 3,** gaining an optional `collision` ID at index 4. A model compiled
+  against version 2 reads it as absent.
+- **`foundry:collision_import` version 1:** `source`, `front` (defaulting to `-z`), `exclude` and
+  `surfaces`. A surface entry is `{ material surface one_sided }`, with `one_sided` defaulting to
+  false. That type is `schemas.surface_mappings_type`, which `model_import` version 3 will share at
+  Step 6.
+- **The compiler sees both.** `foundry:collision_import` joins `author`'s `engine_schema_names`,
+  so the editor's New Record form can offer it. The compiler's animation test now expects a model
+  of the newest version, since every compiled model is version 3. No package pin moved.
+- **A new list, `schemas.build_only`.** The proxy is registered by `registerAll` through it, not
+  through `kinds`, since no extension derives it. Nor is it in `records`, which are shipped. The
+  compiler routes it to the private import package at Step 6. Until then nothing authors one.
+
+**What the tests hold:**
+- **The round trip:**
+  - version 2 round-trips byte for byte, borrowed from an unaligned start and through `copy`;
+  - a plain mesh written by `writeWith` is version 1 with `write`'s pinned hash;
+  - a one-sided face alone makes version 2.
+- **Refusals:** every read refusal above, every truncation, a trailing byte and every writer
+  refusal. The fullest table is admitted, with its last index.
+- **The loader** reads version 2 and unwinds every allocation failure.
+- **The records:**
+  - a model of version 2 reads with no collision, and one of version 3 names it;
+  - a proxy record with exclusions and surfaces checks;
+  - wrong types in either are refused.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the reserved bits;
+- the index past the table, in reading and in writing;
+- the absent ID;
+- version 1's exact length;
+- the plain mesh written as version 1;
+- the table's cap: it survived at first, since a count past it was also a length mismatch, until a
+  full table of 65,536 whose file does hold it was added.
+
+**The bar:** see `PROJECT_STATE.md`.

@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 4 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 5, `asset`: `.fcol` version 2 and the records. `.fcol` v2, `foundry:model` v3's `collision` and `foundry:collision_import` do not exist yet.
+**Current handoff: M37 Step 5 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 6, `author`: surfaces, proxies, and a model that names its collision. `model_import` v3, deriving v2 `.fcol` and compiling `foundry:collision_import` do not exist yet.
+
+**M37 Step 5 is done (2026-11-09): `.fcol` version 2 and the records.**
+- `.fcol` v2 appends a surface table (at most 65,535 IDs) and a u32 per triangle (index or 0xFFFF, one-sided in bit 16). `read` takes v1 and v2, and refuses the cap, the length, an index past the table, reserved bits and an absent ID in the table. `writeWith` writes v2 only when there is something to add, so a plain mesh is still `write`'s v1, its hash pin held. `View` and `CollisionMesh` carry `surfaces` and `triangle_attributes`.
+- `foundry:model` v3 gains an optional `collision`. `foundry:collision_import` v1 (`source`, `front`, `exclude`, `surfaces`) is registered through a new `schemas.build_only` list and named for the editor. Step 6 compiles it.
+- Seven guards verified by mutation. No package pin moved.
+- Bar 2,911/2,921 (ten skips), 132/132 steps, six new tests.
 
 **M37 Step 4 is done (2026-11-09): moving platforms and pushing.**
 - `World.moveBody` records a kinematic body's motion and serial. A rider is carried at its next move, swept with the carrier ignored, turned only by the twist about `up`, and reported as `carried` and `carried_yaw`. Other characters the body overlaps are moved by its motion through their controller, ignoring it, and are reported `crushed` if still inside. `setPose` cancels an owed carry.
