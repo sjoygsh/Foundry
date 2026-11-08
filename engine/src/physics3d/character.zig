@@ -13,6 +13,8 @@ const Vec3 = core.math.Vec3;
 const Allocator = std.mem.Allocator;
 const World = world.World;
 const Hit = world.Hit;
+const Motion = @import("body.zig").Motion;
+const Quat = core.math.Quat;
 
 pub const max_slide_iterations: u32 = 4;
 pub const max_depenetration_iterations: u32 = 4;
@@ -27,9 +29,13 @@ pub const CharacterConfig = struct {
     max_move: f32,
     layer: u32 = 1,
     mask: u32 = ~@as(u32, 0),
+    /// How another character's move pushes this one (`collision-extras.md` §8): a ratio in
+    /// [0, 1], 0 for not at all.
+    push: f32 = 0,
 
     pub fn valid(c: CharacterConfig) bool {
-        return std.math.isFinite(c.radius) and c.radius > 0 and
+        return std.math.isFinite(c.push) and c.push >= 0 and c.push <= 1 and
+            std.math.isFinite(c.radius) and c.radius > 0 and
             std.math.isFinite(c.height) and c.height >= 2 * c.radius and
             std.math.isFinite(c.max_slope) and c.max_slope > 0 and c.max_slope < std.math.pi / 2.0 and
             std.math.isFinite(c.step_height) and c.step_height >= 0 and c.step_height <= c.height - 2 * c.radius and
@@ -49,6 +55,15 @@ pub const Character = struct {
     body: BodyHandle,
     config: CharacterConfig,
     ground: ?Ground = null,
+    /// The ground body's `serial` when this character last took its motion, or first stood on
+    /// it: a newer one is a move the character has not been carried by (§7).
+    ground_serial: u32 = 0,
+};
+/// What a move pushed last (§8): the body, a character's own where it was a character, and how
+/// far it went.
+pub const Pushed = struct {
+    body: BodyHandle,
+    distance: f32,
 };
 pub const CharacterMove = struct {
     feet: Vec3,
@@ -60,6 +75,11 @@ pub const CharacterMove = struct {
     snapped: bool = false,
     depenetrated: bool = false,
     stuck: bool = false,
+    /// How far the ground carried the feet before the move, and its turn about `up`, radians
+    /// counter-clockwise seen from above (§7). Zero when nothing carried them.
+    carried: Vec3 = .zero,
+    carried_yaw: f32 = 0,
+    pushed: ?Pushed = null,
     hit_count: u32 = 0,
     total_hits: u32 = 0,
 };
@@ -120,16 +140,73 @@ pub fn setFeet(w: *World, gpa: Allocator, handle: CharacterHandle, feet: Vec3) e
 pub fn walkable(c: CharacterConfig, up: Vec3, hit: Hit) bool {
     return hit.surface_normal.dot(up) >= @cos(c.max_slope);
 }
-fn cast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
-    return w.characterCast(convex(w, c, feet), by, c.body, @cos(c.config.max_slope));
+/// What a move does besides moving: carry first, push what it meets, ignore one more body.
+pub const Options = struct {
+    carry: bool = true,
+    push: bool = true,
+    /// A body every query of the move leaves out: the one moving this character (§7).
+    ignore: BodyHandle = .none,
+};
+fn cast(w: *World, c: Character, feet: Vec3, by: Vec3, also: BodyHandle) ?Hit {
+    return w.controllerCast(convex(w, c, feet), by, c.body, also, @cos(c.config.max_slope));
 }
-fn ground(w: *World, c: Character, feet: Vec3) ?Ground {
-    const h = groundCast(w, c, feet, w.up.scale(-2 * narrow.contact_skin)) orelse return null;
+fn ground(w: *World, c: Character, feet: Vec3, also: BodyHandle) ?Ground {
+    const h = groundCast(w, c, feet, w.up.scale(-2 * narrow.contact_skin), also) orelse return null;
     if (!walkable(c.config, w.up, h)) return null;
     return .{ .surface_normal = h.surface_normal, .body = h.body, .user = h.user, .triangle = h.triangle, .surface = h.surface };
 }
-fn groundCast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
-    return w.characterProbe(convex(w, c, feet), by, c.body, @cos(c.config.max_slope));
+fn groundCast(w: *World, c: Character, feet: Vec3, by: Vec3, also: BodyHandle) ?Hit {
+    return w.controllerProbe(convex(w, c, feet), by, c.body, also, @cos(c.config.max_slope));
+}
+
+/// Where the carrier's last motion takes `feet` (§7): about the old origin by the motion's turn
+/// about `up` alone, then by its translation. The turn is returned in radians.
+fn carry(motion: Motion, up: Vec3, feet: Vec3) struct { feet: Vec3, yaw: f32 } {
+    const turn = motion.to.rotation.mul(motion.from.rotation.conjugate());
+    // The twist about up: the turn's vector part projected onto up, with its scalar part.
+    var along = turn.x * up.x + turn.y * up.y + turn.z * up.z;
+    var scalar = turn.w;
+    if (scalar < 0) {
+        along = -along;
+        scalar = -scalar;
+    }
+    const norm = @sqrt(along * along + scalar * scalar);
+    const twist: Quat = if (norm < 1e-6) .identity else .{ .x = up.x * along / norm, .y = up.y * along / norm, .z = up.z * along / norm, .w = scalar / norm };
+    const yaw: f32 = if (norm < 1e-6) 0 else 2 * std.math.atan2(along, scalar);
+    const moved = motion.from.position.add(twist.rotate(feet.sub(motion.from.position))).add(motion.to.position.sub(motion.from.position));
+    return .{ .feet = moved, .yaw = yaw };
+}
+
+/// The character whose capsule is `body`, if one is.
+fn characterOf(w: *World, body: BodyHandle) ?CharacterHandle {
+    var it = w.characters.iterator();
+    while (it.next()) |entry| if (entry.value.body.eql(body)) return entry.id;
+    return null;
+}
+
+/// Pushes what `h` hit, if it is pushable (§8), by the horizontal part of `remaining` into it,
+/// times its ratio. Returns what it pushed, or null for something that is not pushable.
+fn push(w: *World, pusher: BodyHandle, h: Hit, remaining: Vec3) ?Pushed {
+    const up = w.up;
+    const flat = horizontal(h.normal, up);
+    if (flat.lengthSquared() < 1e-12) return null;
+    const into = flat.normalize().scale(-1);
+    const amount = horizontal(remaining, up).dot(into);
+    if (amount <= 0) return null;
+    if (characterOf(w, h.body)) |other| {
+        const ratio = w.characters.get(other).?.config.push;
+        if (ratio == 0) return null;
+        const before = w.body(h.body).?.pose.position;
+        _ = moveWith(w, other, into.scale(amount * ratio), &.{}, .{ .carry = false, .push = false, .ignore = pusher }) catch return null;
+        return .{ .body = h.body, .distance = w.body(h.body).?.pose.position.sub(before).length() };
+    }
+    const b = w.body(h.body) orelse return null;
+    if (b.push == 0 or b.kind != .kinematic) return null;
+    const by = into.scale(amount * b.push);
+    const fraction = if (w.pushCast(h.body, by, pusher)) |stop| stop.fraction else 1;
+    const moved = by.scale(fraction);
+    w.moveBodyAlone(h.body, b.pose.translated(moved));
+    return .{ .body = h.body, .distance = moved.length() };
 }
 fn record(r: *CharacterMove, out: []Hit, h: Hit) void {
     if (r.hit_count < out.len) {
@@ -148,6 +225,14 @@ fn project(v: Vec3, n: Vec3) Vec3 {
 
 pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Vec3, hits: []Hit) MoveCharacterError!?CharacterMove {
     _ = gpa; // All steady-state controller work is allocation-free.
+    return moveWith(w, handle, displacement, hits, .{});
+}
+
+/// `move`, with what it does besides moving chosen (`Options`). A character pushed by a body or
+/// by another character moves with no carry and no push of its own, ignoring what moves it: one
+/// level deep (§8). Its carry is left for its own move.
+pub fn moveWith(w: *World, handle: CharacterHandle, displacement: Vec3, hits: []Hit, options: Options) MoveCharacterError!?CharacterMove {
+    const also = options.ignore;
     const stored = w.characters.get(handle) orelse return null;
     if (w.body(stored.body) == null) return null;
     const c = stored.*;
@@ -162,10 +247,28 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
     if (!validFeet(w, c.config, original.add(displacement))) return error.InvalidMove;
     var r: CharacterMove = .{ .feet = original };
     var iteration: u32 = 0;
+    // The carry (§7): through the ground body's motion, if it has moved since this character
+    // was last carried, swept and slid ignoring the carrier.
+    if (options.carry) if (c.ground) |g| if (w.body(g.body)) |carrier| if (carrier.serial != stored.ground_serial) {
+        const carried = carry(carrier.motion, up, r.feet);
+        var remaining = carried.feet.sub(r.feet);
+        var slides: u32 = 0;
+        while (slides < max_slide_iterations and remaining.lengthSquared() > 1e-12) : (slides += 1) {
+            const h = cast(w, c, r.feet, remaining, g.body) orelse {
+                r.feet = r.feet.add(remaining);
+                break;
+            };
+            r.feet = r.feet.add(remaining.scale(h.fraction));
+            remaining = project(remaining.scale(1 - h.fraction), h.normal);
+        }
+        if (!validFeet(w, c.config, r.feet)) return error.InvalidMove;
+        r.carried = r.feet.sub(original);
+        r.carried_yaw = carried.yaw;
+    };
     // A scan that finds nothing is the answer; only running out of iterations needs another.
     var clear = false;
     while (iteration < max_depenetration_iterations) : (iteration += 1) {
-        const contact = w.characterContact(convex(w, c, r.feet), c.body) orelse {
+        const contact = w.controllerContact(convex(w, c, r.feet), c.body, also) orelse {
             clear = true;
             break;
         };
@@ -175,18 +278,28 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
     }
     // The ground under the final feet, kept when the snap check already asked for it.
     var probed: ??Ground = null;
-    if (!clear and w.characterContact(convex(w, c, r.feet), c.body) != null) {
+    if (!clear and w.controllerContact(convex(w, c, r.feet), c.body, also) != null) {
         r.stuck = true;
     } else {
         const start = r.feet;
         var remaining = displacement;
         iteration = 0;
+        var pushed_once: BodyHandle = .none;
         while (iteration < max_slide_iterations and remaining.lengthSquared() > 1e-12) : (iteration += 1) {
-            const h = cast(w, c, r.feet, remaining) orelse {
+            const h = cast(w, c, r.feet, remaining, also) orelse {
                 r.feet = r.feet.add(remaining);
                 break;
             };
             record(&r, hits, h);
+            // A pushable thing is pushed first, once a move, and the slide is cast again
+            // against it where it now is (§8).
+            if (options.push and !h.body.eql(pushed_once)) if (push(w, c.body, h, remaining.scale(1 - h.fraction))) |p| {
+                pushed_once = h.body;
+                r.pushed = p;
+                r.feet = r.feet.add(remaining.scale(h.fraction));
+                remaining = remaining.scale(1 - h.fraction);
+                continue;
+            };
             r.feet = r.feet.add(remaining.scale(h.fraction)); // Cast already includes skin.
             remaining = remaining.scale(1 - h.fraction);
             if (h.surface_normal.dot(up) < 0 and remaining.dot(up) > 0) {
@@ -214,13 +327,13 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
         // when accepted; discarded candidates cannot affect observable movement reports.
         if (c.ground != null and displacement.dot(up) <= 0 and r.walls > 0 and c.config.step_height > 0 and horizontal(displacement, up).lengthSquared() > 0) {
             const rise = up.scale(c.config.step_height);
-            const lifted = cast(w, c, start, rise);
+            const lifted = cast(w, c, start, rise, also);
             var candidate_feet = start.add(rise.scale(if (lifted) |h| h.fraction else 1));
             const forward = horizontal(displacement, up);
-            const across = cast(w, c, candidate_feet, forward);
+            const across = cast(w, c, candidate_feet, forward, also);
             candidate_feet = candidate_feet.add(forward.scale(if (across) |h| h.fraction else 1));
             const down = up.scale(-(candidate_feet.sub(start).dot(up) + c.config.snap_distance));
-            if (groundCast(w, c, candidate_feet, down)) |landing| {
+            if (groundCast(w, c, candidate_feet, down, also)) |landing| {
                 candidate_feet = candidate_feet.add(down.scale(landing.fraction));
                 const gain = candidate_feet.sub(start).dot(up);
                 if (walkable(c.config, up, landing) and landing.point.sub(start).dot(up) <= c.config.step_height + narrow.cast_tolerance and
@@ -236,10 +349,10 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
             }
         }
         if (c.ground != null and displacement.dot(up) <= 0 and c.config.snap_distance > 0) {
-            probed = ground(w, c, r.feet);
+            probed = ground(w, c, r.feet, also);
             if (probed.? == null) {
                 const down = up.scale(-c.config.snap_distance);
-                if (groundCast(w, c, r.feet, down)) |h| {
+                if (groundCast(w, c, r.feet, down, also)) |h| {
                     if (walkable(c.config, up, h)) {
                         r.feet = r.feet.add(down.scale(h.fraction));
                         r.snapped = true;
@@ -251,9 +364,15 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
         }
     }
     if (!validFeet(w, c.config, r.feet)) return error.InvalidMove;
-    r.ground = if (r.stuck) null else probed orelse ground(w, c, r.feet);
+    r.ground = if (r.stuck) null else probed orelse ground(w, c, r.feet, also);
     r.grounded = r.ground != null;
     w.bodies.get(c.body).?.pose = poseAt(w, c.config, r.feet);
+    // A carry taken, or new ground, is up to date with its body's serial. A pushed character
+    // that stays on its ground keeps the carry it is owed for its own move.
+    if (r.ground) |g| {
+        const same = if (c.ground) |old| old.body.eql(g.body) else false;
+        if (options.carry or !same) stored.ground_serial = w.body(g.body).?.serial;
+    }
     stored.ground = r.ground;
     return r;
 }

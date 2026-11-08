@@ -46,6 +46,16 @@ pub const SetShapeError = error{ OutOfMemory, InvalidShape };
 pub const RemoveHullError = error{InUse};
 pub const AddMeshError = mesh_mod.AddError;
 pub const RemoveMeshError = error{InUse};
+/// What `moveBody` refuses: a pose that is not one, or a body that is not kinematic.
+pub const MoveBodyError = error{ InvalidPose, NotKinematic };
+
+/// What a `moveBody` did to the characters in its way (`collision-extras.md` §7).
+pub const BodyMove = struct {
+    /// Characters it overlapped and moved, its riders aside: they are carried at their own move.
+    pushed: u32 = 0,
+    /// Characters it still overlaps after moving them, written into the caller's buffer.
+    crushed: Found = .{ .count = 0, .total = 0 },
+};
 
 /// What a query refuses. `InvalidQuery` covers what is neither a shape nor a pose: a ray
 /// direction that is not unit, a negative or non-finite reach, a displacement that is not finite.
@@ -221,8 +231,12 @@ pub const World = struct {
         // A scale a shape cannot take is a shape the body cannot hold (§4).
         if (!body_mod.scaleValid(new.shape, new.scale)) return error.InvalidShape;
         if (new.shape == .mesh and new.kind != .static) return error.InvalidShape;
+        // A push the body cannot take, like a scale, is a body it cannot be.
+        if (!body_mod.pushValid(new.kind, new.push)) return error.InvalidShape;
         var stored = new;
         stored.pose = try shape_mod.validatePose(new.pose);
+        stored.motion = .{ .from = stored.pose, .to = stored.pose };
+        stored.serial = 0;
         const handle = try self.bodies.add(gpa, stored);
         self.retain(stored.shape);
         return handle;
@@ -249,12 +263,82 @@ pub const World = struct {
         return self.bodies.iterator();
     }
 
-    /// A teleport: nothing is tested. False for a stale handle.
+    /// A teleport: nothing is tested, and nobody is carried or pushed. A carry still owed to a
+    /// rider is cancelled: the body has moved, and its motion is none. False for a stale handle.
     pub fn setPose(self: *World, gpa: Allocator, handle: BodyHandle, pose: Pose) SetPoseError!bool {
         _ = gpa;
         const valid = try shape_mod.validatePose(pose);
         const existing = self.bodies.get(handle) orelse return false;
         existing.pose = valid;
+        existing.motion = .{ .from = valid, .to = valid };
+        existing.serial +%= 1;
+        return true;
+    }
+
+    /// Moves a kinematic body and records the motion (`collision-extras.md` §7): a character
+    /// standing on it is carried by it at that character's next move. Each other character it now
+    /// overlaps, in handle order, is moved by the body's motion at its centre through its own
+    /// controller, ignoring the body, so it slides along walls. One that still overlaps it is
+    /// written to `crushed`. The body's move stands either way. Null for a stale handle.
+    pub fn moveBody(self: *World, gpa: Allocator, handle: BodyHandle, pose: Pose, crushed: []character_mod.CharacterHandle) MoveBodyError!?BodyMove {
+        const valid = try shape_mod.validatePose(pose);
+        const existing = self.bodies.get(handle) orelse return null;
+        if (existing.kind != .kinematic) return error.NotKinematic;
+        self.moveBodyAlone(handle, valid);
+        var result: BodyMove = .{};
+        const moved = self.bodies.get(handle).?.*;
+        var it = self.characters.iterator();
+        while (it.next()) |entry| {
+            const c = entry.value.*;
+            if (c.body.eql(handle)) continue;
+            if (c.ground) |g| if (g.body.eql(handle)) continue;
+            const rider = self.bodies.get(c.body) orelse continue;
+            if (!body_mod.filtersAdmit(moved, rider.*)) continue;
+            if (!self.overlapsBody(handle, rider.*)) continue;
+            const centre = rider.pose.position;
+            const local = moved.motion.from.rotation.conjugate().rotate(centre.sub(moved.motion.from.position));
+            const by = moved.motion.to.apply(local).sub(centre);
+            result.pushed += 1;
+            _ = character_mod.moveWith(self, entry.id, by, &.{}, .{ .carry = false, .push = false, .ignore = handle }) catch {};
+            if (self.overlapsBody(handle, self.bodies.get(c.body).?.*)) {
+                if (result.crushed.count < crushed.len) {
+                    crushed[result.crushed.count] = entry.id;
+                    result.crushed.count += 1;
+                }
+                result.crushed.total += 1;
+            }
+        }
+        _ = gpa; // for the broadphase that does not exist yet (see the file's header)
+        return result;
+    }
+
+    /// The pose and the motion, with no character moved: a pushed body's move (§8), one level deep.
+    pub fn moveBodyAlone(self: *World, handle: BodyHandle, pose: Pose) void {
+        const existing = self.bodies.get(handle).?;
+        existing.motion = .{ .from = existing.pose, .to = pose };
+        existing.pose = pose;
+        existing.serial +%= 1;
+    }
+
+    /// Whether the body `handle` overlaps `other`'s shape: penetrates, not merely touches.
+    fn overlapsBody(self: *World, handle: BodyHandle, other: Body) bool {
+        const b = self.bodies.get(handle) orelse return false;
+        var query = self.convexOf(other.shape, other.pose);
+        query.scale = other.scale;
+        var candidates = self.candidate(handle, b.*, query.bounds(), .{}) orelse return false;
+        while (candidates.next()) |part| {
+            if (!part.admits(query.pose.position, .zero)) continue;
+            if (part.separation(query).distance < 0) return true;
+        }
+        return false;
+    }
+
+    /// How a character's move pushes this body (§8): a ratio in [0, 1]. Refused for a static
+    /// body unless 0. False for a stale handle.
+    pub fn setPush(self: *World, handle: BodyHandle, push: f32) error{InvalidShape}!bool {
+        const existing = self.bodies.get(handle) orelse return false;
+        if (!body_mod.pushValid(existing.kind, push)) return error.InvalidShape;
+        existing.push = push;
         return true;
     }
 
@@ -304,6 +388,7 @@ pub const World = struct {
     pub fn setKind(self: *World, handle: BodyHandle, kind: body_mod.BodyKind) error{InvalidShape}!bool {
         const existing = self.bodies.get(handle) orelse return false;
         if (existing.shape == .mesh and kind != .static) return error.InvalidShape;
+        if (!body_mod.pushValid(kind, existing.push)) return error.InvalidShape;
         existing.kind = kind;
         return true;
     }
@@ -328,24 +413,39 @@ pub const World = struct {
     /// Controller-only query: pairs are symmetric, unlike public one-sided queries. A resting
     /// skin contact does not block tangential/away motion. No public query semantics change.
     pub fn characterCast(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, walkable_y: f32) ?Hit {
-        const actor = self.bodies.get(source) orelse return null;
-        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, walkable_y, true);
+        return self.controllerCast(moving, displacement, source, .none, walkable_y);
     }
 
     /// Downward ground/landing probes prefer a walkable face even on an overhanging edge.
     pub fn characterProbe(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, ground_y: ?f32) ?Hit {
+        return self.controllerProbe(moving, displacement, source, .none, ground_y);
+    }
+
+    pub fn characterContact(self: *World, query: Convex, source: BodyHandle) ?Contact {
+        return self.controllerContact(query, source, .none);
+    }
+
+    /// `characterCast`, also ignoring `also`: the body carrying the character, or the one moving
+    /// it (`collision-extras.md` §7). `.none` ignores nothing more.
+    pub fn controllerCast(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, also: BodyHandle, walkable_y: f32) ?Hit {
         const actor = self.bodies.get(source) orelse return null;
-        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, ground_y, false);
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, walkable_y, true, also);
+    }
+
+    pub fn controllerProbe(self: *World, moving: Convex, displacement: Vec3, source: BodyHandle, also: BodyHandle, ground_y: ?f32) ?Hit {
+        const actor = self.bodies.get(source) orelse return null;
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = actor.mask, .ignore = source }, actor.layer, ground_y, false, also);
     }
 
     /// Deepest contact without a bounded output buffer losing a later, deeper triangle.
     /// Equal depths keep handle-then-triangle order, just like all other queries.
-    pub fn characterContact(self: *World, query: Convex, source: BodyHandle) ?Contact {
+    pub fn controllerContact(self: *World, query: Convex, source: BodyHandle, also: BodyHandle) ?Contact {
         const actor = self.bodies.get(source) orelse return null;
         var best: ?Contact = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
             if (entry.value.mask & actor.layer == 0) continue;
+            if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
@@ -527,15 +627,25 @@ pub const World = struct {
     /// The earliest hit over every admitted body. **Ties go to the lower handle** because the
     /// scan is in handle order and only a strictly earlier fraction replaces the best (§5.4).
     fn earliest(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter) ?Hit {
-        return self.earliestPair(moving, displacement, target, filter, null, null, false);
+        return self.earliestPair(moving, displacement, target, filter, null, null, false, .none);
     }
 
-    fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32, sliding: bool) ?Hit {
+    /// A pushed body's cast (§8): symmetric, as a character's is, under its own filter, ignoring
+    /// itself and `pusher`.
+    pub fn pushCast(self: *World, handle: BodyHandle, displacement: Vec3, pusher: BodyHandle) ?Hit {
+        const b = self.bodies.get(handle) orelse return null;
+        var moving = self.convexOf(b.shape, b.pose);
+        moving.scale = b.scale;
+        return self.earliestPair(moving, displacement, narrow.contact_skin, .{ .mask = b.mask, .ignore = handle }, b.layer, null, false, pusher);
+    }
+
+    fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32, sliding: bool, also: BodyHandle) ?Hit {
         const area = moving.bounds().sweptBy(displacement).expand(target);
         var best: ?Hit = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
             if (layer) |l| if (entry.value.mask & l == 0) continue;
+            if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, displacement)) continue;

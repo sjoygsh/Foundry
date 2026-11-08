@@ -43,7 +43,27 @@ pub const Body = struct {
     /// What the body is made of (`collision-extras.md` §6): a content ID every hit on it reports,
     /// and `physics3d` never interprets (I5). A mesh triangle's own surface wins over it.
     surface: core.ContentId = .none,
+    /// How a character's move pushes it (`collision-extras.md` §8): a ratio in [0, 1], 0 for not
+    /// at all. Only a kinematic body may be pushed, since a push is a `World.moveBody`.
+    push: f32 = 0,
+    /// Kept by the world, and whatever `addBody` is given is replaced: the body's last motion,
+    /// from the pose before its last `moveBody` to the one after, and a serial counting its moves
+    /// (§7). A character standing on it is carried by the motion when the serial is new to it.
+    motion: Motion = .{},
+    serial: u32 = 0,
 };
+
+/// A body's last move, from one pose to the next (`collision-extras.md` §7).
+pub const Motion = struct {
+    from: Pose = .identity,
+    to: Pose = .identity,
+};
+
+/// Whether a body may have `push`: a ratio in [0, 1], and none but 0 on a static body.
+pub fn pushValid(kind: BodyKind, push: f32) bool {
+    if (!std.math.isFinite(push) or push < 0 or push > 1) return false;
+    return push == 0 or kind == .kinematic;
+}
 
 pub const min_scale: f32 = 0.01;
 pub const max_scale: f32 = 100;

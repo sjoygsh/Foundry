@@ -36,6 +36,8 @@ pub const Character = character.Character;
 pub const CharacterConfig = character.CharacterConfig;
 pub const CharacterHandle = character.CharacterHandle;
 pub const CharacterMove = character.CharacterMove;
+pub const CharacterOptions = character.Options;
+pub const Pushed = character.Pushed;
 pub const Ground = character.Ground;
 pub const AddCharacterError = character.AddCharacterError;
 pub const MoveCharacterError = character.MoveCharacterError;
@@ -48,6 +50,8 @@ pub const Aabb = shape.Aabb;
 pub const Body = body.Body;
 pub const BodyHandle = body.BodyHandle;
 pub const BodyKind = body.BodyKind;
+pub const BodyMove = world.BodyMove;
+pub const Motion = body.Motion;
 pub const Contact = world.Contact;
 pub const Filter = body.Filter;
 pub const Found = world.Found;
@@ -70,6 +74,7 @@ pub const RemoveHullError = world.RemoveHullError;
 pub const SetPoseError = world.SetPoseError;
 pub const SetShapeError = world.SetShapeError;
 pub const SetUpError = world.SetUpError;
+pub const MoveBodyError = world.MoveBodyError;
 
 /// Interface constants: a caller can observe each (`collision3d.md` §5).
 pub const contact_skin = narrow.contact_skin;
@@ -95,4 +100,5 @@ test {
     _ = @import("up_tests.zig");
     _ = @import("scale_tests.zig");
     _ = @import("surface_tests.zig");
+    _ = @import("platform_tests.zig");
 }

@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 3 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 4, `physics3d`: moving platforms and pushing. `moveBody`, carrying and pushing do not exist yet.
+**Current handoff: M37 Step 4 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 5, `asset`: `.fcol` version 2 and the records. `.fcol` v2, `foundry:model` v3's `collision` and `foundry:collision_import` do not exist yet.
+
+**M37 Step 4 is done (2026-11-09): moving platforms and pushing.**
+- `World.moveBody` records a kinematic body's motion and serial. A rider is carried at its next move, swept with the carrier ignored, turned only by the twist about `up`, and reported as `carried` and `carried_yaw`. Other characters the body overlaps are moved by its motion through their controller, ignoring it, and are reported `crushed` if still inside. `setPose` cancels an owed carry.
+- `Body.push` (kinematic only) and `CharacterConfig.push`: a slide pushes what it meets once a move, at the ratio, one level deep (`pushCast` and `moveBodyAlone` for bodies, `character.moveWith` with no carry or push for characters). `CharacterMove.pushed` reports it.
+- Sharpened §7: `moveBody` leaves its riders to the carry, since pushing them as well moved a lift's rider twice.
+- Nine guards verified by mutation. A 1,200-tick replay of a lift, a turntable, a swept door, a crate and four characters is byte-identical.
+- Bar 2,905/2,915 (ten skips), 132/132 steps, fourteen new tests.
 
 **M37 Step 3 is done (2026-11-09): surfaces and one-sided triangles.**
 - `World.addMeshWith` takes `mesh.Attributes`: a table of up to 65,535 surface content IDs, a u16 index or `no_surface` per triangle, and a one-sided flag per triangle, all refused as `InvalidMesh` when malformed. `Body.surface` and `setSurface`. `Hit`, `RayHit`, `Contact`, `Overlap` and `Ground` report `surface`, the triangle's winning over its body's.

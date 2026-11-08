@@ -748,3 +748,91 @@ cross product after scale and pose, so a body turned over faces the other way.
 - the body's surface beneath a triangle with none.
 
 **The bar:** see `PROJECT_STATE.md`.
+
+## Resolution — Step 4: moving platforms and pushing (2026-11-09)
+
+`physics3d` now covers §7 and §8; the tests are in `engine/src/physics3d/platform_tests.zig`.
+
+**Platforms:**
+- **`World.moveBody(gpa, handle, pose, crushed)`** returns a `BodyMove`:
+  - `pushed`, the characters it moved;
+  - `crushed`, a `Found` over the caller's buffer of characters it still overlaps;
+  - null for a stale handle, and `NotKinematic` or `InvalidPose` refused.
+- **What a body keeps:** `Body.motion` (`from`, `to`) and `Body.serial`, which the world keeps and
+  `addBody` resets.
+- **The carry:** `Character.ground_serial` records the serial a character last took, or found when
+  it first stood on the body. A move whose ground body has a newer serial is carried first.
+  - It is swept with the carrier ignored, and slid along what it meets.
+  - It is reported as `carried` and `carried_yaw`.
+  - The turn about `up` is the twist of the motion's rotation, so a tilt carries nothing. The yaw
+    comes from `std.math.atan2`, which is Zig's own, so no libm is linked.
+- **Only the last motion is carried.** A body moved twice between a rider's moves carries the second
+  only; §13's order moves each once a tick.
+
+**Three sharpenings of §7:**
+- **`moveBody` leaves its riders alone.** §7 pushes every character the body overlaps. But a lift
+  moved up overlaps its rider's feet, and pushing them out there and carrying them at their own
+  move would move them twice. So a character whose ground is the body is only carried.
+- **A pushed character's move ignores the body moving it.** Otherwise its depenetration and its cast
+  would both move it out of the body. It moves by the motion at its centre, so it keeps its gap.
+- **`setPose` bumps the serial and records a motion of none.** A teleport after a `moveBody` would
+  otherwise leave a stale motion for a rider still owed its carry.
+
+**Pushing:**
+- **What marks it:** `Body.push`, in [0, 1] and only on a kinematic body, and `CharacterConfig.push`.
+  - An invalid ratio is refused as `InvalidShape` for a body, by `addBody`, `setPush` and
+    `setKind`, so no error set the ABI translates changed.
+  - For a character it is refused as `InvalidCharacter`.
+- **In the slide:** a slide that meets something pushable pushes it once a move. It then casts again
+  against it where it now is, and the step's `CharacterMove.pushed` says what was pushed and how
+  far.
+  - **A body** is cast by `World.pushCast`, symmetric under its own filter, ignoring itself and the
+    pusher. It is moved by `moveBodyAlone`, which records the motion and moves no character. That
+    is the one-level rule for bodies: its cast stops at a character or a second crate rather than
+    moving into it.
+  - **A character** is moved by `character.moveWith` with no carry and no push, ignoring the pusher.
+    Its own carry stays owed until its own move.
+- **`character.moveWith(w, handle, displacement, hits, Options)`** is that move. `move` is it with
+  every option on.
+- **`controllerCast`, `controllerProbe` and `controllerContact`** take the extra body to ignore.
+  `characterCast` and the others keep their signatures.
+
+**What the tests hold:**
+- **A lift:**
+  - 40 ticks up and 40 down, its rider carried within 1e-5 and its gap to the top held within 1e-5;
+  - a second move in the same tick is carried by nothing.
+- **A turntable:** a quarter turn over 60 ticks sums `carried_yaw` to π/2 within 1e-3, and takes the
+  rider from +x to −z.
+- **A tilting deck:** it carries no yaw and no displacement, and leaves the capsule upright.
+- **Into a wall:** a deck carrying a rider into a wall leaves it at the wall, slid along it by the
+  deck's sideways motion.
+- **`setPose`:** it carries nobody, and cancels a carry owed.
+- **A ram:** it pushes a standing character by its motion. Pinned against a wall, the character is
+  `crushed`, and the ram's move stands. `moveBody`'s refusals and its null for a stale handle are
+  also tested.
+- **A crate at ratio 0.5:** it moves 0.2 a tick for a pusher asking 0.4, and so does the pusher.
+- **Into a second crate:** a crate pushed into a second stops a skin short, and the second never
+  moves. At ratio 0 the first is a wall.
+- **A pushed character:** it slides along a 45-degree wall. One pushed into a pushable crate
+  pushes nothing.
+- **A crate's rider:** a character standing on a pushed crate is carried by the crate's motion.
+- **Refusals:** each ratio refusal.
+- **Determinism:** 1,200 ticks of a lift, a turntable, a door swung by `shapeSweep` then `moveBody`,
+  a pushable crate, and four characters hash alike in two worlds, and differ at 1,199.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- **the carry's serial:** carrying every move fails the lift's second move;
+- **the push ratio;**
+- **the one-level push, both halves:**
+  - a pushed character pushing, which survived the wall test until the crate test was added;
+  - a pushed body's cast;
+- **`moveBody`'s rider skip:** without it the lift's rider is moved twice;
+- **the carrier ignored in the carry's sweep;**
+- **the twist,** failing the tilting deck;
+- **`setPose`'s cancel;**
+- **the crushed check.**
+
+**Not measured here:** §16's 0.25 ms move budget, carried and pushing, is read in the sandbox's paced
+loop at Step 7, and on the i3 at Step 9.
+
+**The bar:** see `PROJECT_STATE.md`.
