@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 7 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 8, the court: footsteps by surface, which the owner plays. The court has no surfaces yet.
+**Current handoff: M37 Step 8 of 10 is committed** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). The owner's play of the staged court, the exit's last clause, is still to come. Then stop before Step 9, Windows/Vulkan on the PC.
+
+**M37 Step 8 is done (2026-11-09): the court's footsteps by surface.**
+- The level's import maps `Paving` to `court:surface.paving` and `Stone` to `court:surface.stone`. Its collision is `.fcol` v2, with the same 132 triangles.
+- `court:surface` records name a stride, a landing and the warden's footfall. Stone has three new sounds from `scripts/m37/make_court_steps.py`, and paving keeps M26's.
+- Footstep and landing events carry the surface underfoot, the player's or the warden's. `sounds.zig` plays that surface's sound, and otherwise the sound set's. Stone is heard on the low wall's top.
+- The four body digests hold every tick, and so do the navigation pins.
+- From a relocated, read-only ReleaseSafe court on Metal, windowed, the paced p95s are within budget:
+  - whole game tick: 0.153–0.176 ms (budget 0.25);
+  - level `addMesh` with surfaces: 0.048–0.061 ms (budget 5).
+- Five guards verified by mutation. Bar 2,918/2,928 (ten skips), 132/132 steps, one new test; every check, sample and `fdt-check` passed; the court was staged with `dist`.
 
 **M37 Step 7 is done (2026-11-09): the sandbox's corner, and the tilted tour.**
 - A corner at (−20, 0, 0), from `scripts/m37/make_corner.py` and `content/extras.fdt` (`extras.zig`):

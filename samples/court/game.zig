@@ -35,6 +35,9 @@ pub const Event = struct {
     position: Vec3 = .zero,
     /// The beacon's slot, for `.beacon`.
     beacon: u8 = 0,
+    /// The ground's surface, for a footstep or a landing, the player's or the warden's: which
+    /// sound it makes (`collision-extras.md` §12). None on ground that names none.
+    surface: core.ContentId = .none,
 
     pub const Kind = enum { step, jump, land, beacon, gate, warden_step, won, caught, fell, warden_land };
 };
@@ -456,7 +459,7 @@ pub const Game = struct {
         // A landing is heard after a real fall. A capsule's ground contact flickers for a
         // tick at a wall's lip, and that is not one.
         if (self.walk.result.grounded) {
-            if (self.air_ticks >= landing_air_ticks) self.emit(.{ .kind = .land, .position = feet_now });
+            if (self.air_ticks >= landing_air_ticks) self.emit(.{ .kind = .land, .position = feet_now, .surface = self.walk.surface() });
             self.air_ticks = 0;
         } else self.air_ticks += 1;
         if (self.stride > 0 and before.grounded and self.walk.result.grounded) {
@@ -465,7 +468,7 @@ pub const Game = struct {
             self.walked += moved.length();
             if (self.walked >= self.stride) {
                 self.walked -= self.stride;
-                self.emit(.{ .kind = .step, .position = feet_now });
+                self.emit(.{ .kind = .step, .position = feet_now, .surface = self.walk.surface() });
             }
         }
 
@@ -499,8 +502,8 @@ pub const Game = struct {
         if (self.warden) |*w| {
             const seen = w.sees(w.eye(), self.walk.eye(), self);
             try w.step(self.gpa, &self.walk.world, &self.crowd.?, if (self.rigs) |*r| r else null, rules.gravity, dt, seen, self.walk.result.feet, self.walk.eye());
-            for (0..w.footfalls) |_| self.emit(.{ .kind = .warden_step, .position = w.feet });
-            for (0..w.landings) |_| self.emit(.{ .kind = .warden_land, .position = w.feet });
+            for (0..w.footfalls) |_| self.emit(.{ .kind = .warden_step, .position = w.feet, .surface = w.surface });
+            for (0..w.landings) |_| self.emit(.{ .kind = .warden_land, .position = w.feet, .surface = w.surface });
             caught = w.feet.sub(self.walk.result.feet).length() < rules.catch_distance;
         }
 

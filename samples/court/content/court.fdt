@@ -1,4 +1,14 @@
-foundry:model_import court:models.court { source "models/court.gltf" collision true }
+# The level: paving underfoot, and stone in its walls, the low wall and the pit (`collision-extras.md`
+# §12). Its collision is version 2; its triangles, and the navigation mesh built from them, are
+# M26's.
+foundry:model_import court:models.court {
+    source "models/court.gltf"
+    collision true
+    surfaces [
+        { material "Paving" surface court:surface.paving }
+        { material "Stone" surface court:surface.stone }
+    ]
+}
 foundry:model_import court:models.beacon { source "models/beacon.gltf" }
 foundry:model_import court:models.gate { source "models/gate.gltf" }
 foundry:model_import court:models.warden { source "models/warden.gltf" }
@@ -240,9 +250,23 @@ sound_set court:sounds.main {
     click court:sounds.click
 }
 
+# What a footstep sounds like on each surface the level names: the player's stride, a landing
+# (the player's or the warden's), and the warden's footfall. Ground with no surface plays the
+# sound set's own.
+@schema surface { step id  land id  warden_step id }
+surface court:surface.paving { step court:sounds.step  land court:sounds.land  warden_step court:sounds.warden_step }
+surface court:surface.stone {
+    step court:sounds.step_stone  land court:sounds.land_stone  warden_step court:sounds.warden_step_stone
+}
+
 # Priorities decide which voice gives way when all of them are in use (mixing.md §7): the
 # player's own footsteps first, then the warden's, and never the music.
 foundry:sound court:sounds.step { source "sounds/step.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.step_stone { source "sounds/step_stone.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.land_stone { source "sounds/land_stone.wav" bus court:bus.effects priority 32 }
+foundry:sound court:sounds.warden_step_stone {
+    source "sounds/warden_step_stone.wav" bus court:bus.effects priority 64 attenuation court:attenuation.warden
+}
 foundry:sound court:sounds.jump { source "sounds/jump.wav" bus court:bus.effects priority 32 }
 foundry:sound court:sounds.land { source "sounds/land.wav" bus court:bus.effects priority 32 }
 foundry:sound court:sounds.warden_step {

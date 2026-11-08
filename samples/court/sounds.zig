@@ -60,6 +60,23 @@ pub const SoundSet = struct {
     }
 };
 
+/// What a `court:surface` record names: the sound of each footstep on it
+/// (`collision-extras.md` §12).
+pub const Footstep = enum { step, land, warden_step };
+pub const surface_schema = "court:surface";
+
+/// The sound `surface`'s record names for `which`, or null when there is no surface, no
+/// record of the court's schema, or no sound in it: the sound set's own plays instead.
+pub fn surfaceSound(store: ?*const data.Store, surface: core.ContentId, which: Footstep) ?core.ContentId {
+    if (surface.isNone()) return null;
+    const s = store orelse return null;
+    const record = s.lookup(surface) orelse return null;
+    if (!record.schema.id.eql(data.SchemaId.fromStringUnchecked(surface_schema))) return null;
+    const at = record.schema.fieldIndex(@tagName(which)) orelse return null;
+    const value = (record.fields.idAt(at) catch return null) orelse return null;
+    return if (value.isNone()) null else value;
+}
+
 /// Which bus each slider moves, and what a pause does to the world (mixing.md §11).
 pub const MixSet = struct {
     /// The root the mixer mixes through. The master volume is the mixer's master gain.
@@ -185,6 +202,11 @@ pub const Sounds = struct {
     /// capacity plays on where it began.
     placed: [capacity]Placed = undefined,
     placed_len: usize = 0,
+    /// The store the surfaces' records are read from, per footstep, so a reload is followed.
+    store: ?*const data.Store = null,
+    /// Footsteps and landings played by their surface's record, and by the sound set's own.
+    surfaced: u32 = 0,
+    unsurfaced: u32 = 0,
     /// Sounds asked for, started, and refused. A scripted run asserts `dropped` is zero.
     requested: u32 = 0,
     played: u32 = 0,
@@ -258,9 +280,9 @@ pub const Sounds = struct {
         const set = self.set orelse return;
         const ears = game.walk.eye();
         for (game.tickEvents()) |event| switch (event.kind) {
-            .step => _ = self.start(set.step, .{ .gain = 0.5 }),
+            .step => _ = self.start(self.underfoot(event.surface, .step) orelse set.step, .{ .gain = 0.5 }),
             .jump => _ = self.start(set.jump, .{ .gain = 0.6 }),
-            .land => _ = self.start(set.land, .{ .gain = 0.7 }),
+            .land => _ = self.start(self.underfoot(event.surface, .land) orelse set.land, .{ .gain = 0.7 }),
             .beacon => {
                 const at = game.beacons[event.beacon].useCentre();
                 self.place(game.beacons[event.beacon].settings.sound, .{ .fixed = at }, at, occluded(&game.walk.world, ears, at, null));
@@ -271,16 +293,26 @@ pub const Sounds = struct {
             },
             .warden_step => {
                 const at = wardenBody(game) orelse event.position;
-                self.place(set.warden_step, .warden, at, occluded(&game.walk.world, ears, at, null));
+                self.place(self.underfoot(event.surface, .warden_step) orelse set.warden_step, .warden, at, occluded(&game.walk.world, ears, at, null));
             },
             .warden_land => {
                 const at = wardenBody(game) orelse event.position;
-                self.place(set.land, .warden, at, occluded(&game.walk.world, ears, at, null));
+                self.place(self.underfoot(event.surface, .land) orelse set.land, .warden, at, occluded(&game.walk.world, ears, at, null));
             },
             .won => _ = self.start(set.won, .{}),
             .caught => _ = self.start(set.caught, .{}),
             .fell => _ = self.start(set.fell, .{}),
         };
+    }
+
+    /// The sound a footstep makes on `surface`, or null for the sound set's own, counted.
+    fn underfoot(self: *Sounds, surface: core.ContentId, which: Footstep) ?core.ContentId {
+        const sound = surfaceSound(self.store, surface, which) orelse {
+            self.unsurfaced += 1;
+            return null;
+        };
+        self.surfaced += 1;
+        return sound;
     }
 
     fn place(self: *Sounds, sound: core.ContentId, source: Source, at: Vec3, occlusion: f32) void {

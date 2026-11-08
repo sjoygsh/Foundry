@@ -15,6 +15,7 @@ const nav_mod = @import("nav.zig");
 const warden_mod = @import("warden.zig");
 const options = @import("court_test_options");
 const play = @import("testdata/play.zig");
+const sounds_mod = @import("sounds.zig");
 const menus_mod = @import("menus.zig");
 const testing = std.testing;
 const Vec3 = core.math.Vec3;
@@ -779,7 +780,6 @@ test "court: a refused beacon, gate or warden is left out with the game still st
 
 test "court: a sound behind the closed gate is occluded by one ray, and one in the open is not" {
     if (comptime !options.available) return error.SkipZigTest;
-    const sounds_mod = @import("sounds.zig");
     const gpa = testing.allocator;
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
@@ -857,4 +857,63 @@ test "court: the warden's animation moves no body: every script keeps its digest
         try testing.expectEqual(case.ticks, digest.ticks);
         try testing.expectEqual(case.digest, digest.body);
     }
+}
+
+test "court: footsteps carry the surface underfoot, paving or stone, and play that surface's sound" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try TestEnv.initPlaying(gpa);
+    defer env.deinit(gpa);
+    const game = &env.game;
+    game.stride = 1.6;
+    const paving = core.ContentId.fromString("court:surface.paving");
+    const stone = core.ContentId.fromString("court:surface.stone");
+    // The level's collision is version 2: paving on its floor, stone on its low wall and walls.
+    const world = &game.walk.world;
+    try testing.expect((try world.raycast(.init(0, 1, 3), .init(0, -1, 0), 2, .{})).?.surface.eql(paving));
+    try testing.expect((try world.raycast(.init(-3, 1.5, 1), .init(0, -1, 0), 2, .{})).?.surface.eql(stone));
+    try testing.expect((try world.raycast(.init(0, 1, 6), .init(1, 0, 0), 10, .{})).?.surface.eql(stone));
+    // A surface's record names its sounds; no surface, or a record of another schema, names none.
+    try testing.expect(sounds_mod.surfaceSound(&env.store, stone, .step).?.eql(.fromString("court:sounds.step_stone")));
+    try testing.expect(sounds_mod.surfaceSound(&env.store, stone, .warden_step).?.eql(.fromString("court:sounds.warden_step_stone")));
+    try testing.expect(sounds_mod.surfaceSound(&env.store, paving, .land).?.eql(.fromString("court:sounds.land")));
+    try testing.expect(sounds_mod.surfaceSound(&env.store, .none, .step) == null);
+    try testing.expect(sounds_mod.surfaceSound(&env.store, .fromString("court:sounds.step"), .step) == null);
+    try testing.expect(sounds_mod.surfaceSound(null, stone, .step) == null);
+
+    const Heard = struct { steps: u32 = 0, lands: u32 = 0, other: u32 = 0, warden: u32 = 0 };
+    const listen = struct {
+        fn run(g: *game_mod.Game, sounds: *sounds_mod.Sounds, ticks: usize, intent: walk_mod.Intent, want: core.ContentId) !Heard {
+            var heard: Heard = .{};
+            for (0..ticks) |_| {
+                try g.step(intent, dt);
+                sounds.onEvents(g);
+                for (g.tickEvents()) |event| switch (event.kind) {
+                    .step, .land => {
+                        if (!event.surface.eql(want)) heard.other += 1;
+                        if (event.kind == .step) heard.steps += 1 else heard.lands += 1;
+                    },
+                    .warden_step, .warden_land => heard.warden += 1,
+                    else => {},
+                };
+            }
+            try testing.expectEqual(game_mod.Phase.playing, g.phase);
+            return heard;
+        }
+    }.run;
+    // The sounds, with no mixer: every footstep and landing found its surface's own sound.
+    var sounds: sounds_mod.Sounds = .{ .set = sounds_mod.SoundSet.find(&env.store), .store = &env.store };
+    // Dropped onto the low wall: a landing on stone, then strides along its top on stone.
+    try game.walk.teleport(.init(-4.5, 1.4, 1));
+    const wall = try listen(game, &sounds, 60, .{ .direction = .init(1, 0, 0) }, stone);
+    try testing.expect(wall.lands == 1 and wall.steps >= 1 and wall.other == 0);
+    // On the floor, paving.
+    try game.walk.teleport(.init(3, 0.004, 5));
+    const floor = try listen(game, &sounds, 90, .{ .direction = .init(0, 0, -1) }, paving);
+    try testing.expect(floor.steps >= 1 and floor.other == 0);
+    try testing.expectEqual(wall.steps + wall.lands + wall.warden + floor.steps + floor.lands + floor.warden, sounds.surfaced);
+    try testing.expectEqual(@as(u32, 0), sounds.unsurfaced);
+    // The warden's footfalls take the surface under its controller.
+    const w = &game.warden.?;
+    try testing.expect(w.surface.eql(paving));
 }

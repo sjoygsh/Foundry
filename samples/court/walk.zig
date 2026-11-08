@@ -70,6 +70,22 @@ pub fn inputIntent(input: platform.InputSnapshot, typing: bool) Intent {
     };
 }
 
+/// A compiled collision mesh in `world`, with its surfaces and one-sided faces: the consumer's
+/// half of `collision-extras.md` §9, since `asset` cannot see `physics3d`. A version 1 mesh has
+/// no attributes, and adds as it always did.
+pub fn addCollisionMesh(gpa: std.mem.Allocator, world: *physics.World, geometry: *const asset.CollisionMesh) !physics.MeshHandle {
+    const triangles = geometry.indices.len / 3;
+    const surfaces = try gpa.alloc(u16, if (geometry.triangle_attributes.len == 0) 0 else triangles);
+    defer gpa.free(surfaces);
+    const one_sided = try gpa.alloc(bool, surfaces.len);
+    defer gpa.free(one_sided);
+    for (geometry.triangle_attributes, surfaces, one_sided) |attribute, *surface, *side| {
+        surface.* = asset.collision_mesh.surfaceIndex(attribute) orelse physics.mesh.no_surface;
+        side.* = asset.collision_mesh.oneSided(attribute);
+    }
+    return world.addMeshWith(gpa, geometry.positions, geometry.indices, .{ .surfaces = geometry.surfaces, .triangle_surfaces = surfaces, .one_sided = one_sided });
+}
+
 pub const Walk = struct {
     gpa: std.mem.Allocator,
     world: physics.World = .{},
@@ -146,7 +162,7 @@ pub const Walk = struct {
         errdefer assets.release(handle);
         const product = assets.getIfLoader(handle, asset.collisionMeshLoader()) orelse return error.WrongLoader;
         const geometry = asset.collision_mesh.fromPayload(product.payload);
-        const mesh = try self.world.addMesh(self.gpa, geometry.positions, geometry.indices);
+        const mesh = try addCollisionMesh(self.gpa, &self.world, geometry);
         errdefer _ = self.world.removeMesh(self.gpa, mesh) catch unreachable;
         const body = try self.world.addBody(self.gpa, .{ .shape = .{ .mesh = mesh }, .user = id.hash });
         return .{ .handle = handle, .mesh = mesh, .body = body };
@@ -163,6 +179,10 @@ pub const Walk = struct {
     }
     pub fn rotation(self: *const Walk) core.math.Quat {
         return core.math.Quat.fromAxisAngle(.up, self.yaw).mul(core.math.Quat.fromAxisAngle(.right, self.pitch));
+    }
+    /// The surface of the ground underfoot, or none in the air or on ground that names none.
+    pub fn surface(self: *const Walk) core.ContentId {
+        return if (self.result.ground) |g| g.surface else .none;
     }
     pub fn eye(self: *const Walk) Vec3 {
         return self.result.feet.add(.init(0, if (self.settings) |s| s.eye_height else 0, 0));

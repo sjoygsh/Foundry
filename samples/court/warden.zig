@@ -180,6 +180,8 @@ pub const Warden = struct {
     /// The cosine of the record's `sight_angle`, worked out once.
     sight_cosine: f32 = 1,
     feet: Vec3 = .zero,
+    /// The surface under its controller after this tick's move, for its footfalls' sound.
+    surface: core.ContentId = .none,
     yaw: f32 = 0,
     velocity: f32 = 0,
     tick: u64 = 0,
@@ -232,6 +234,7 @@ pub const Warden = struct {
     pub fn reset(self: *Warden, gpa: std.mem.Allocator, world: *physics.World, crowd: *nav.Crowd, rigs: ?*const asset.Rigs) !void {
         const s = self.settings orelse return;
         self.feet = s.waypoints[0];
+        self.surface = .none;
         self.waypoint = 1;
         self.targeted = false;
         self.mode = .patrolling;
@@ -328,6 +331,8 @@ pub const Warden = struct {
         if (wish) |w| if (w.on_link) {
             // On a curve a controller would refuse: the body goes where the crossing says.
             self.feet = self.feet.add(w.displacement);
+            // In the air over the link, so no ground: its landing plays the sound set's own.
+            self.surface = .none;
             _ = try world.setCharacterFeet(gpa, self.character, self.feet);
             self.velocity = 0;
             try self.finishTick(before, s, rigs, dt, self.crossing(crowd), player);
@@ -340,6 +345,7 @@ pub const Warden = struct {
         const fall_limit = @sqrt(@max(0, max_move * max_move - horizontal.lengthSquared()));
         const result = (try world.moveCharacter(gpa, self.character, horizontal.add(.init(0, @max(self.velocity * dt, -fall_limit), 0)), &.{})) orelse return error.NoCharacter;
         self.feet = result.feet;
+        self.surface = if (result.ground) |g| g.surface else .none;
         crowd.place(self.agent, self.feet);
         if (result.grounded) self.velocity = 0;
         try self.finishTick(before, s, rigs, dt, null, player);

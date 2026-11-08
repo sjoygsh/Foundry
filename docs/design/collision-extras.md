@@ -1112,3 +1112,81 @@ same comparison.
 **The bar.** `zig build test`: 2,917/2,927, ten skips, 132/132 steps, with three new tests. Every
 check, the four samples and `fdt-check` passed. No release stages `sandbox3d`, and the room's and
 the court's content did not change, so no release was staged.
+
+## Resolution — Step 8: the court's footsteps by surface (2026-11-09)
+
+**The level.** `court:models.court`'s import gains `surfaces`: its glTF's two materials,
+`Paving` to `court:surface.paving` and `Stone` to `court:surface.stone`. The paving is the floor,
+the ledge and the exit; the stone is the walls, the low wall and the pit's floor. Its collision is
+`.fcol` version 2, 132 triangles and two surfaces. The glTF is unchanged, and so are the triangles.
+
+**Sharpened, §12's "floor, walls and steps":** the court has no steps and only two materials. So it
+has two surfaces, and the place a player hears stone is the low wall's top, a jump up from the
+floor. Giving the ledge or the exit a material of its own would change the drawn model, which §12
+keeps.
+
+**The records.** `@schema surface { step id  land id  warden_step id }` and two records:
+- the paving names M26's `step`, `land` and `warden_step`;
+- the stone names three new sounds, `court:sounds.step_stone`, `land_stone` and
+  `warden_step_stone`, on the same buses and priorities as the paving's.
+
+The `.wav` files come from `scripts/m37/make_court_steps.py`, which writes only those three and
+none of M26's.
+
+**Sharpened, §12's "a step sound each":** a surface names three sounds, not one. The player's
+stride, a landing and the warden's footfall were already three sounds, and the warden's carries
+an attenuation the player's must not. A landing plays its surface's `land`, the player's or the
+warden's.
+
+**What plays.**
+- `walk.addCollisionMesh` is the court's copy of the sandbox's: it turns `.fcol` v2 attributes
+  into `physics3d`'s, since `asset` cannot see `physics3d` and one sample cannot import another.
+- `Walk.surface` is the ground's surface, and `Warden.surface` is the surface under its
+  controller after its move, or none while it is carried over a link.
+- `game.Event` gains `surface`, set on `step`, `land`, `warden_step` and `warden_land`.
+- `sounds.surfaceSound` reads the surface's `court:surface` record from the store at each
+  footstep, so a reload is followed.
+- Ground with no surface, an ID that is no `court:surface`, or a missing sound plays the sound
+  set's own, as before. The run counts both cases: "footsteps: N by their surface, M by the sound
+  set's own".
+
+**What did not move.** `win`, `caught`, `fell` and the soundtrack keep their body digests,
+`2495783980aedff1`, `757a204cc05d1b02`, `6b4fdba4db5b669e` and `806953eeb8f10db8`, every tick. The
+digest folds each event's kind, place and beacon and not its surface, and nothing reads a surface
+but the sounds. Every navigation and court pin holds, since the mesh is built from the same
+positions.
+
+**The test.** `game_tests.zig` checks four things:
+- the level reports paving on its floor and stone on the low wall and the walls;
+- the records resolve, and no surface, another schema or no store gives none;
+- a drop onto the low wall lands on stone and strides on stone, and the floor strides on
+  paving;
+- the sounds took every footstep from its surface's record. The warden's surface is paving.
+
+**Guards verified by mutation,** each failing that test before it was restored:
+- the surface index in `addCollisionMesh`;
+- the stride's surface;
+- the landing's surface;
+- the warden's surface;
+- the stride's sound chosen by its surface.
+
+**Budgets, from the staged ReleaseSafe court on Metal, moved out of the repository and read-only,
+windowed:**
+
+| Script | Whole game tick p95 | `render.skin` p95 | Level `addMesh` p95 |
+| --- | --- | --- | --- |
+| `win` | 0.157 ms | 0.065 ms | 0.061 ms |
+| `caught` | 0.153 ms | 0.054 ms | 0.048 ms |
+| `fell` | 0.176 ms | 0.056 ms | 0.053 ms |
+
+- **The budgets:** 0.25 ms for the tick and 5 ms for `addMesh`. The `addMesh` line is the level's
+  collision with its surfaces, added to a scratch world 32 times at load.
+- **Footsteps:** `win`'s 144 footsteps and landings played 142 by surface and 2 by the set's own.
+  The two found no surface underfoot, as the warden has none while a link carries it.
+- **Nothing was dropped:** no sound, mixer command or event, and each replay matched.
+- **The first frames after load** read 54–78 ms of frame work, the cost `navigation.md` records
+  whether or not a mesh is built.
+
+**The bar.** `zig build test`: 2,918/2,928, ten skips, 132/132 steps, with one new test. Every
+check, the four samples and `fdt-check` passed, and `make_court_steps.py --check` holds. The court
+was staged with `dist`, since its content changed.

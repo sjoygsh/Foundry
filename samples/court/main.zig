@@ -24,6 +24,7 @@ const render2d = @import("render2d");
 const render3d = @import("render3d");
 const ui = @import("ui");
 const nav = @import("nav");
+const physics = @import("physics3d");
 const nav_mod = @import("nav.zig");
 const walk_mod = @import("walk.zig");
 const game_mod = @import("game.zig");
@@ -374,7 +375,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         m.deinit();
     };
     if (mixer) |m| try engine.assets.registerLoader(gpa, m.soundLoader());
-    var sounds: sounds_mod.Sounds = .{ .mixer = mixer, .set = sounds_mod.SoundSet.find(&engine.store) };
+    var sounds: sounds_mod.Sounds = .{ .mixer = mixer, .set = sounds_mod.SoundSet.find(&engine.store), .store = &engine.store };
     // The court's buses and effects (mixing.md §11), and the player's three volumes on them.
     sounds.useMix(&engine.store, sounds_mod.MixSet.find(&engine.store));
     sounds.applyVolumes(prefs.options());
@@ -398,6 +399,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     game.meshes = &navigation.meshes;
     game.refresh(&engine.store, &engine.assets, &content, engine.step_delta.toSecondsF32());
     if (game.walk.character.isNone() or game.walk.collisions[0].body.isNone()) return error.MissingLevelCollision;
+    measureLevelMesh(gpa, engine, &game.walk);
     if (sounds.set) |set| {
         game.stride = set.step_distance;
     }
@@ -631,6 +633,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     log.info("sounds: {d} asked for, {d} played, {d} dropped; {d} mixer command(s) and {d} event(s) dropped", .{
         sounds.requested, sounds.played, sounds.dropped, commands_dropped, game.events_dropped,
     });
+    log.info("footsteps: {d} by their surface, {d} by the sound set's own", .{ sounds.surfaced, sounds.unsurfaced });
     soundtrack.report("at exit");
     if (script_driver) |d| {
         log.info("replay: {d} tick hashes matched a fresh simulation", .{replay_ticks});
@@ -656,6 +659,32 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             return error.PlayScriptFailed;
         }
     }
+}
+
+/// `collision-extras.md` §16's `addMesh` budget, read from the level the walk holds: its
+/// collision, surfaces and one-sided flags, added to a scratch world and removed, 32 times.
+/// Measurement only, at load; no simulation sees the scratch world or the clock.
+fn measureLevelMesh(gpa: std.mem.Allocator, engine: *app.Engine, walk: *const walk_mod.Walk) void {
+    const product = engine.assets.getIfLoader(walk.collisions[0].handle, asset.collisionMeshLoader()) orelse return;
+    const geometry = asset.collision_mesh.fromPayload(product.payload);
+    var world: physics.World = .{};
+    defer world.deinit(gpa);
+    var times: [32]i64 = undefined;
+    var scratch: [32]i64 = undefined;
+    for (&times) |*t| {
+        const started = engine.os.monotonicNanos();
+        const mesh = walk_mod.addCollisionMesh(gpa, &world, geometry) catch |err| {
+            log.warn("collision: the level's mesh was not measured ({t})", .{err});
+            return;
+        };
+        t.* = @intCast(engine.os.monotonicNanos() - started);
+        _ = world.removeMesh(gpa, mesh) catch unreachable; // No body holds it.
+    }
+    const summary = core.profile.summarise(&times, &scratch);
+    log.info("collision: addMesh of the level, {d} triangles and {d} surface(s), version {d}: median {d:.4}ms p95 {d:.4}ms over 32; budget 5.00ms", .{
+        geometry.indices.len / 3,                                         geometry.surfaces.len,                                         @as(u8, if (geometry.triangle_attributes.len == 0) 1 else 2),
+        @as(f64, @floatFromInt(summary.median_ns)) / core.time.ns_per_ms, @as(f64, @floatFromInt(summary.p95_ns)) / core.time.ns_per_ms,
+    });
 }
 
 fn capture(engine: *app.Engine, want: bool) void {
