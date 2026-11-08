@@ -7,6 +7,7 @@ const shape_mod = @import("shape.zig");
 
 const Pose = shape_mod.Pose;
 const Shape = shape_mod.Shape;
+const Vec3 = core.math.Vec3;
 
 /// Phantom tag for `BodyHandle`. Never instantiated (I1).
 pub const Bodies = opaque {};
@@ -35,7 +36,28 @@ pub const Body = struct {
     /// Opaque: the game's own identifier, `entity.bits()` in practice. The whole coupling
     /// between `physics3d` and the rest of the engine, as in `physics2d`.
     user: u64 = 0,
+    /// A mesh's or hull's size at runtime (`collision-extras.md` §4), applied before the pose,
+    /// which stays rigid. Non-uniform, each axis in [`min_scale`, `max_scale`]; any other shape
+    /// says its size in its own dimensions and refuses a scale but one.
+    scale: Vec3 = .one,
 };
+
+pub const min_scale: f32 = 0.01;
+pub const max_scale: f32 = 100;
+
+/// Whether `scale` may be given to `shape`.
+pub fn scaleValid(shape: Shape, scale: Vec3) bool {
+    if (!scale.isFinite()) return false;
+    const unit = scale.eql(Vec3.one);
+    return switch (shape) {
+        .mesh, .hull => within(scale.x) and within(scale.y) and within(scale.z),
+        else => unit,
+    };
+}
+
+fn within(v: f32) bool {
+    return v >= min_scale and v <= max_scale;
+}
 
 /// Whether two bodies admit each other. **Symmetric**: both sides must agree, as in 2D.
 pub fn filtersAdmit(a: Body, b: Body) bool {

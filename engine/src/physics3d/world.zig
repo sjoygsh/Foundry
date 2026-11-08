@@ -205,6 +205,8 @@ pub const World = struct {
 
     pub fn addBody(self: *World, gpa: Allocator, new: Body) AddBodyError!BodyHandle {
         if (!self.shapeValid(new.shape)) return error.InvalidShape;
+        // A scale a shape cannot take is a shape the body cannot hold (§4).
+        if (!body_mod.scaleValid(new.shape, new.scale)) return error.InvalidShape;
         if (new.shape == .mesh and new.kind != .static) return error.InvalidShape;
         var stored = new;
         stored.pose = try shape_mod.validatePose(new.pose);
@@ -248,9 +250,20 @@ pub const World = struct {
         if (!self.shapeValid(new)) return error.InvalidShape;
         const existing = self.bodies.get(handle) orelse return false;
         if (new == .mesh and existing.kind != .static) return error.InvalidShape;
+        if (!body_mod.scaleValid(new, existing.scale)) return error.InvalidShape;
         self.retain(new);
         self.release(existing.shape);
         existing.shape = new;
+        return true;
+    }
+
+    /// A mesh's or hull's size at runtime (`collision-extras.md` §4). Refused for a scale the body's
+    /// shape cannot take. False for a stale handle.
+    pub fn setScale(self: *World, gpa: Allocator, handle: BodyHandle, scale: Vec3) SetShapeError!bool {
+        _ = gpa;
+        const existing = self.bodies.get(handle) orelse return false;
+        if (!body_mod.scaleValid(existing.shape, scale)) return error.InvalidShape;
+        existing.scale = scale;
         return true;
     }
 
@@ -365,6 +378,71 @@ pub const World = struct {
         const moving = try self.queryConvex(shape, pose);
         if (!displacement.isFinite()) return error.InvalidQuery;
         return self.earliest(moving, displacement, narrow.contact_skin, filter);
+    }
+
+    /// The earliest hit of `shape` moved from `from` to `to`, turning as it goes
+    /// (`collision-extras.md` §5): its position goes linearly and its rotation by `slerp`, and the
+    /// hit's `fraction` is of that path. Like `shapeCast` it stops `contact_skin` short.
+    ///
+    /// **Conservative advancement:** no point of the shape moves faster, per unit of the path,
+    /// than `|Δp| + θ·R`, θ the turn's angle and R the farthest the shape reaches from its origin.
+    /// So the nearest candidate's distance bounds how far the path may advance without passing
+    /// it. At most `max_cast_iterations` advances. A sweep that does not turn is `shapeCast`.
+    pub fn shapeSweep(self: *World, shape: Shape, from: Pose, to: Pose, filter: Filter) QueryError!?Hit {
+        const start = try self.queryConvex(shape, from);
+        const end_pose = try shape_mod.validatePose(to);
+        const begin = start.pose;
+        const d = @abs(begin.rotation.dot(end_pose.rotation));
+        if (d >= 1) return self.earliest(start, end_pose.position.sub(begin.position), narrow.contact_skin, filter);
+        // θ = 2·asin(√(1 − d²)) ≤ π·√(1 − d²), with no inverse trig.
+        const turn = std.math.pi * @sqrt(@max(0, 1 - d * d));
+        const reach = reachOf(start);
+        const travel = end_pose.position.sub(begin.position);
+        const speed = travel.length() + turn * reach;
+        var end = start;
+        end.pose = end_pose;
+        const area = start.bounds().merge(end.bounds()).expand(turn * reach + narrow.contact_skin);
+        var fraction: f32 = 0;
+        var iteration: u32 = 0;
+        var found: ?Hit = null;
+        while (iteration < narrow.max_cast_iterations) : (iteration += 1) {
+            var moving = start;
+            moving.pose = .{ .position = begin.position.lerp(end_pose.position, fraction), .rotation = begin.rotation.slerp(end_pose.rotation, fraction) };
+            const nearest = self.nearestTo(moving, area, filter) orelse return null;
+            const gap = nearest.separation.distance - narrow.contact_skin;
+            found = .{
+                .fraction = fraction,
+                .point = nearest.separation.point_b,
+                .normal = nearest.separation.normal,
+                .surface_normal = nearest.part.convex.surfaceNormal(nearest.separation.normal),
+                .body = nearest.body,
+                .user = nearest.user,
+                .triangle = nearest.part.triangle,
+                .started_inside = fraction == 0 and nearest.separation.distance < 0,
+            };
+            if (gap <= narrow.cast_tolerance) return found;
+            fraction += gap / speed;
+            if (fraction >= 1) return null;
+        }
+        return found;
+    }
+
+    const Nearest = struct { separation: narrow.Separation, part: Part, body: BodyHandle, user: u64 };
+
+    /// The candidate nearest `moving` among bodies in `area`. Ties go to the lower handle, then
+    /// triangle, since the scan is in that order and only a strictly nearer one replaces it.
+    fn nearestTo(self: *World, moving: Convex, area: Aabb, filter: Filter) ?Nearest {
+        var best: ?Nearest = null;
+        var it = self.bodies.iterator();
+        while (it.next()) |entry| {
+            var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
+            while (candidates.next()) |other| {
+                const s = narrow.separation(moving, other.convex);
+                if (best) |b| if (!(s.distance < b.separation.distance)) continue;
+                best = .{ .separation = s, .part = other, .body = entry.id, .user = entry.value.user };
+            }
+        }
+        return best;
     }
 
     /// Every body `shape` at `pose` overlaps — penetrates, not merely touches — in handle order.
@@ -488,6 +566,7 @@ pub const World = struct {
         convex: ?Convex = null,
         mesh: ?*const mesh_mod.Mesh = null,
         pose: Pose = .identity,
+        scale: Vec3 = .one,
         triangles: []const u32 = &.{},
         cursor: usize = 0,
 
@@ -499,7 +578,10 @@ pub const World = struct {
             if (self.cursor == self.triangles.len) return null;
             const t = self.triangles[self.cursor];
             self.cursor += 1;
-            return .{ .convex = .{ .core = .{ .triangle = self.mesh.?.triangle(t) }, .radius = 0, .pose = self.pose }, .triangle = t };
+            // Scaled before the pose, so a scaled triangle's normal is the one a person sees.
+            var pts = self.mesh.?.triangle(t);
+            for (&pts) |*p| p.* = p.mul(self.scale);
+            return .{ .convex = .{ .core = .{ .triangle = pts }, .radius = 0, .pose = self.pose }, .triangle = t };
         }
     };
 
@@ -509,17 +591,22 @@ pub const World = struct {
         if (!self.bodyBounds(b).expand(0.002).overlaps(area)) return null;
         if (b.shape == .mesh) {
             const m = self.meshes.get(b.shape.mesh).?;
-            return .{ .mesh = m, .pose = b.pose, .triangles = m.candidates(b.pose, area, self.triangle_scratch) };
+            return .{ .mesh = m, .pose = b.pose, .scale = b.scale, .triangles = m.candidates(b.pose, b.scale, area, self.triangle_scratch) };
         }
-        return .{ .convex = self.convexOf(b.shape, b.pose) };
+        var c = self.convexOf(b.shape, b.pose);
+        c.scale = b.scale;
+        return .{ .convex = c };
     }
 
     fn bodyBounds(self: *World, b: Body) Aabb {
         if (b.shape == .mesh) {
             const c: Convex = .{ .core = .point, .radius = 0, .pose = b.pose };
-            return c.poseBounds(self.meshes.get(b.shape.mesh).?.nodes[0].bounds);
+            const local = self.meshes.get(b.shape.mesh).?.nodes[0].bounds;
+            return c.poseBounds(.{ .min = local.min.mul(b.scale), .max = local.max.mul(b.scale) });
         }
-        return self.convexOf(b.shape, b.pose).bounds();
+        var c = self.convexOf(b.shape, b.pose);
+        c.scale = b.scale;
+        return c.bounds();
     }
 
     fn queryConvex(self: *World, shape: Shape, pose: Pose) QueryError!Convex {
@@ -557,6 +644,22 @@ pub const World = struct {
         if (shape == .mesh) self.meshes.get(shape.mesh).?.users -= 1;
     }
 };
+
+/// The farthest a convex shape reaches from its pose's origin, its radius included.
+fn reachOf(c: Convex) f32 {
+    const core_reach: f32 = switch (c.core) {
+        .point => 0,
+        .segment => |h| h,
+        .box => |he| he.length(),
+        .points => |pts| blk: {
+            var r: f32 = 0;
+            for (pts) |p| r = @max(r, p.mul(c.scale).length());
+            break :blk r;
+        },
+        .triangle => |pts| @max(pts[0].length(), @max(pts[1].length(), pts[2].length())),
+    };
+    return core_reach + c.radius;
+}
 
 /// The shortest rotation taking +Y to unit `to`, by the half-way quaternion: no trigonometry, so
 /// no pin depends on a linked libm. Straight down is a half turn about +X.

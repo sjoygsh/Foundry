@@ -156,6 +156,9 @@ pub const Convex = struct {
     core: Core,
     radius: f32,
     pose: Pose,
+    /// A hull's points' scale, applied before the pose. Triangles arrive already scaled, and the
+    /// other cores never carry one (`collision-extras.md` §4).
+    scale: Vec3 = .one,
 
     /// The core's farthest point along `dir` (world space). Ties go to the positive side, and
     /// among a hull's points to the first, so the answer is a function of the input alone (I9).
@@ -175,7 +178,8 @@ pub const Convex = struct {
                 ));
             },
             .points => |pts| blk: {
-                const d = self.pose.inverseDirection(dir);
+                // The support of S·P along d is S times P's support along S·d, S diagonal.
+                const d = self.pose.inverseDirection(dir).mul(self.scale);
                 var best = pts[0];
                 var best_dot = best.dot(d);
                 for (pts[1..]) |p| {
@@ -185,7 +189,7 @@ pub const Convex = struct {
                         best_dot = v;
                     }
                 }
-                break :blk self.pose.apply(best);
+                break :blk self.pose.apply(best.mul(self.scale));
             },
             .triangle => |pts| blk: {
                 const d = self.pose.inverseDirection(dir);
@@ -222,8 +226,8 @@ pub const Convex = struct {
                 break :blk .{ .min = self.pose.position.sub(reach), .max = self.pose.position.add(reach) };
             },
             .points => |pts| blk: {
-                var acc: Aabb = .around(self.pose.apply(pts[0]));
-                for (pts[1..]) |p| acc = acc.include(self.pose.apply(p));
+                var acc: Aabb = .around(self.pose.apply(pts[0].mul(self.scale)));
+                for (pts[1..]) |p| acc = acc.include(self.pose.apply(p.mul(self.scale)));
                 break :blk acc;
             },
             .triangle => |pts| self.poseBounds(Aabb.around(pts[0]).include(pts[1]).include(pts[2])),

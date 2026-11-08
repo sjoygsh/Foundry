@@ -99,6 +99,14 @@ pub const Vec3 = extern struct {
     pub fn scale(v: Vec3, s: f32) Vec3 {
         return .{ .x = v.x * s, .y = v.y * s, .z = v.z * s };
     }
+    /// Component by component: a non-uniform scale.
+    pub fn mul(a: Vec3, b: Vec3) Vec3 {
+        return .{ .x = a.x * b.x, .y = a.y * b.y, .z = a.z * b.z };
+    }
+    /// Component by component: undoing `mul` by a scale with no zero in it.
+    pub fn div(a: Vec3, b: Vec3) Vec3 {
+        return .{ .x = a.x / b.x, .y = a.y / b.y, .z = a.z / b.z };
+    }
     pub fn neg(v: Vec3) Vec3 {
         return .{ .x = -v.x, .y = -v.y, .z = -v.z };
     }

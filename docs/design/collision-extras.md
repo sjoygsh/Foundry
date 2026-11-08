@@ -622,3 +622,57 @@ Nothing blocks Step 1 once these are accepted.
 
 **The bar:** see `PROJECT_STATE.md`. `zig build test` passes 2,876/2,886, with ten skips and
 132/132 steps, and three new tests.
+
+## Resolution — Step 2: runtime scale and rotational sweeps (2026-11-09)
+
+`physics3d` now covers §4 and §5; the tests are in `engine/src/physics3d/scale_tests.zig`.
+
+**Scale:**
+- **`Body.scale`** is a `Vec3`, one by default. `body.scaleValid` admits each axis in [0.01, 100]
+  for a mesh or a hull, and nothing but one for a sphere, a capsule or a box.
+- **`World.setScale`** sets it. `addBody` and `setShape` check it too, so a scaled mesh cannot turn
+  into a box at that scale.
+- **A refused scale is `InvalidShape`:** a shape the body cannot hold at that size. That keeps the
+  error sets the ABI translates unchanged, so nothing above `physics3d` moved.
+- **Where scale applies:**
+  - `Mesh.candidates` takes the scale, and moves its area into the mesh's own, unscaled space after
+    the inverse pose;
+  - a candidate triangle's vertices are scaled before the pose;
+  - `Convex` gains `scale`, which a hull's support and bounds apply;
+  - a body's bounds scale its mesh's root box.
+- **One hull, two sizes:** a hull shared by bodies at two scales stays one hull. A test holds that.
+- **`core`'s `Vec3` gains `mul` and `div`,** component by component.
+
+**Sweeps:** `World.shapeSweep(shape, from, to, filter)`, as §5 has it.
+- **The bound:** the turn's angle is bounded as θ ≤ π·√(1 − d²) from the rotations' dot, with no
+  inverse trigonometry. `reachOf` is the farthest a shape reaches from its origin.
+- **What it stops at:** `contact_skin` short, as `shapeCast` does, after at most
+  `max_cast_iterations` advances.
+- **A sweep with no turn is `shapeCast`,** which a test holds.
+
+**A sharpening of §5: the path is a chord, not an arc.**
+- §5's path lerps the position and slerps the rotation. For a door posed at its centre, that cuts
+  across the arc its hinge would trace.
+- Over one tick's few degrees the two agree, which is how §11's door swings, a sweep a tick. A
+  sweep across a quarter turn checks its stopping pose on its own path.
+
+**What the tests hold:**
+- **A scaled, turned mesh** at (2, 1, 0.5) answers 24 rays, 24 sphere casts and a box's contacts
+  as the same mesh baked at that scale, within 1e-5, triangle by triangle.
+- **A 400-triangle grid at ten times its size** is found wherever it is drawn.
+- **A scaled hull** is its baked copy.
+- **Every refusal is named.**
+- **The door:** a swinging door stops a skin from a wall, never into it. A 2 cm pole at 45 degrees
+  is never passed.
+- **Determinism:** two worlds sweeping 64 doors hash alike.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- **The candidates' scale:** the wedge test passed without it, its few large triangles found even
+  through the wrong box. The fine-grid test was added for it, and fails.
+- the triangles' scale;
+- the hull's support scale;
+- the unit check on other shapes;
+- the sweep's turn in its speed bound.
+
+**The bar:** see `PROJECT_STATE.md`. `zig build test` passes 2,883/2,893, with ten skips and
+132/132 steps, and seven new tests.

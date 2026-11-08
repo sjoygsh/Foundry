@@ -92,4 +92,5 @@ test {
     _ = @import("mesh_tests.zig");
     _ = @import("character_tests.zig");
     _ = @import("up_tests.zig");
+    _ = @import("scale_tests.zig");
 }

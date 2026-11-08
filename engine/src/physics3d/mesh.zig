@@ -135,7 +135,7 @@ pub const Mesh = struct {
 
     /// Fixed-stack walk, then index sort. `out` was reserved for this mesh's full count at
     /// add time; even a query covering the entire mesh performs no allocation.
-    pub fn candidates(self: *const Mesh, pose: shape.Pose, area: Aabb, out: []u32) []const u32 {
+    pub fn candidates(self: *const Mesh, pose: shape.Pose, scale: Vec3, area: Aabb, out: []u32) []const u32 {
         // The query box is moved into the mesh's own space once, rather than every node's box
         // into the world: a node that overlaps the area in the world has a point the inverse
         // pose carries into both its local box and the area's local bounds, so nothing is lost.
@@ -146,7 +146,9 @@ pub const Mesh = struct {
         const local: shape.Convex = .{ .core = .point, .radius = 0, .pose = inverse };
         // Expand for rigid-transform f32 rounding at the coordinate bound. A false positive
         // only costs a narrowphase; a false negative would lose collision.
-        const local_area = local.poseBounds(area).expand(0.002);
+        const posed = local.poseBounds(area);
+        // Then out of the body's scale, which is positive on every axis, so the box stays a box.
+        const local_area = (Aabb{ .min = posed.min.div(scale), .max = posed.max.div(scale) }).expand(0.002);
         var stack: [stack_capacity]u32 = undefined;
         stack[0] = 0;
         var pending: usize = 1;

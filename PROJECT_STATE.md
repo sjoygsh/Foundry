@@ -1,7 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 1 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076, accepted 2026-11-09). Stop before Step 2, `physics3d`: runtime scale and rotational sweeps.
+**Current handoff: M37 Step 2 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 3, `physics3d`: surfaces and one-sided triangles.
+
+**M37 Step 2 is done (2026-11-09): runtime scale and rotational sweeps.**
+- `Body.scale` for mesh and hull bodies, 0.01–100 a side, refused as `InvalidShape` otherwise. It is applied in mesh candidates (unscaled space), in triangles, and in a hull's support through a new `Convex.scale`. One hull serves two sizes. `Vec3` gains `mul` and `div`.
+- `World.shapeSweep`: conservative advancement with the turn bounded by π·√(1 − d²), no inverse trig, stopping a skin short. Its path is a chord, so a door is swept a tick at a time.
+- Bar 2,883/2,893 (ten skips), 132/132 steps, seven new tests.
 
 **M37 Step 1 is done (2026-11-09): the up axis.**
 - `World.up` and `setUp` (refusing `InvalidUp` and `CharactersPresent`). The controller, `earliestPair`'s box faces and the capsule's pose all measure against it, with the rotation built without trigonometry.

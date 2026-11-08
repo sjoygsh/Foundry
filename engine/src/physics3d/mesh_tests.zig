@@ -331,7 +331,7 @@ test "mesh: a spatially split BVH matches a brute-force oracle including misses 
         _ = try w.addBody(gpa, .{ .shape = .{ .mesh = m }, .pose = frame });
         const mesh = w.meshes.get(m).?;
         // A whole-mesh query exercises the full scratch capacity and every tree branch.
-        const all = mesh.candidates(frame, .{ .min = .init(-1000, -1000, -1000), .max = .init(1000, 1000, 1000) }, w.triangle_scratch);
+        const all = mesh.candidates(frame, .one, .{ .min = .init(-1000, -1000, -1000), .max = .init(1000, 1000, 1000) }, w.triangle_scratch);
         try testing.expectEqual(@as(usize, count), all.len);
         for (all, 0..) |t, i| try testing.expectEqual(@as(u32, @intCast(i)), t);
         for (0..40) |q| {
