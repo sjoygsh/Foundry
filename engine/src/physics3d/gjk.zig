@@ -259,6 +259,11 @@ fn tetrahedron(s: *Simplex) Reduced {
     var best: ?Reduced = null;
     var best_simplex: Simplex = undefined;
     var outside_any = false;
+    // A tetrahedron flat to within rounding has no inside to hold the origin. Exactly flat, every
+    // face's `other_side` is zero; flat but for rounding, their signs are noise and can all agree,
+    // which declared a segment parallel to a triangle's plane to be touching it from 0.8 m away
+    // (M37 Step 1). So a volume below `flat_volume` of its longest edge cubed counts as flat.
+    const flat = flatTetrahedron(s);
     for (faces) |f| {
         const a = s.v[f[0]].w;
         const n = Vec3.cross(s.v[f[1]].w.sub(a), s.v[f[2]].w.sub(a));
@@ -266,7 +271,7 @@ fn tetrahedron(s: *Simplex) Reduced {
         const other_side = n.dot(s.v[f[3]].w.sub(a));
         // A flat tetrahedron gives every face a zero `other_side`; then every face is a
         // candidate and the origin is never declared inside it.
-        const outside = other_side == 0 or origin_side * other_side < 0;
+        const outside = flat or other_side == 0 or origin_side * other_side < 0;
         if (!outside) continue;
         outside_any = true;
         var tri: Simplex = .{ .len = 3 };
@@ -284,6 +289,20 @@ fn tetrahedron(s: *Simplex) Reduced {
     }
     s.* = best_simplex;
     return best.?;
+}
+
+/// Below this fraction of its longest edge cubed, a tetrahedron's six-fold volume is rounding.
+pub const flat_volume: f32 = 1e-5;
+
+fn flatTetrahedron(s: *const Simplex) bool {
+    const a = s.v[0].w;
+    const ab = s.v[1].w.sub(a);
+    const ac = s.v[2].w.sub(a);
+    const ad = s.v[3].w.sub(a);
+    var longest: f32 = 0;
+    for ([_]Vec3{ ab, ac, ad, s.v[2].w.sub(s.v[1].w), s.v[3].w.sub(s.v[1].w), s.v[3].w.sub(s.v[2].w) }) |edge| longest = @max(longest, edge.length());
+    const volume = @abs(ab.dot(Vec3.cross(ac, ad)));
+    return volume <= flat_volume * longest * longest * longest;
 }
 
 // -- EPA -------------------------------------------------------------------------------

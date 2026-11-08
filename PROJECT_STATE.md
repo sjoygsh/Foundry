@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37's design is proposed** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076); awaiting acceptance of §19. Stop before Step 1.
+**Current handoff: M37 Step 1 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076, accepted 2026-11-09). Stop before Step 2, `physics3d`: runtime scale and rotational sweeps.
+
+**M37 Step 1 is done (2026-11-09): the up axis.**
+- `World.up` and `setUp` (refusing `InvalidUp` and `CharactersPresent`). The controller, `earliestPair`'s box faces and the capsule's pose all measure against it, with the rotation built without trigonometry.
+- The tilted world, every controller scenario turned 0.7 rad, agrees to 5 mm, with flags differing on under 2% of ticks, where rounding breaks threshold ties. §3's 0.1 mm is corrected.
+- The tilt found a GJK fault: a near-flat tetrahedron declared a capsule parallel to a turned triangle to be touching it from 0.78 m. It now counts as flat. No existing pin moved.
+- Bar 2,876/2,886 (ten skips), 132/132 steps, three new tests.
 
 **M37's design (2026-11-09):**
 - `physics3d` gains an up axis per world, runtime scale for mesh and hull bodies, rotational sweeps by conservative advancement, surfaces and one-sided triangles, and moving platforms that carry and bounded pushing (ADR-0075).

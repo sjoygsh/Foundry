@@ -50,6 +50,9 @@ pub const RemoveMeshError = error{InUse};
 /// What a query refuses. `InvalidQuery` covers what is neither a shape nor a pose: a ray
 /// direction that is not unit, a negative or non-finite reach, a displacement that is not finite.
 pub const QueryError = error{ InvalidShape, InvalidPose, InvalidQuery };
+/// What `setUp` refuses: an up that is not a unit direction, or a world that already holds a
+/// character, whose capsule stands along the up it was made with.
+pub const SetUpError = error{ InvalidUp, CharactersPresent };
 
 pub const Hit = struct {
     /// Of the requested displacement, in [0, 1].
@@ -114,8 +117,23 @@ pub const World = struct {
     hulls: core.HandlePool(Hulls, Hull) = .empty,
     meshes: core.HandlePool(Meshes, mesh_mod.Mesh) = .empty,
     triangle_scratch: []u32 = &.{},
+    /// The controller's up (`collision-extras.md` §3): what walkable, horizontal, a step and a
+    /// ceiling are measured against, and what a character's capsule stands along. +Y unless set.
+    /// Gravity stays the game's, and rendering's +Y (ADR-0048) is untouched.
+    up: Vec3 = Vec3.up,
+    /// The rotation from +Y to `up`, which stands a capsule along it.
+    up_rotation: core.math.Quat = core.math.Quat.identity,
 
     pub const empty: World = .{};
+
+    /// Sets the controller's up. Only while the world holds no character, since a capsule is
+    /// stood along the up it was made with. `up` must be unit, to `Quat`'s tolerance.
+    pub fn setUp(self: *World, up: Vec3) SetUpError!void {
+        if (!up.isFinite() or @abs(up.length() - 1) > core.math.Quat.unit_tolerance) return error.InvalidUp;
+        if (self.characters.count() != 0) return error.CharactersPresent;
+        self.up = up.normalize();
+        self.up_rotation = rotationTo(self.up);
+    }
 
     pub fn deinit(self: *World, gpa: Allocator) void {
         self.characters.deinit(gpa);
@@ -421,7 +439,7 @@ pub const World = struct {
                     // A box corner belongs to several faces too, but unlike mesh faces
                     // they are represented by one convex candidate. Select a walkable face
                     // only when the witness actually lies on it, not a later hidden floor.
-                    if (other.convex.core == .box and (!sliding or c.normal.y >= up)) {
+                    if (other.convex.core == .box and (!sliding or c.normal.dot(self.up) >= up)) {
                         const local = other.convex.pose.inverseDirection(c.point.sub(other.convex.pose.position));
                         const he = other.convex.core.box;
                         const coordinates = [_]f32{ local.x, local.y, local.z };
@@ -435,7 +453,7 @@ pub const World = struct {
                                 else => .init(0, 0, sign),
                             };
                             const possible = other.convex.pose.applyDirection(local_face);
-                            if (possible.y >= up and possible.dot(c.normal) >= -1e-6) {
+                            if (possible.dot(self.up) >= up and possible.dot(c.normal) >= -1e-6) {
                                 face = possible;
                                 break;
                             }
@@ -444,10 +462,10 @@ pub const World = struct {
                 }
                 if (best) |b| {
                     if (ground_y) |up| {
-                        const coincident = (!sliding or (c.normal.y >= up and b.normal.y >= up)) and b.body.eql(entry.id) and @abs(c.fraction - b.fraction) * displacement.length() <= narrow.cast_tolerance and
+                        const coincident = (!sliding or (c.normal.dot(self.up) >= up and b.normal.dot(self.up) >= up)) and b.body.eql(entry.id) and @abs(c.fraction - b.fraction) * displacement.length() <= narrow.cast_tolerance and
                             c.point.sub(b.point).lengthSquared() <= narrow.cast_tolerance * narrow.cast_tolerance;
-                        if (coincident and b.surface_normal.y >= up and face.y < up) continue;
-                        if (!(coincident and b.surface_normal.y < up and face.y >= up) and !(c.fraction < b.fraction)) continue;
+                        if (coincident and b.surface_normal.dot(self.up) >= up and face.dot(self.up) < up) continue;
+                        if (!(coincident and b.surface_normal.dot(self.up) < up and face.dot(self.up) >= up) and !(c.fraction < b.fraction)) continue;
                     } else if (!(c.fraction < b.fraction)) continue;
                 }
                 best = .{
@@ -539,3 +557,14 @@ pub const World = struct {
         if (shape == .mesh) self.meshes.get(shape.mesh).?.users -= 1;
     }
 };
+
+/// The shortest rotation taking +Y to unit `to`, by the half-way quaternion: no trigonometry, so
+/// no pin depends on a linked libm. Straight down is a half turn about +X.
+pub fn rotationTo(to: Vec3) core.math.Quat {
+    const from = Vec3.up;
+    const d = from.dot(to);
+    if (d < -1 + 1e-6) return .{ .x = 1, .y = 0, .z = 0, .w = 0 };
+    const c = from.cross(to);
+    const q: core.math.Quat = .{ .x = c.x, .y = c.y, .z = c.z, .w = 1 + d };
+    return q.normalize();
+}

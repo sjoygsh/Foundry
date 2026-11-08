@@ -1,6 +1,7 @@
 # Design: M37 — Character and collision extras: moving platforms, pushing, surfaces, one-sided faces, rotational sweeps, runtime scale, proxies and the up axis
 
-**Status:** Proposed 2026-11-09; awaiting the owner's acceptance of §17. No step has begun.
+**Status:** Accepted 2026-11-09, when the owner asked for Step 1, with §19 as written. Each step's
+Resolution follows §19.
 **Date:** 2026-11-09
 **Baseline:** `6058f66`, tag `m36`. M0–M36 are complete.
 **Decisions:**
@@ -566,3 +567,58 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 16 | Ten steps, the Windows PC once at Step 9, and the owner's play of the court at Step 8 | §17 |
 
 Nothing blocks Step 1 once these are accepted.
+
+## Resolution — Step 1: the up axis (2026-11-09)
+
+`physics3d` now covers §3:
+- **`World.up` and `World.up_rotation`:** the up is +Y and the rotation identity by default.
+  `World.setUp` refuses `InvalidUp` (not unit, to `Quat`'s tolerance, or not finite) and
+  `CharactersPresent`.
+- **The rotation is built with no trigonometry:** `world.rotationTo` uses the half-way quaternion
+  from +Y, and straight down is a half turn about +X.
+- **The controller measures everything against `up`:** walkable, horizontal, a step's rise, its
+  landing and gain, a snap, a ceiling, and a wall's vertical limits.
+- **The capsule stands along `up`:** it is posed by `up_rotation`.
+- **`earliestPair`'s box-face choice** compares faces with `up`.
+- **`walkable` takes the up** as an argument, since nothing outside the module called it.
+
+**A fault the tilt found, fixed in `gjk.zig`.**
+- **What it did:** a capsule standing 0.78 m from a vertical triangle, both turned, was read as
+  touching it, 0.3 m deep. So the controller depenetrated it by its radius, from nothing.
+- **Why:** a segment parallel to a triangle's plane makes a flat Minkowski difference. GJK's
+  tetrahedron there is flat but for rounding, and its four faces' signs, which are noise, can all
+  agree that the origin is inside. The exactly flat case was already handled.
+- **The fix:** a tetrahedron whose six-fold volume is below `flat_volume` (1e-5) of its longest
+  edge cubed counts as flat, so it never holds the origin.
+- **What it touches:** upright worlds meet the same case wherever a capsule runs parallel to a
+  turned face. No existing test, pin or digest moved, and the whole suite is unchanged.
+
+**A correction to §3's proof: within 5 mm, not 0.1 mm.**
+- **The scenarios,** each run upright and in a world turned 0.7 rad about (1, 0.3, 0.5) with every
+  input turned alike:
+  - the 30 and 50 degree slopes;
+  - the 15, 30 and 40 cm steps;
+  - a step down with a snap and a jump;
+  - a wall slide into a corner under a low ceiling, then a teleport into a box;
+  - a walk off a mesh drop under gravity;
+  - M23's 1,200-tick course.
+- **What they agree to:** most within 0.01 mm, and the 1,200-tick course within 0.13 mm.
+- **What does not agree exactly:** a decision exactly on a threshold goes by rounding, which a
+  tilt changes:
+  - a contact on the 45 degree line, which makes the 15 cm step's climb 4 mm apart;
+  - a witness on a box's edge between two faces, which flips the ceiling flag with no effect on
+    position;
+  - one ground probe on the 20 m turned floor box.
+- **So the test holds:** every tick's feet within 5 mm, flags differing on under 2% of ticks (32 of
+  about 2,600), and every scenario ending in the same state. `stuck` always agrees. That is what a
+  tilt can promise; an exact match was not. §11's tilted tour is held to the same.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- walkable read from `.y`;
+- `horizontal` dropping `.y`;
+- `setUp` without its `CharactersPresent` check;
+- the flat-tetrahedron test. It failed only once the riser test replayed the scenario's own moves,
+  since the false contact needs the exact pose the walk reaches.
+
+**The bar:** see `PROJECT_STATE.md`. `zig build test` passes 2,876/2,886, with ten skips and
+132/132 steps, and three new tests.

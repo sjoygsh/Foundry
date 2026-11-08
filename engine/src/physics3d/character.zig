@@ -1,4 +1,8 @@
 //! Capsule characters (`collision3d.md` §7). Caller owns velocity, gravity and time.
+//!
+//! **Everything vertical is along the world's `up`** (`collision-extras.md` §3): walkable,
+//! horizontal, a step's rise, a snap, a ceiling, and the axis the capsule stands along. +Y unless
+//! the world was given another.
 const std = @import("std");
 const core = @import("core");
 const world = @import("world.zig");
@@ -60,25 +64,29 @@ pub const CharacterMove = struct {
 pub const AddCharacterError = error{ OutOfMemory, InvalidCharacter, InvalidPose };
 pub const MoveCharacterError = error{InvalidMove};
 
-fn centre(c: CharacterConfig, feet: Vec3) Vec3 {
-    return feet.add(.init(0, c.height * 0.5, 0));
+fn centre(w: *const World, c: CharacterConfig, feet: Vec3) Vec3 {
+    return feet.add(w.up.scale(c.height * 0.5));
 }
 fn feetOf(w: *World, c: Character) Vec3 {
-    return w.body(c.body).?.pose.position.sub(.init(0, c.config.height * 0.5, 0));
+    return w.body(c.body).?.pose.position.sub(w.up.scale(c.config.height * 0.5));
 }
-fn convex(c: Character, feet: Vec3) shape.Convex {
-    return .{ .core = .{ .segment = c.config.height * 0.5 - c.config.radius }, .radius = c.config.radius, .pose = .at(centre(c.config, feet)) };
+/// The capsule's pose with its feet at `feet`, standing along the world's up.
+fn poseAt(w: *const World, c: CharacterConfig, feet: Vec3) shape.Pose {
+    return .{ .position = centre(w, c, feet), .rotation = w.up_rotation };
 }
-fn validFeet(c: CharacterConfig, feet: Vec3) bool {
-    return shape.positionValid(feet) and shape.positionValid(centre(c, feet));
+fn convex(w: *const World, c: Character, feet: Vec3) shape.Convex {
+    return .{ .core = .{ .segment = c.config.height * 0.5 - c.config.radius }, .radius = c.config.radius, .pose = poseAt(w, c.config, feet) };
+}
+fn validFeet(w: *const World, c: CharacterConfig, feet: Vec3) bool {
+    return shape.positionValid(feet) and shape.positionValid(centre(w, c, feet));
 }
 
 pub fn add(w: *World, gpa: Allocator, config: CharacterConfig, feet: Vec3, user: u64) AddCharacterError!CharacterHandle {
     if (!config.valid()) return error.InvalidCharacter;
-    if (!validFeet(config, feet)) return error.InvalidPose;
+    if (!validFeet(w, config, feet)) return error.InvalidPose;
     const body = w.addBody(gpa, .{
         .shape = .{ .capsule = .{ .radius = config.radius, .half_height = config.height * 0.5 - config.radius } },
-        .pose = .at(centre(config, feet)),
+        .pose = poseAt(w, config, feet),
         .kind = .kinematic,
         .layer = config.layer,
         .mask = config.mask,
@@ -100,25 +108,26 @@ pub fn setFeet(w: *World, gpa: Allocator, handle: CharacterHandle, feet: Vec3) e
     _ = gpa; // No broadphase yet; kept for the same reason as World.setPose.
     const c = w.characters.get(handle) orelse return false;
     if (w.body(c.body) == null) return false;
-    if (!validFeet(c.config, feet)) return error.InvalidPose;
-    w.bodies.get(c.body).?.pose = .at(centre(c.config, feet));
+    if (!validFeet(w, c.config, feet)) return error.InvalidPose;
+    w.bodies.get(c.body).?.pose = poseAt(w, c.config, feet);
     c.ground = null;
     return true;
 }
 
-pub fn walkable(c: CharacterConfig, hit: Hit) bool {
-    return hit.surface_normal.y >= @cos(c.max_slope);
+/// Whether a hit's face may be stood on, against `up`.
+pub fn walkable(c: CharacterConfig, up: Vec3, hit: Hit) bool {
+    return hit.surface_normal.dot(up) >= @cos(c.max_slope);
 }
 fn cast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
-    return w.characterCast(convex(c, feet), by, c.body, @cos(c.config.max_slope));
+    return w.characterCast(convex(w, c, feet), by, c.body, @cos(c.config.max_slope));
 }
 fn ground(w: *World, c: Character, feet: Vec3) ?Ground {
-    const h = groundCast(w, c, feet, .init(0, -2 * narrow.contact_skin, 0)) orelse return null;
-    if (!walkable(c.config, h)) return null;
+    const h = groundCast(w, c, feet, w.up.scale(-2 * narrow.contact_skin)) orelse return null;
+    if (!walkable(c.config, w.up, h)) return null;
     return .{ .surface_normal = h.surface_normal, .body = h.body, .user = h.user, .triangle = h.triangle };
 }
 fn groundCast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
-    return w.characterProbe(convex(c, feet), by, c.body, @cos(c.config.max_slope));
+    return w.characterProbe(convex(w, c, feet), by, c.body, @cos(c.config.max_slope));
 }
 fn record(r: *CharacterMove, out: []Hit, h: Hit) void {
     if (r.hit_count < out.len) {
@@ -127,8 +136,9 @@ fn record(r: *CharacterMove, out: []Hit, h: Hit) void {
     }
     r.total_hits += 1;
 }
-fn horizontal(v: Vec3) Vec3 {
-    return .init(v.x, 0, v.z);
+/// `v` with its part along `up` taken out.
+fn horizontal(v: Vec3, up: Vec3) Vec3 {
+    return v.sub(up.scale(v.dot(up)));
 }
 fn project(v: Vec3, n: Vec3) Vec3 {
     return v.sub(n.scale(@min(0, v.dot(n))));
@@ -139,6 +149,7 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
     const stored = w.characters.get(handle) orelse return null;
     if (w.body(stored.body) == null) return null;
     const c = stored.*;
+    const up = w.up;
     // f64 avoids overflow turning a finite, huge displacement or limit into infinity.
     const dx: f64 = displacement.x;
     const dy: f64 = displacement.y;
@@ -146,23 +157,23 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
     const limit: f64 = c.config.max_move;
     if (!displacement.isFinite() or dx * dx + dy * dy + dz * dz > limit * limit) return error.InvalidMove;
     const original = feetOf(w, c);
-    if (!validFeet(c.config, original.add(displacement))) return error.InvalidMove;
+    if (!validFeet(w, c.config, original.add(displacement))) return error.InvalidMove;
     var r: CharacterMove = .{ .feet = original };
     var iteration: u32 = 0;
     // A scan that finds nothing is the answer; only running out of iterations needs another.
     var clear = false;
     while (iteration < max_depenetration_iterations) : (iteration += 1) {
-        const contact = w.characterContact(convex(c, r.feet), c.body) orelse {
+        const contact = w.characterContact(convex(w, c, r.feet), c.body) orelse {
             clear = true;
             break;
         };
         r.feet = r.feet.add(contact.normal.scale(contact.depth + narrow.contact_skin));
-        if (!validFeet(c.config, r.feet)) return error.InvalidMove;
+        if (!validFeet(w, c.config, r.feet)) return error.InvalidMove;
         r.depenetrated = true;
     }
     // The ground under the final feet, kept when the snap check already asked for it.
     var probed: ??Ground = null;
-    if (!clear and w.characterContact(convex(c, r.feet), c.body) != null) {
+    if (!clear and w.characterContact(convex(w, c, r.feet), c.body) != null) {
         r.stuck = true;
     } else {
         const start = r.feet;
@@ -176,56 +187,58 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
             record(&r, hits, h);
             r.feet = r.feet.add(remaining.scale(h.fraction)); // Cast already includes skin.
             remaining = remaining.scale(1 - h.fraction);
-            if (h.surface_normal.y < 0 and remaining.y > 0) {
+            if (h.surface_normal.dot(up) < 0 and remaining.dot(up) > 0) {
                 r.ceiling = true;
-                remaining.y = 0;
+                remaining = horizontal(remaining, up);
             }
             // A contact whose own normal is walkable supports the feet, even where the face
             // it touches is a wall: the top edge of a drop, met from above. Its tiny horizontal
             // part is not a wall's direction, and treating it as one stops a walk off the edge.
-            if (walkable(c.config, h) or h.normal.y >= @cos(c.config.max_slope)) {
+            if (walkable(c.config, up, h) or h.normal.dot(up) >= @cos(c.config.max_slope)) {
                 remaining = project(remaining, h.normal);
             } else {
                 r.walls += 1;
-                const flat = horizontal(h.normal).normalize();
-                const lateral = project(horizontal(remaining), flat);
-                const vertical = if (remaining.y < 0) project(Vec3.init(0, remaining.y, 0), h.normal) else Vec3.init(0, remaining.y, 0);
-                const requested_y = remaining.y;
+                const flat = horizontal(h.normal, up).normalize();
+                const lateral = project(horizontal(remaining, up), flat);
+                const requested_y = remaining.dot(up);
+                const vertical = if (requested_y < 0) project(up.scale(requested_y), h.normal) else up.scale(requested_y);
                 remaining = lateral.add(vertical);
-                remaining.y = @min(remaining.y, @max(0, requested_y));
+                // Along up it may fall less than asked, never more, and never rise past what was asked.
+                const now_y = remaining.dot(up);
+                remaining = remaining.add(up.scale(@min(now_y, @max(0, requested_y)) - now_y));
             }
         }
         // A jumping move neither steps nor snaps. Speculative step casts record hits only
         // when accepted; discarded candidates cannot affect observable movement reports.
-        if (c.ground != null and displacement.y <= 0 and r.walls > 0 and c.config.step_height > 0 and horizontal(displacement).lengthSquared() > 0) {
-            const rise = Vec3.init(0, c.config.step_height, 0);
-            const up = cast(w, c, start, rise);
-            var candidate_feet = start.add(rise.scale(if (up) |h| h.fraction else 1));
-            const forward = horizontal(displacement);
+        if (c.ground != null and displacement.dot(up) <= 0 and r.walls > 0 and c.config.step_height > 0 and horizontal(displacement, up).lengthSquared() > 0) {
+            const rise = up.scale(c.config.step_height);
+            const lifted = cast(w, c, start, rise);
+            var candidate_feet = start.add(rise.scale(if (lifted) |h| h.fraction else 1));
+            const forward = horizontal(displacement, up);
             const across = cast(w, c, candidate_feet, forward);
             candidate_feet = candidate_feet.add(forward.scale(if (across) |h| h.fraction else 1));
-            const down = Vec3.init(0, -(candidate_feet.y - start.y + c.config.snap_distance), 0);
+            const down = up.scale(-(candidate_feet.sub(start).dot(up) + c.config.snap_distance));
             if (groundCast(w, c, candidate_feet, down)) |landing| {
                 candidate_feet = candidate_feet.add(down.scale(landing.fraction));
-                const gain = candidate_feet.y - start.y;
-                if (walkable(c.config, landing) and landing.point.y - start.y <= c.config.step_height + narrow.cast_tolerance and
+                const gain = candidate_feet.sub(start).dot(up);
+                if (walkable(c.config, up, landing) and landing.point.sub(start).dot(up) <= c.config.step_height + narrow.cast_tolerance and
                     gain > 0 and gain <= c.config.step_height + narrow.cast_tolerance and
-                    horizontal(candidate_feet.sub(start)).dot(forward) > horizontal(r.feet.sub(start)).dot(forward))
+                    horizontal(candidate_feet.sub(start), up).dot(forward) > horizontal(r.feet.sub(start), up).dot(forward))
                 {
                     r.feet = candidate_feet;
                     r.stepped = gain;
-                    if (up) |h| record(&r, hits, h);
+                    if (lifted) |h| record(&r, hits, h);
                     if (across) |h| record(&r, hits, h);
                     record(&r, hits, landing);
                 }
             }
         }
-        if (c.ground != null and displacement.y <= 0 and c.config.snap_distance > 0) {
+        if (c.ground != null and displacement.dot(up) <= 0 and c.config.snap_distance > 0) {
             probed = ground(w, c, r.feet);
             if (probed.? == null) {
-                const down = Vec3.init(0, -c.config.snap_distance, 0);
+                const down = up.scale(-c.config.snap_distance);
                 if (groundCast(w, c, r.feet, down)) |h| {
-                    if (walkable(c.config, h)) {
+                    if (walkable(c.config, up, h)) {
                         r.feet = r.feet.add(down.scale(h.fraction));
                         r.snapped = true;
                         record(&r, hits, h);
@@ -235,10 +248,10 @@ pub fn move(w: *World, gpa: Allocator, handle: CharacterHandle, displacement: Ve
             }
         }
     }
-    if (!validFeet(c.config, r.feet)) return error.InvalidMove;
+    if (!validFeet(w, c.config, r.feet)) return error.InvalidMove;
     r.ground = if (r.stuck) null else probed orelse ground(w, c, r.feet);
     r.grounded = r.ground != null;
-    w.bodies.get(c.body).?.pose = .at(centre(c.config, r.feet));
+    w.bodies.get(c.body).?.pose = poseAt(w, c.config, r.feet);
     stored.ground = r.ground;
     return r;
 }

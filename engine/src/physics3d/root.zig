@@ -68,6 +68,7 @@ pub const QueryError = world.QueryError;
 pub const RemoveHullError = world.RemoveHullError;
 pub const SetPoseError = world.SetPoseError;
 pub const SetShapeError = world.SetShapeError;
+pub const SetUpError = world.SetUpError;
 
 /// Interface constants: a caller can observe each (`collision3d.md` §5).
 pub const contact_skin = narrow.contact_skin;
@@ -90,4 +91,5 @@ test {
     _ = @import("tests.zig");
     _ = @import("mesh_tests.zig");
     _ = @import("character_tests.zig");
+    _ = @import("up_tests.zig");
 }
