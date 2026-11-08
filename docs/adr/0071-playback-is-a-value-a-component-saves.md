@@ -60,6 +60,9 @@ channel alone, in time order.
 - **The cost:** a person edits events as text, with fractions, until M111 gives them a timeline.
 - **The cost:** a channel count is now a saved shape. More channels are a schema version.
 - A body that a controller blocks keeps walking on the spot, until M36 has a game do better.
+  *2026-11-09: M36 did ([`animation-ik.md`](../design/animation-ik.md) §9). The game says
+  `blocked` as a parameter and the machine decides; a figure that keeps its clip keeps its planted
+  feet planted by foot locking.*
 - Two representations of a clip's name exist: the string in records, the hash in a player. The
   panel reads the name back from the rig.
 

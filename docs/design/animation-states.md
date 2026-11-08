@@ -649,8 +649,8 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 
 | Item | Owner | Note |
 | --- | --- | --- |
-| Foot placement and look-at | M36 | `look` is a clip here; M36 aims a head at a point. *2026-11-07: designed in [`animation-ik.md`](animation-ik.md)* |
-| A blend space: many clips mixed continuously by one or two parameters | M36, if §19's row 15 is accepted | Sync groups are its foundation; nothing in the samples blends more than a cross-fade |
+| Foot placement and look-at | M36 | `look` is a clip here; M36 aims a head at a point. *2026-11-07: designed in [`animation-ik.md`](animation-ik.md); 2026-11-09: done in M36* |
+| A blend space: many clips mixed continuously by one or two parameters | M36, if §19's row 15 is accepted | Sync groups are its foundation; nothing in the samples blends more than a cross-fade. *2026-11-09: done in M36 ([`animation-ik.md`](animation-ik.md) §7): the warden's `move` and the strafer's `walk8`* |
 | Editing a machine as a graph, and previewing a state | M111 | `.fdt` is the authoring path until then |
 | Machines, parameters and layers in the public table, and in Lua | M48, M49 | §15 |
 | A mirrored clip (a left turn played as a right one) | M111 | Mirroring needs a joint pairing a person maps, which is an authoring view's job |

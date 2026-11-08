@@ -499,7 +499,7 @@ complete, and nothing names a contract the code does not have.
 | Animation in the public ABI | M25's design decides what `FoundryApi_v6` publishes |
 | Root motion | A game whose character speed must come from its clip |
 | State machines, layers, masks, additive poses, events | A game needs any of them; each is game logic over `sample` and `blend` first. **Done:** events in M34 (ADR-0071), and machines, layers, masks and additive poses in M35 (ADR-0072, [`animation-states.md`](animation-states.md), 2026-11-06) |
-| Inverse kinematics (foot placement, look-at) | A game needs feet on M23's steps to look right |
+| Inverse kinematics (foot placement, look-at) | A game needs feet on M23's steps to look right. *2026-11-09: done in M36 ([`animation-ik.md`](animation-ik.md)): feet on M23's course, and a head that looks* |
 | Cubic-spline keys | Real assets are refused for it often enough that baking on export is a burden |
 | Morph targets | A game needs faces or blend shapes |
 | Animated nodes that are not joints (rigid part animation) | A game needs an animated prop without a skin; it wants a model that keeps nodes |

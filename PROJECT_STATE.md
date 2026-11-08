@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M36 Step 9 of 10 is complete** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before Step 10, Close M36. The PC still holds `src\Foundry-m36` and `m36`, which the close removes.
+**M36 is complete (2026-11-09, tag `m36`, not pushed)** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before M37's design, Character and collision extras. The owner played the court at Step 8. The i3's short `caught` ending reads 0.287 ms against 0.25, as M35's did, which is M100's. The PC and the Mac hold no M36 scratch.
+
+**M36 Step 10 is done (2026-11-09): the close.**
+- CLAUDE.md §4.1, §4.3 and §9, AGENTS.md's costs and Windows scripts, the roadmap's M36 and M48 lines, the design index, the README (now pointing to M37) and ADR-0073/0074 all name M36 complete.
+- Dated notes resolve `animation-logic.md` §15, `animation3d.md` §14, `animation-states.md` §18, ADR-0071's blocked-body line, and this design's §9, §11, §12 and §13, wherever the Resolutions corrected them.
+- `content-mods.md` §10 gains legs, gaze chains, blend spaces, axes and the order a game runs a figure in.
+- Nothing outside documents changed after Step 9, so the bar stands at Step 8's: 2,873/2,883 (ten skips), 132/132 steps.
 
 **M36 Step 9 is done (2026-11-09): Windows/Vulkan.**
 - `scripts/m36/windows.ps1`, with `m36-setup.ps1` and `m36-launch.ps1`, ran on the Arc A750 and i3 from a fresh clone at `3dfe476` (M36 by bundle).

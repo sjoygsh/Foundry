@@ -1,6 +1,6 @@
 # ADR-0074: A blend space is played like a clip, placed by a machine's parameters
 
-**Status:** Accepted 2026-11-07, when the owner requested M36 Step 1
+**Status:** Accepted 2026-11-07, when the owner requested M36 Step 1; implemented in M36 (2026-11-09, tag `m36`)
 **Date:** 2026-11-07
 **Informed by:** ADR-0071, ADR-0072, `docs/design/animation-ik.md`
 

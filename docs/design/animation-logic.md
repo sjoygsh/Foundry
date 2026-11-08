@@ -556,8 +556,8 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | State machines, layers, masks and additive poses | M35 | Built on channels. A fifth channel, or a layer, is a schema version of `foundry:animator` |
 | Keeping two clips of different lengths in step (sync groups) | M35 | `.keep` copies the time, which is right only for clips of one length, as all here are |
 | A clip played backward | M35 | A negative speed is refused today, since §5's span runs one way |
-| A body correcting a clip it was blocked from following | M36 | Foot placement is where a clip gives way to the world |
-| Foot locking during a matched speed | M36 | |
+| A body correcting a clip it was blocked from following | M36 | Foot placement is where a clip gives way to the world. *2026-11-09: done in M36 ([`animation-ik.md`](animation-ik.md) §9): the game says `blocked` and the machine turns, and a locked foot stays planted* |
+| Foot locking during a matched speed | M36 | *2026-11-09: done in M36 ([`animation-ik.md`](animation-ik.md) §4), on the climber and the warden* |
 | Animation in the public table and in Lua, including skinned instances and event subscription | M48, M49 | §12 |
 | A third-person player on this | M50 | |
 | A ragdoll taking over from a pose | M54 | |

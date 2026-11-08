@@ -677,7 +677,7 @@ complete mod that overrides it to walk every other side backward:
 
 ```
 foundry:animation_machine sandbox3d:pacer.machine {
-    params [ { name "look" default 1 } ]
+    params [ { name "look" default 1 } { name "blocked" } ]
     layers [
         { name "body" entry "turn"
             states [
@@ -688,8 +688,10 @@ foundry:animation_machine sandbox3d:pacer.machine {
             ]
             transitions [
                 { from "turn" to "stride" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "stride" to "turn_back" when [ { param "blocked" is 1 } ] }
                 { from "stride" to "turn_back" when [ { quantity "laps" at_least 1.5 } ] }
                 { from "turn_back" to "back" fade 0.1 when [ { quantity "finished" is 1 } ] }
+                { from "back" to "turn" when [ { param "blocked" is 1 } ] }
                 { from "back" to "turn" when [ { quantity "laps" at_least 1.5 } ] }
         ] }
         { name "look" mode "additive" weight_param "look" weight_fade 1 entry "look"
@@ -721,9 +723,59 @@ while the rest of the game runs. A figure's machine, its layers and its paramete
 world, so a save taken mid-fade continues where it was. Run the sandbox with
 `FOUNDRY_SANDBOX3D_PACKAGES=pacer_back:content`, and the pacer walks its square mirrored, with no code.
 
-The court's warden names `court:warden.machine`: it walks and runs by its speed, reaches with its
-upper body when close, and pants while it chases. A mod overriding that machine changes how the warden
-moves, but not where it goes.
+The court's warden names `court:warden.machine`: it walks and runs on a blend by its speed,
+reaches with its upper body when close, and pants while it chases. A mod overriding that machine
+changes how the warden moves, but not where it goes. The sandbox's pacer is told `blocked` when its
+controller cannot carry it on, and its machine turns there.
+
+### Legs, gaze and blend spaces
+
+Version 3 of `foundry:animation_set` names a figure's legs, the chains it looks with, and its blend
+spaces. Version 2 of `foundry:animation_machine` says which parameters place each blend. A set or
+machine written before these versions means what it did. From `sandbox3d:walker.set`:
+
+```
+legs [
+    { name "left" hip "hip.L" knee "knee.L" foot "foot.L" }
+    { name "right" hip "hip.R" knee "knee.R" foot "foot.R" }
+]
+aims [ { name "head" joints [ { joint "neck" weight 0.4 } { joint "head" weight 0.6 } ] limit 1.2 } ]
+blends [
+    { name "move" sync "feet" points [ { clip "idle" x 0 } { clip "stride" x 1.0 } { clip "run" x 1.86 } ] }
+]
+```
+
+- **A leg** is a hip, a knee whose parent leads up to the hip, and a foot whose parent is the knee.
+  `contact_height` (0.03 m) says how close to its lowest a foot must be to count as down, and
+  `max_raise` and `max_drop` (0.35 m) how far a foot may be moved to meet the ground. When a foot
+  is down is read from each looping clip's own foot heights, so nothing marks it by hand. A set has
+  at most four legs.
+- **An aim chain** is one to four joints, each below the one before, whose `weight`s share the turn.
+  `forward` (`{ x 0 y 0 z -1 }` unless given) is the way the last joint looks. `limit`, in radians up
+  to π, is the most the chain turns, and past it the figure gives the point up.
+- **A blend** mixes looping clips placed at points: on a line, by `x` alone, or on a full grid of
+  `x` and `y`, one point at each pair. A channel plays it by its name, as it plays a clip, so its
+  name may be no clip's. All its clips play at one fraction of their laps, its events are the most
+  heavily weighted clip's, and `sync` puts it in a group. It has 2 to 25 points, and a set at most
+  eight blends.
+- **A machine's `axes`** bind each blend it plays to its parameters:
+  `axes [ { blend "move" x "speed" } ]`, with `y` too for a grid. A state that plays a blend with no
+  binding is refused, since the blend would never move. A state with `speed_param` divides by the
+  blend's own ground speed where it is placed, so its feet keep pace.
+
+**What the game does each tick**, in this order:
+1. it sets the parameters and ticks the machine;
+2. it moves the body;
+3. it evaluates the pose;
+4. it casts a ray down from each foot into its own world and places the feet on what they hit;
+5. it turns the aim chain toward what the figure looks at;
+6. it skins.
+
+Feet and gaze are presentation: never saved, and they never move the body. `fpack` refuses a
+duplicate leg, aim or blend, a range passed, a point twice at one place, or points that are not a
+line or a grid. A joint, clip or blend the model does not have is named when the rig is built. Run
+the sandbox and press K to drop a crate on the pacer's square. Watch the strafer circle on its
+eight-way blend, and the warden in the court walk, run, plant its feet and turn its head to you.
 
 ## 11. Hot reload
 

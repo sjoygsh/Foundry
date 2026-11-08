@@ -1,7 +1,8 @@
 # Design: M36 — Animation logic III: foot placement, look-at and blend spaces
 
-**Status:** Accepted 2026-11-07, when the owner asked for Step 1, with §19 as written. Each step's
-Resolution follows §19.
+**Status:** **Complete 2026-11-09 (ADR-0073/0074), tag `m36`.** Accepted 2026-11-07, when the owner
+asked for Step 1, with §19 as written. Each step's Resolution follows §19; Step 10's closes it.
+Where a Resolution corrects this text, a dated note at the place says so.
 **Date:** 2026-11-07
 **Baseline:** `f223898`, tag `m35`. M0–M35 are complete.
 **Decisions:**
@@ -457,6 +458,9 @@ Each belongs where it does:
   choose, keeps its planted feet planted by §4's lock. The lock lets go at 0.25 m, so the leg is
   never stretched past its reach.
 
+> **2026-11-09:** the pins did not move, since they hash the walk and not the save, and `blocked` is
+> kept as a count in sixths (Step 7's Resolution).
+
 **The cost: the pacer's pins move once.** A new parameter is a new saved slot, so the save's bytes
 change, though no tick does:
 - `47f67027ff3a12b0`, `ef5c24337f5f2925` and `pacer_back`'s `59632bcff2461113` each move;
@@ -479,6 +483,9 @@ and still has no write path. Watching a contact flicker, or an offset settle on 
 is for.
 
 ## 11. The characters
+
+> **2026-11-09:** eight walks were built, not seven, each travelling its place on the grid, with a
+> gait of its own; `stride` stays out of `walk8` (Step 6's and Step 7's Resolutions).
 
 **A new generator, `scripts/m36/clips.py`, appends seven walks to the walker** after M35's
 eleven clips. So every existing clip, mesh and skeleton keeps its bytes, which Step 6 compares.
@@ -509,6 +516,10 @@ sideways and `y` from −1 to 1 m/s ahead. That grid is the strafer's blend `wal
   the floor its pose is the clip's.
 - **It still plays a bare `Player`,** not a machine, which proves IK needs neither a stack nor a
   machine.
+
+> **2026-11-09:** the strafer's heading turns half a turn a lap against its path, since facing the
+> centre and the path in turn swept a quarter of the directions, and its feet are not locked (Step
+> 7's Resolution). On the floor the climber's feet take it down the crowd's 1.37 cm.
 
 **The strafer**, a new figure of the walker's rig.
 - **Where it is:** a plain value, as the climber is, not an entity, and not saved.
@@ -544,6 +555,9 @@ is a pose's.
   plays `run` alone, at 1.29. Between, it mixes them on one foot.
 - **What stays:** idle and the jump. `idle` stays in the blend at 0, so slowing to a stop eases
   in. The jump stays a state, faded to and from `move` in the `feet` group.
+
+> **2026-11-09:** the flat court's offsets are each exactly minus the 4–5 mm the controller holds the
+> body up, not 0 (Step 8's Resolution).
 
 **Its feet** are placed and locked on every tick.
 - **On the flat court,** placement changes nothing. A test of the court's ground holds every
@@ -1396,3 +1410,35 @@ pose's correction does not go to the jobs.
 **Linux** compiles in the bar's cross-check. Nothing here is Linux-specific (§15).
 
 **The Mac's bar** is Step 8's, 2,873/2,883, since nothing outside `scripts/` changed after it.
+
+## Resolution — Step 10: Close M36 (2026-11-09)
+
+Every document now names M36 complete:
+- `CLAUDE.md` §4.1's two rows say implemented, §4.3's `anim` and `asset` lines name `ik`, `Feet`,
+  `Aim`, blends and the records' versions, and §9's row adds M36;
+- the roadmap's M36 line says complete, and M48's gains blend spaces, feet and aim chains;
+- the design index, the README (which now points to M37) and `PROJECT_STATE.md` say complete;
+- ADR-0073 and ADR-0074 say implemented, and ADR-0071's blocked-body line has a dated note pointing
+  to §9.
+
+**The contract discrepancies, each resolved by a dated note:**
+- `animation-logic.md` §15's two M36 rows, `animation3d.md` §14's IK row and `animation-states.md`
+  §18's two M36 rows point here;
+- in this document, §9 (the pins), §11 (eight walks), §12 (the strafer, and the climber on the
+  floor) and §13 (the court's offsets, and its rate in place since Step 8) each say what was built
+  and which Resolution has why.
+
+`docs/modding/content-mods.md` §10 gains "Legs, gaze and blend spaces": the three lists, `axes`,
+what `fpack` and the rig refuse, and §14's order a game runs a figure in. Its `pacer_back` example
+carries `blocked`. AGENTS.md's costs gain M36's readings, the crate key, the tour's frame count and
+`scripts/m36/windows.ps1` with its two helpers. The bar itself is unchanged.
+
+**What M36 leaves, each to a named milestone:** §18 stands as written. Scattered blend spaces and a
+view to mark contacts are M111's. Budgets read over their line, the i3's short `caught` ending
+among them, are M100's, as M35's were.
+
+**The PC is cleaned:** `src\Foundry-m36` and `m36` are removed by exact name, and nothing else is
+touched. No Foundry scratch is left on the Mac.
+
+Nothing outside documents changed after Step 9, so the bar stands at Step 8's: 2,873/2,883, ten
+skips, 132/132 steps. Tagged `m36`, not pushed.

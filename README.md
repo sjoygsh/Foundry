@@ -182,10 +182,12 @@ They build navigation meshes from a level's collision as it loads, and agents wa
 crowds, keeping apart, going round obstacles that move and chasing a player. Their figures play
 clips by what a record says the clips mean, step and land on events, are moved by their own
 clips, and save in mid-stride. State machines in content drive them in layers, so a figure runs
-while it reaches and breathes, and a mod changes how it moves with no code. It runs on macOS, Windows and Linux (X11
+while it reaches and breathes, and a mod changes how it moves with no code. Their feet land on the
+ground the game finds, their heads turn to what they watch, and blend spaces mix walks and runs by
+speed and direction. It runs on macOS, Windows and Linux (X11
 and Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M36, Animation logic III, which has no design yet, on the long roadmap
+**What comes next** is M37, Character and collision extras, which has no design yet, on the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to

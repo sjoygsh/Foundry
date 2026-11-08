@@ -477,19 +477,27 @@ court and a whole chase tick. The tests assert the M5's budgets, 50 µs for a pa
 crowd step, and the i3's are three times those (3.4–5.2 µs and 0.026 ms there at M33). `nav-test`
 also asserts the crowd pin in every mode.
 
-M34's and M35's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
+M34's, M35's and M36's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
 Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sample's figures change:
 - `FOUNDRY_SANDBOX3D_ANIMATORS=32 FOUNDRY_SANDBOX3D_FRAMES=900 bin/sandbox3d` prints the pacer's
   `animation`, its `render.skin`, and `animation.animators`, 32 animators each on the pacer's
   two-layer machine, advanced with no pose. Their budgets are 0.10, 0.25 and 0.10 ms p95. At M35
   they read 0.016–0.020, 0.102–0.123 and 0.17–0.23 ms on the M5, the last over its budget and
-  M100's (ADR-0071), and 0.003–0.005, 0.060–0.067 and 0.039–0.065 ms on the i3.
+  M100's (ADR-0071), and 0.003–0.005, 0.060–0.067 and 0.039–0.065 ms on the i3. Since M36 the
+  same run prints `animation.strafer`, the strafer's advance, evaluate, two rays, feet, gaze and
+  skin matrices, against 0.10 ms: 0.062–0.066 ms on the M5 and 0.045–0.075 ms on the i3, where the
+  32 animators then read 0.047–0.087 ms.
 - `FOUNDRY_COURT_PLAY=win bin/court` prints the court's `character`, its whole tick, and the
   warden's `render.skin`, each against 0.25 ms. At M35 `win` reads 0.131 and 0.071–0.083 ms on the
   M5, and 0.140–0.195 and 0.053–0.181 ms on the i3. The i3's short `caught` and `fell` runs read
-  0.154–0.321 ms for the tick, over the line in two runs of five.
+  0.154–0.321 ms for the tick, over the line in two runs of five. At M36, with the warden's blend,
+  two rays, feet and gaze, the staged court reads 0.193–0.233 ms on the M5, and 0.094–0.132 ms on
+  the i3 but 0.287 ms for its short `caught`. That is M100's, as M35's was.
 - `FOUNDRY_SANDBOX3D_WALK=tour` replays the player, the walker and the pacer across three saves
-  (mid-stride, mid-turn and M34's version 1 save), and prints their pins. `anim-test`, `rigs-test`,
+  (mid-stride, mid-turn and M34's version 1 save), and prints their pins. A windowed tour needs
+  `FOUNDRY_SANDBOX3D_FRAMES` of at least 2,400, since the walker's proof is 2,100 ticks.
+  `FOUNDRY_SANDBOX3D_KEYS=k@60` drops the crate on the pacer's square, and the log says where it
+  is blocked and turns. `anim-test`, `rigs-test`,
   `scene-test` and `court-test`, whose four script digests leave out the warden's pose, hold the
   rest.
 
@@ -497,8 +505,10 @@ On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31'
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
 `scripts/m33/windows.ps1` runs M33's, with the crowd, `marsh` and the warden's endings, and
 `scripts/m34/windows.ps1` runs M34's, with the tour, `pacer_quick`, the cost runs and the endings,
-and `scripts/m35/windows.ps1` runs M35's, adding the three saves, `pacer_back`'s mirrored square
-and the warden's machine.
+`scripts/m35/windows.ps1` runs M35's, adding the three saves, `pacer_back`'s mirrored square
+and the warden's machine, and `scripts/m36/windows.ps1` runs M36's, adding the crate, the strafer's
+cost and the walks' pins. `m36-setup.ps1` clones and checks out unpushed commits from a bundle,
+and `m36-launch.ps1` runs the desktop half from the scheduled task.
 Run it from a scheduled task, not over SSH alone: a dropped session ends what it started.
 
 ### Staging a release
