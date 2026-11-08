@@ -1,6 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
+**Current handoff: M37's design is proposed** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076); awaiting acceptance of §19. Stop before Step 1.
+
+**M37's design (2026-11-09):**
+- `physics3d` gains an up axis per world, runtime scale for mesh and hull bodies, rotational sweeps by conservative advancement, surfaces and one-sided triangles, and moving platforms that carry and bounded pushing (ADR-0075).
+- `.fcol` v2, `foundry:model` v3 naming its collision, and `foundry:collision_import` as the proxy producer (ADR-0076).
+- The sandbox gains a corner with a lift, a turntable, a crate, a door, a one-way ledge and a scaled proxy rock, plus a tilted tour. The court's footsteps sound by surface. Every older pin and digest is to hold.
+- Ten steps, the PC at Step 9.
+
 **M36 is complete (2026-11-09, tag `m36`, not pushed)** ([`docs/design/animation-ik.md`](docs/design/animation-ik.md), ADR-0073, ADR-0074). Stop before M37's design, Character and collision extras. The owner played the court at Step 8. The i3's short `caught` ending reads 0.287 ms against 0.25, as M35's did, which is M100's. The PC and the Mac hold no M36 scratch.
 
 **M36 Step 10 is done (2026-11-09): the close.**

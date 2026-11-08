@@ -1318,6 +1318,8 @@ overlay grant, no new dependency. Linux is compile-only.
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
 
+> **2026-11-09:** M37's rows are designed in [`collision-extras.md`](collision-extras.md).
+
 | Deferred | Returns when |
 | --- | --- |
 | Rigid-body dynamics, stacking, joints, ragdolls, vehicles | A game needs a simulated object (ADR-0051; Jolt weighed then) |
