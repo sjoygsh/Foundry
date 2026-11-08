@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-09
-**Current handoff: M37 Step 2 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 3, `physics3d`: surfaces and one-sided triangles.
+**Current handoff: M37 Step 3 of 10 is complete** ([`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before Step 4, `physics3d`: moving platforms and pushing. `moveBody`, carrying and pushing do not exist yet.
+
+**M37 Step 3 is done (2026-11-09): surfaces and one-sided triangles.**
+- `World.addMeshWith` takes `mesh.Attributes`: a table of up to 65,535 surface content IDs, a u16 index or `no_surface` per triangle, and a one-sided flag per triangle, all refused as `InvalidMesh` when malformed. `Body.surface` and `setSurface`. `Hit`, `RayHit`, `Contact`, `Overlap` and `Ground` report `surface`, the triangle's winning over its body's.
+- A one-sided triangle is skipped by a shape whose origin is behind its plane, or that moves along its front; overlap, contacts and depenetration skip it from behind. A contact with one in front pushes out along its front, since a capsule half through a thin ledge otherwise hovered (§6 sharpened).
+- A character jumps up through a one-sided ledge and lands on it; two-sided, it is a ceiling. Six guards verified by mutation.
+- Bar 2,891/2,901 (ten skips), 132/132 steps, eight new tests.
 
 **M37 Step 2 is done (2026-11-09): runtime scale and rotational sweeps.**
 - `Body.scale` for mesh and hull bodies, 0.01–100 a side, refused as `InvalidShape` otherwise. It is applied in mesh candidates (unscaled space), in triangles, and in a hull's support through a new `Convex.scale`. One hull serves two sizes. `Vec3` gains `mul` and `div`.

@@ -14,6 +14,32 @@ pub const leaf_capacity: usize = 4;
 // Median splitting of at most 2^20 triangles needs at most 21 pending branches.
 pub const stack_capacity: usize = 32;
 pub const AddError = error{ OutOfMemory, InvalidMesh };
+/// The most surfaces one mesh's table holds (`collision-extras.md` §6): an index is 16 bits, and
+/// `no_surface` is the one value left over.
+pub const max_surfaces: usize = 65_535;
+/// A triangle's surface index when it has none, and its body's surface applies.
+pub const no_surface: u16 = 0xFFFF;
+
+/// What a mesh's triangles are made of and which way they face (`collision-extras.md` §6).
+/// An empty per-triangle slice means none of them: no surfaces, or every triangle two-sided.
+/// Otherwise it has one entry per triangle.
+pub const Attributes = struct {
+    /// Content IDs `physics3d` reports and never interprets (I5). At most `max_surfaces`.
+    surfaces: []const core.ContentId = &.{},
+    /// Per triangle, an index into `surfaces`, or `no_surface`.
+    triangle_surfaces: []const u16 = &.{},
+    /// Per triangle, whether it collides from its front alone: the side its counter-clockwise
+    /// winding faces, as glTF's front faces are.
+    one_sided: []const bool = &.{},
+
+    pub fn valid(a: Attributes, triangles: usize) bool {
+        if (a.surfaces.len > max_surfaces) return false;
+        if (a.triangle_surfaces.len != 0 and a.triangle_surfaces.len != triangles) return false;
+        if (a.one_sided.len != 0 and a.one_sided.len != triangles) return false;
+        for (a.triangle_surfaces) |index| if (index != no_surface and index >= a.surfaces.len) return false;
+        return true;
+    }
+};
 
 /// Validation reports the first bad indexed triangle, or null for a count/unused-position
 /// failure. Validation is performed before allocation, also by World.addMesh.
@@ -42,11 +68,28 @@ pub const Mesh = struct {
     indices: []u32,
     order: []u32,
     nodes: []Node,
+    /// Copied `Attributes`, each empty when the mesh was given none.
+    surfaces: []core.ContentId = &.{},
+    triangle_surfaces: []u16 = &.{},
+    one_sided: []bool = &.{},
     node_count: u32 = 0,
     users: u32 = 0,
 
     pub fn init(gpa: Allocator, positions: []const Vec3, indices: []const u32) AddError!Mesh {
+        return initWith(gpa, positions, indices, .{});
+    }
+
+    /// `init`, with surfaces and one-sided triangles. Refused as `InvalidMesh` when `attributes`
+    /// is not `valid` for the mesh's triangle count.
+    pub fn initWith(gpa: Allocator, positions: []const Vec3, indices: []const u32, attributes: Attributes) AddError!Mesh {
         if (!validate(positions, indices).valid) return error.InvalidMesh;
+        if (!attributes.valid(indices.len / 3)) return error.InvalidMesh;
+        const surfaces = try gpa.dupe(core.ContentId, attributes.surfaces);
+        errdefer gpa.free(surfaces);
+        const triangle_surfaces = try gpa.dupe(u16, attributes.triangle_surfaces);
+        errdefer gpa.free(triangle_surfaces);
+        const one_sided = try gpa.dupe(bool, attributes.one_sided);
+        errdefer gpa.free(one_sided);
         const p = try gpa.dupe(Vec3, positions);
         errdefer gpa.free(p);
         const ix = try gpa.dupe(u32, indices);
@@ -56,7 +99,15 @@ pub const Mesh = struct {
         const nodes = try gpa.alloc(Node, order.len * 2);
         errdefer gpa.free(nodes);
         for (order, 0..) |*t, i| t.* = @intCast(i);
-        var mesh: Mesh = .{ .positions = p, .indices = ix, .order = order, .nodes = nodes };
+        var mesh: Mesh = .{
+            .positions = p,
+            .indices = ix,
+            .order = order,
+            .nodes = nodes,
+            .surfaces = surfaces,
+            .triangle_surfaces = triangle_surfaces,
+            .one_sided = one_sided,
+        };
         _ = mesh.build(0, @intCast(order.len));
         return mesh;
     }
@@ -66,6 +117,20 @@ pub const Mesh = struct {
         gpa.free(self.indices);
         gpa.free(self.order);
         gpa.free(self.nodes);
+        gpa.free(self.surfaces);
+        gpa.free(self.triangle_surfaces);
+        gpa.free(self.one_sided);
+    }
+
+    /// A triangle's own surface, or none, when its body's applies.
+    pub fn surfaceOf(self: *const Mesh, index: u32) core.ContentId {
+        if (self.triangle_surfaces.len == 0) return .none;
+        const at = self.triangle_surfaces[index];
+        return if (at == no_surface) .none else self.surfaces[at];
+    }
+
+    pub fn oneSided(self: *const Mesh, index: u32) bool {
+        return self.one_sided.len != 0 and self.one_sided[index];
     }
 
     pub fn triangle(self: *const Mesh, index: u32) [3]Vec3 {

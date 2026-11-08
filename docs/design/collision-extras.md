@@ -676,3 +676,75 @@ Nothing blocks Step 1 once these are accepted.
 
 **The bar:** see `PROJECT_STATE.md`. `zig build test` passes 2,883/2,893, with ten skips and
 132/132 steps, and seven new tests.
+
+## Resolution — Step 3: surfaces and one-sided triangles (2026-11-09)
+
+`physics3d` now covers §6; the tests are in `engine/src/physics3d/surface_tests.zig`.
+
+**Surfaces:**
+- **A surface is a `core.ContentId`,** `none` by default. `physics3d` already depends on `core`, so
+  the type a game passes is the content ID itself and no cast is needed.
+- **`World.addMeshWith(gpa, positions, indices, mesh.Attributes)`:**
+  - `surfaces` is the table, up to `mesh.max_surfaces` (65,535);
+  - `triangle_surfaces` gives a u16 per triangle, an index into the table or `mesh.no_surface`
+    (0xFFFF);
+  - `one_sided` gives a bool per triangle;
+  - each per-triangle slice is empty (none) or one entry a triangle.
+  Anything else is `InvalidMesh`, before allocating, as `addMesh`'s refusals are. `addMesh` is
+  `addMeshWith` with no attributes, so a plain mesh stores three empty slices. `.fcol` v2's packed
+  u32 (Step 5) unpacks into these two slices, so the format does not leak into `physics3d`.
+- **`Body.surface`,** and `World.setSurface` to change it, as every other field has a setter.
+- **What reports it:** `Hit`, `RayHit`, `Contact` and `Ground`, as §6 lists, and also `Overlap`,
+  so every query does. A triangle's own surface wins, and its body's applies where it has none.
+
+**One-sided triangles,** as §6 has them, judged per candidate triangle. Its front is the winding's
+cross product after scale and pose, so a body turned over faces the other way.
+- **Casts, and the controller's casts and probes:** a triangle is skipped when the shape's origin
+  starts behind its plane, or when the displacement runs along its front.
+- **A ray** is a cast of a point, so the same rule is §6's ray rule.
+- **A sweep** judges it against its whole travel, with the origin at each advance.
+- **Overlap, contacts and the controller's depenetration:** a triangle is skipped when the origin is
+  behind the plane.
+
+**A sharpening of §6: a one-sided face is left by its front.**
+- **The problem:** a capsule half through a one-way ledge, its centre just past the plane, is
+  nearly as deep one way as the other. GJK/EPA's shortest way out of a face with no thickness then
+  pointed down through the back about as often as up. The first jump test hovered at the plane: it
+  was pushed down, cast up through the back, and pushed down again.
+- **The answer:** a contact with a one-sided triangle has the front as its normal, and as its depth
+  how far the shape's deepest point lies behind the plane. So a character that rises through a
+  ledge until its centre passes the plane is lifted onto it, which is how a one-way platform is
+  expected to behave.
+- **A cost:** near an edge, a shape is no longer pushed out sideways, since sideways may be
+  shorter. A character beside the edge whose centre has crossed the plane is lifted, not shoved off.
+
+**What the tests hold:**
+- **Surfaces:** a ray, a cast, a sweep, contacts and overlap each report a triangle's surface, and
+  the body's on the triangle with none. A box's comes from its body, and a character's ground says
+  what it stands on. A mesh with no attributes reports none.
+- **Refusals:** a table of 65,536 is refused, and one of 65,535 is admitted, its last index
+  reaching its last entry. Also refused: an index past the table, a table missing, and either slice
+  of the wrong length.
+- **One-sided:**
+  - a ray, a cast and a sweep through the back pass, and through the front hit;
+  - a pole whose centre starts in front, rising into the edge from under it, passes;
+  - a turned body faces the other way;
+  - contacts and overlap ignore a face the centre is behind, and push out along the front by the
+    depth behind it, 1.15 m for a pole whose way out through the back is shorter;
+  - a capsule whose head is through a slab from below is left where it is;
+  - a character jumps 3.5 m up through a one-sided ledge 2.2 m up, with no ceiling, and comes down
+    onto it, its ground the ledge and the ledge's surface, its feet where it jumped. Two-sided, the
+    same ledge is a ceiling and it lands on the floor;
+  - a one-sided wall lets a character through from behind, and stops it a radius from its front.
+
+**Guards verified by mutation,** each failing a test before it was restored:
+- the one-sided back test, both halves:
+  - the origin behind the plane;
+  - the displacement along the front, which survived until the rising-pole case was added, since
+    every cast from behind also started behind;
+- the front-only depth, which fails the jump and the contact depths;
+- the surface index check;
+- the table's cap;
+- the body's surface beneath a triangle with none.
+
+**The bar:** see `PROJECT_STATE.md`.

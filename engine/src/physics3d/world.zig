@@ -66,6 +66,8 @@ pub const Hit = struct {
     body: BodyHandle,
     user: u64,
     triangle: u32 = none_triangle,
+    /// The triangle's surface, or its body's where it has none (`collision-extras.md` §6).
+    surface: core.ContentId = .none,
     started_inside: bool,
 };
 
@@ -78,6 +80,8 @@ pub const RayHit = struct {
     body: BodyHandle,
     user: u64,
     triangle: u32 = none_triangle,
+    /// The triangle's surface, or its body's where it has none (`collision-extras.md` §6).
+    surface: core.ContentId = .none,
     started_inside: bool,
 };
 
@@ -85,12 +89,14 @@ pub const Overlap = struct {
     body: BodyHandle,
     user: u64,
     triangle: u32 = none_triangle,
+    surface: core.ContentId = .none,
 };
 
 pub const Contact = struct {
     body: BodyHandle,
     user: u64,
     triangle: u32 = none_triangle,
+    surface: core.ContentId = .none,
     /// Out of the body, toward the query shape: the way to push the query shape out.
     normal: Vec3,
     /// How far the query shape is inside, metres. Positive.
@@ -180,7 +186,14 @@ pub const World = struct {
     /// Validate before allocating; `mesh.validate` exposes the first offending triangle.
     /// The world owns the arrays, tree and query scratch after this returns.
     pub fn addMesh(self: *World, gpa: Allocator, positions: []const Vec3, indices: []const u32) AddMeshError!MeshHandle {
-        var owned = try mesh_mod.Mesh.init(gpa, positions, indices);
+        return self.addMeshWith(gpa, positions, indices, .{});
+    }
+
+    /// `addMesh`, with a surface and a side per triangle (`collision-extras.md` §6). Refused as
+    /// `InvalidMesh` for a table past `mesh.max_surfaces`, an index past its table, or a
+    /// per-triangle slice that is neither empty nor one entry a triangle.
+    pub fn addMeshWith(self: *World, gpa: Allocator, positions: []const Vec3, indices: []const u32, attributes: mesh_mod.Attributes) AddMeshError!MeshHandle {
+        var owned = try mesh_mod.Mesh.initWith(gpa, positions, indices, attributes);
         errdefer owned.deinit(gpa);
         if (self.triangle_scratch.len < owned.order.len) {
             const scratch = try gpa.alloc(u32, owned.order.len);
@@ -274,6 +287,13 @@ pub const World = struct {
         return true;
     }
 
+    /// What the body is made of (§6). False for a stale handle.
+    pub fn setSurface(self: *World, handle: BodyHandle, surface: core.ContentId) bool {
+        const existing = self.bodies.get(handle) orelse return false;
+        existing.surface = surface;
+        return true;
+    }
+
     pub fn setUser(self: *World, handle: BodyHandle, user: u64) bool {
         const existing = self.bodies.get(handle) orelse return false;
         existing.user = user;
@@ -328,10 +348,11 @@ pub const World = struct {
             if (entry.value.mask & actor.layer == 0) continue;
             var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
             while (candidates.next()) |other| {
-                const s = narrow.separation(query, other.convex);
+                if (!other.admits(query.pose.position, .zero)) continue;
+                const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (best) |b| if (-s.distance <= b.depth) continue;
-                best = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .normal = s.normal, .depth = -s.distance, .point = s.point_b };
+                best = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .surface = other.surface, .normal = s.normal, .depth = -s.distance, .point = s.point_b };
             }
         }
         return best;
@@ -362,6 +383,7 @@ pub const World = struct {
             .body = hit.body,
             .user = hit.user,
             .triangle = hit.triangle,
+            .surface = hit.surface,
             .started_inside = hit.started_inside,
         };
     }
@@ -408,7 +430,7 @@ pub const World = struct {
         while (iteration < narrow.max_cast_iterations) : (iteration += 1) {
             var moving = start;
             moving.pose = .{ .position = begin.position.lerp(end_pose.position, fraction), .rotation = begin.rotation.slerp(end_pose.rotation, fraction) };
-            const nearest = self.nearestTo(moving, area, filter) orelse return null;
+            const nearest = self.nearestTo(moving, travel, area, filter) orelse return null;
             const gap = nearest.separation.distance - narrow.contact_skin;
             found = .{
                 .fraction = fraction,
@@ -418,6 +440,7 @@ pub const World = struct {
                 .body = nearest.body,
                 .user = nearest.user,
                 .triangle = nearest.part.triangle,
+                .surface = nearest.part.surface,
                 .started_inside = fraction == 0 and nearest.separation.distance < 0,
             };
             if (gap <= narrow.cast_tolerance) return found;
@@ -431,12 +454,14 @@ pub const World = struct {
 
     /// The candidate nearest `moving` among bodies in `area`. Ties go to the lower handle, then
     /// triangle, since the scan is in that order and only a strictly nearer one replaces it.
-    fn nearestTo(self: *World, moving: Convex, area: Aabb, filter: Filter) ?Nearest {
+    /// One-sided triangles are judged against `motion`, the sweep's travel.
+    fn nearestTo(self: *World, moving: Convex, motion: Vec3, area: Aabb, filter: Filter) ?Nearest {
         var best: ?Nearest = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
+                if (!other.admits(moving.pose.position, motion)) continue;
                 const s = narrow.separation(moving, other.convex);
                 if (best) |b| if (!(s.distance < b.separation.distance)) continue;
                 best = .{ .separation = s, .part = other, .body = entry.id, .user = entry.value.user };
@@ -454,9 +479,10 @@ pub const World = struct {
         while (it.next()) |entry| {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
+                if (!other.admits(query.pose.position, .zero)) continue;
                 if (narrow.separation(query, other.convex).distance >= 0) continue;
                 if (found.count < out.len) {
-                    out[found.count] = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle };
+                    out[found.count] = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .surface = other.surface };
                     found.count += 1;
                 }
                 found.total += 1;
@@ -475,13 +501,15 @@ pub const World = struct {
         while (it.next()) |entry| {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
-                const s = narrow.separation(query, other.convex);
+                if (!other.admits(query.pose.position, .zero)) continue;
+                const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (found.count < out.len) {
                     out[found.count] = .{
                         .body = entry.id,
                         .user = entry.value.user,
                         .triangle = other.triangle,
+                        .surface = other.surface,
                         .normal = s.normal,
                         .depth = -s.distance,
                         .point = s.point_b,
@@ -510,6 +538,7 @@ pub const World = struct {
             if (layer) |l| if (entry.value.mask & l == 0) continue;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
+                if (!other.admits(moving.pose.position, displacement)) continue;
                 const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
                 if (layer != null and !c.started_inside and c.fraction == 0 and displacement.dot(c.normal) >= -1e-7) continue;
                 var face = other.convex.surfaceNormal(c.normal);
@@ -554,6 +583,7 @@ pub const World = struct {
                     .body = entry.id,
                     .user = entry.value.user,
                     .triangle = other.triangle,
+                    .surface = other.surface,
                     .started_inside = c.started_inside,
                 };
             }
@@ -561,19 +591,62 @@ pub const World = struct {
         return best;
     }
 
-    const Part = struct { convex: Convex, triangle: u32 = none_triangle };
+    const Part = struct {
+        convex: Convex,
+        triangle: u32 = none_triangle,
+        /// The triangle's surface, or its body's.
+        surface: core.ContentId = .none,
+        one_sided: bool = false,
+
+        /// Whether a shape whose origin is at `centre`, moving by `motion`, may meet this part
+        /// (`collision-extras.md` §6). A one-sided triangle is met from its front alone: not by a
+        /// shape whose centre is behind its plane, nor by one moving out through its back. A
+        /// query that does not move passes zero.
+        fn admits(self: Part, centre: Vec3, motion: Vec3) bool {
+            if (!self.one_sided) return true;
+            const facing = self.front();
+            if (centre.sub(self.convex.pose.apply(self.convex.core.triangle[0])).dot(facing) < 0) return false;
+            return motion.dot(facing) <= 0;
+        }
+
+        /// A triangle's front, the way its counter-clockwise winding faces, after scale and pose.
+        /// Not unit.
+        fn front(self: Part) Vec3 {
+            const pts = self.convex.core.triangle;
+            return self.convex.pose.applyDirection(Vec3.cross(pts[1].sub(pts[0]), pts[2].sub(pts[0])));
+        }
+
+        /// How `query` and this part overlap. **A one-sided triangle is left by its front:** the
+        /// normal is its front, and the depth how far the query's deepest point is behind its
+        /// plane. The shortest way out of a thin face may be through its back, and a capsule
+        /// half through a one-way ledge would then be pushed back down as often as up.
+        fn separation(self: Part, query: Convex) narrow.Separation {
+            const s = narrow.separation(query, self.convex);
+            if (!self.one_sided or s.distance >= 0) return s;
+            const n = self.front().normalize();
+            const deepest = query.support(n.scale(-1)).sub(n.scale(query.radius));
+            const depth = self.convex.pose.apply(self.convex.core.triangle[0]).sub(deepest).dot(n);
+            var out = s;
+            out.distance = -@max(depth, 0);
+            out.normal = n;
+            out.point_a = deepest;
+            out.point_b = deepest.add(n.scale(@max(depth, 0)));
+            return out;
+        }
+    };
     const Candidates = struct {
         convex: ?Convex = null,
         mesh: ?*const mesh_mod.Mesh = null,
         pose: Pose = .identity,
         scale: Vec3 = .one,
+        surface: core.ContentId = .none,
         triangles: []const u32 = &.{},
         cursor: usize = 0,
 
         fn next(self: *Candidates) ?Part {
             if (self.convex) |c| {
                 self.convex = null;
-                return .{ .convex = c };
+                return .{ .convex = c, .surface = self.surface };
             }
             if (self.cursor == self.triangles.len) return null;
             const t = self.triangles[self.cursor];
@@ -581,7 +654,13 @@ pub const World = struct {
             // Scaled before the pose, so a scaled triangle's normal is the one a person sees.
             var pts = self.mesh.?.triangle(t);
             for (&pts) |*p| p.* = p.mul(self.scale);
-            return .{ .convex = .{ .core = .{ .triangle = pts }, .radius = 0, .pose = self.pose }, .triangle = t };
+            const own = self.mesh.?.surfaceOf(t);
+            return .{
+                .convex = .{ .core = .{ .triangle = pts }, .radius = 0, .pose = self.pose },
+                .triangle = t,
+                .surface = if (own.isNone()) self.surface else own,
+                .one_sided = self.mesh.?.oneSided(t),
+            };
         }
     };
 
@@ -591,11 +670,11 @@ pub const World = struct {
         if (!self.bodyBounds(b).expand(0.002).overlaps(area)) return null;
         if (b.shape == .mesh) {
             const m = self.meshes.get(b.shape.mesh).?;
-            return .{ .mesh = m, .pose = b.pose, .scale = b.scale, .triangles = m.candidates(b.pose, b.scale, area, self.triangle_scratch) };
+            return .{ .mesh = m, .pose = b.pose, .scale = b.scale, .surface = b.surface, .triangles = m.candidates(b.pose, b.scale, area, self.triangle_scratch) };
         }
         var c = self.convexOf(b.shape, b.pose);
         c.scale = b.scale;
-        return .{ .convex = c };
+        return .{ .convex = c, .surface = b.surface };
     }
 
     fn bodyBounds(self: *World, b: Body) Aabb {

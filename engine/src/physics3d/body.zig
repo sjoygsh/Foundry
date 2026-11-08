@@ -40,6 +40,9 @@ pub const Body = struct {
     /// which stays rigid. Non-uniform, each axis in [`min_scale`, `max_scale`]; any other shape
     /// says its size in its own dimensions and refuses a scale but one.
     scale: Vec3 = .one,
+    /// What the body is made of (`collision-extras.md` §6): a content ID every hit on it reports,
+    /// and `physics3d` never interprets (I5). A mesh triangle's own surface wins over it.
+    surface: core.ContentId = .none,
 };
 
 pub const min_scale: f32 = 0.01;

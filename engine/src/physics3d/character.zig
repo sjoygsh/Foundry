@@ -42,6 +42,8 @@ pub const Ground = struct {
     body: BodyHandle,
     user: u64,
     triangle: u32,
+    /// What the feet stand on (`collision-extras.md` §6): the triangle's surface, or its body's.
+    surface: core.ContentId = .none,
 };
 pub const Character = struct {
     body: BodyHandle,
@@ -124,7 +126,7 @@ fn cast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
 fn ground(w: *World, c: Character, feet: Vec3) ?Ground {
     const h = groundCast(w, c, feet, w.up.scale(-2 * narrow.contact_skin)) orelse return null;
     if (!walkable(c.config, w.up, h)) return null;
-    return .{ .surface_normal = h.surface_normal, .body = h.body, .user = h.user, .triangle = h.triangle };
+    return .{ .surface_normal = h.surface_normal, .body = h.body, .user = h.user, .triangle = h.triangle, .surface = h.surface };
 }
 fn groundCast(w: *World, c: Character, feet: Vec3, by: Vec3) ?Hit {
     return w.characterProbe(convex(w, c, feet), by, c.body, @cos(c.config.max_slope));

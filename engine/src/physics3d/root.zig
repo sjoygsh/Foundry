@@ -53,6 +53,7 @@ pub const Filter = body.Filter;
 pub const Found = world.Found;
 pub const Hit = world.Hit;
 pub const HullHandle = shape.HullHandle;
+pub const MeshAttributes = mesh.Attributes;
 pub const MeshHandle = shape.MeshHandle;
 pub const Overlap = world.Overlap;
 pub const Pose = shape.Pose;
@@ -93,4 +94,5 @@ test {
     _ = @import("character_tests.zig");
     _ = @import("up_tests.zig");
     _ = @import("scale_tests.zig");
+    _ = @import("surface_tests.zig");
 }
