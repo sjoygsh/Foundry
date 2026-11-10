@@ -1483,3 +1483,68 @@ the same.
 
 **The bar.** `zig build test` passed 2,984 of 2,994 tests (ten skips) in 132 of 132 steps. The four
 checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` passed.
+
+## Resolution — Step 11: Windows/Vulkan (2026-11-11)
+
+`scripts/m38/windows.ps1` comes from M37's, with `m38-setup.ps1` and `m38-launch.ps1` beside it.
+The setup clones the repository into its own directory on the PC and checks out M38's commits from
+a git bundle, since they are not pushed; the launcher runs the desktop half from a scheduled task in
+the owner's session. Against M37's, the script expects the player's and the corner's pins as Step 5
+moved them, adds the yard's stage, its replay, the tilted yard and the yard, posts' and hillside
+lines, and runs `sandbox3d-yard-test` among the ReleaseSafe suites.
+
+It ran on the owner's Arc A750 PC, an i3-10105F, from a fresh clone at `0a8a164`, at `-j2` and
+below normal priority, with the 50% CPU cutoff on. The PC read 17% before it began.
+
+**The native suites:**
+- null 2,963/2,982 (19 skips), 128/128 steps;
+- Vulkan 3,244/3,274 (30 skips), 232/232 steps;
+- the ReleaseSafe pin suites (`physics3d`, `nav`, `anim`, `rigs`, `scene`, `sandbox3d`, the yard's
+  and `court`, the soundtrack's ten minutes among them) 767/767, 146/146 steps.
+
+**Every pin holds on x86_64, with the Mac's value.** No pin needed a second value (§13):
+- the player's `b85b52c97d259db4`, the corner's `e2992f93e5323345` and the yard's
+  `1052a9ae891b0d27`, each replayed;
+- the walker's and the pacer's three;
+- the court's four digests;
+- the tilted tours. The tilted yard's worst tick and end, 0.01017 m and 0.00106 m, are the Mac's
+  to the last digit, so the band Step 9 set is a slope's tick, not a machine's.
+
+**The bytes.** The relocated install's 209 content files have the Mac's SHA-256, the hillside's
+`.fcol` version 3 (`AB17CD46…`) and the boulder's `.fhul` (`D5AAFB9E…`) among them. The one file
+that differs is the native example mod, `orbiter.dll` beside the Mac's `liborbiter.dylib`.
+
+**Both samples ran from a relocated, read-only ReleaseSafe install,** windowed in the desktop
+session. One run of each kind was also under Khronos validation with synchronization, and every
+validation log has no finding.
+- **The tour, four times, and the tilted tour, twice:** every stage passes, and the yard's ends
+  where the Mac's does (95.0122, 1.0070, −0.5975, a 20.0000° ramp, pushed aside 0.658 m, 2,126
+  bodies, one baked mesh).
+- **The court's three endings, eight runs:** each replay matched a fresh simulation and nothing was
+  dropped. Footsteps by surface are the Mac's: `win` 142 by surface and 2 by the set's own,
+  `caught` 2, `fell` 11.
+- **The install's hash tree was unchanged,** and no scripted run wrote preferences.
+
+**§14's budgets on the i3, p95 in the paced loop:**
+
+| What | Readings | Budget |
+| --- | --- | --- |
+| The player's move in the yard, 2,126 bodies, 634 a run | 0.111–0.150 ms | 0.25 ms |
+| The 64 posts' `moveBody`, together | 0.070–0.082 ms | 0.10 ms |
+| `addMesh` of the hillside with its baked tree | 2.11–2.57 ms (172–183 ms built) | 5 ms |
+| The court's whole game tick, `win` ×4 | 0.083–0.092 ms | 0.25 ms |
+| The court's whole game tick, `caught` ×2 and `fell` ×2 | 0.080–0.189 ms | 0.25 ms |
+| The player's move elsewhere, 1,300 a run | 0.093–0.130 ms | 0.25 ms |
+| The door's `shapeSweep` | 0.0083–0.0222 ms | 0.05 ms |
+| The court level's `addMesh` | 0.144–0.165 ms | 5 ms |
+
+**The posts are under their line here,** where the Mac's one relocated run read 0.154 ms. `moveBody`
+still asks every character in the world, so the line stays M100's as Step 9 said. The reading on
+the i3 says the cost is small enough at 64 posts; it does not say it scales. The short `caught`
+ending, over its line on this i3 in M35, M36 and M37, sits under it this time, at 0.187 and
+0.189 ms. Its 80 frames make its p95 the worst four frames, so it remains M100's to watch.
+
+**Linux** compiles in the bar's cross-check. Nothing here is Linux-specific (§13).
+
+**The PC** keeps `%USERPROFILE%\src\Foundry-m38` and `%USERPROFILE%\m38` until Step 12, which
+deletes those two exact paths and nothing else.

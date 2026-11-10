@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-11
-**Current handoff: M38 Step 10 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 11, Windows/Vulkan: nothing of M38 has run on the owner's PC yet, and the PC holds no Foundry clone. M37 is complete and pushed (tag `m37`).
+**Current handoff: M38 Step 11 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 12, M38's close: the documents §15's Step 12 lists are not yet updated, ADR-0077 and ADR-0078 are not yet implemented in `CLAUDE.md` §4.1, there is no tag `m38`, and the PC still holds `%USERPROFILE%\src\Foundry-m38` and `%USERPROFILE%\m38`. M37 is complete and pushed (tag `m37`).
+
+**M38 Step 11 is done (2026-11-11): Windows/Vulkan.**
+- `scripts/m38/windows.ps1`, `m38-setup.ps1` and `m38-launch.ps1`, from M37's, ran on the owner's i3/Arc PC from a fresh clone at `0a8a164` (commits by bundle), `-j2`, below normal, 17% CPU before.
+- **Suites:** null 2,963/2,982 (19 skips), Vulkan 3,244/3,274 (30 skips), ReleaseSafe pins 767/767.
+- **Every pin holds on x86_64 with the Mac's value:** player `b85b52c97d259db4`, corner `e2992f93e5323345`, yard `1052a9ae891b0d27`, walker, pacers, the court's four digests; the tilted yard's 0.01017 m and 0.00106 m are the Mac's to the digit.
+- **Bytes:** all 209 installed content files match the Mac's SHA-256, the hillside's `.fcol` v3 and the boulder's `.fhul` among them; only the native mod's library differs by platform.
+- **Windowed, relocated, read-only ReleaseSafe:** six tours (two tilted) and eight court endings pass, validation clean, install unchanged, no preferences written.
+- **Budgets on the i3, p95:** yard move 0.111–0.150 ms (0.25), posts' `moveBody` 0.070–0.082 ms (0.10, under here; still M100's), hillside `addMesh` 2.11–2.57 ms (5), court tick 0.080–0.189 ms (0.25; `caught` under its line this time).
 
 **M38 Step 10 is done (2026-11-11): the court.**
 - **One line:** the court hands the overlay a `physics3d.Report` each frame (`world.report().withCounters(world.takeCounters())`), so F1's `physics` panel shows its world. No content changed.
