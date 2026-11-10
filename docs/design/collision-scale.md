@@ -1278,3 +1278,47 @@ translator, the skin proof in `build.zig`, which names its imports by hand; it g
 which `author` now has, so nothing is widened. Because `author` compiles a new kind, `zig build
 distribution-test` (33 of 33) and the court's macOS staging ran too, and passed. Windows staging
 waits for the yard's package, the first to hold a `.fhul` or a baked tree, at Step 9.
+
+## Resolution — Step 8: the physics panel (2026-11-11)
+
+**What it pinned.**
+- **`debug` is granted `physics3d`** in `build.zig`, for `physics3d.Report` alone, with its reason
+  beside the grant; `physics2d` stays out. The panel reads nothing else of `physics3d`; only its
+  tests build a `World`, to print a report a real world gave.
+- **`debug.Sources.physics: ?*const physics3d.Report`**, null by default, beside `navigation` and
+  `animation`. A game fills it from `World.report()`, with the counters it takes itself
+  (`Report.withCounters`) and its own `move_p95_ms`.
+- **`debug.physics_panel`**, registered as the eighth built-in panel, titled `physics`, closed to
+  begin with. It prints:
+  - what the world holds: static and kinematic bodies and characters; meshes, triangles and how
+    many were baked; hulls and their faces; the broadphase's nodes and height;
+  - the queries asked, each kind that was asked by `QueryKind`'s own name and in its order, or
+    "no queries";
+  - when any were asked, the nodes walked, bodies tested and triangles tested, and the pairs sent
+    to closed form and to GJK;
+  - refits and the game's move p95, each only when it has one.
+
+  With no report it says "no physics reported (debug.Sources.physics)", as the navigation panel
+  does.
+
+**Where the implementation sharpened the design.**
+- **Kinds by their own names.** The panel prints `@tagName` of each `QueryKind` rather than a list
+  of its own, so a kind M51 adds is printed without the panel changing and the two cannot disagree.
+- **Zero lines left out.** A kind not asked, no refits and no timing are not printed, as the
+  navigation panel leaves out an agent state with nobody in it. What the world holds is always
+  printed, zeros included, so an empty world reads as one and not as a missing report.
+- **What wires it.** No sample hands a report yet: the sandbox's is Step 9's, with the yard, and the
+  court's one line is Step 10's (§11, §12). A state file naming the panels a host saved before
+  this step opens them as before, since panels are matched by title.
+
+**Guards verified by mutation,** seven, each failing a test: every kind printed, asked or not; the
+"no queries" branch inverted; refits and timing each printed always; kinds named one place off;
+static and kinematic swapped; and the panel left unregistered.
+
+**Tests.** Four new in `physics_panel.zig`: no report; an empty `World`'s report; a world of two
+bodies after one ray, with the game's timing; and every line of a full report. The overlay's
+built-in count test is now eight.
+
+**The bar.** `zig build test` passed 2,981 of 2,991 tests (ten skips) in 132 of 132 steps. The
+four checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` (87 of
+89, two skips) passed, and no pin moved. No content or asset kind changed, so staging was not run.

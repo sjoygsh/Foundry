@@ -1,7 +1,7 @@
 //! Foundry `debug` — layer L5. The in-process debug overlay (ADR-0025).
 //!
-//! Depends on `core`, `data`, `ui`, `asset`, `anim`, `nav`, `render2d`, `render3d`, `scene`, `audio` and
-//! `app`, and **nothing depends on it**. A game opts in by importing it, exactly as it opts into
+//! Depends on `core`, `data`, `ui`, `asset`, `anim`, `nav`, `physics3d`, `render2d`, `render3d`,
+//! `scene`, `audio` and `app`, and **nothing depends on it**. A game opts in by importing it, exactly as it opts into
 //! `render2d` or `audio`; a game that does not import it does not build it.
 //!
 //! ## The rule this module exists to obey
@@ -45,6 +45,7 @@ pub const content_panel = @import("content_panel.zig");
 pub const entity_panel = @import("entity_panel.zig");
 pub const memory_panel = @import("memory_panel.zig");
 pub const navigation_panel = @import("navigation_panel.zig");
+pub const physics_panel = @import("physics_panel.zig");
 pub const profiler_panel = @import("profiler_panel.zig");
 
 // The names a game sees today and a mod sees from M7, so renaming one is a compatibility
@@ -73,5 +74,6 @@ test {
     _ = entity_panel;
     _ = memory_panel;
     _ = navigation_panel;
+    _ = physics_panel;
     _ = profiler_panel;
 }

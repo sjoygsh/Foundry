@@ -189,8 +189,10 @@ const layering = [_]Module{
     // `render3d` joined at M21 for one line of frame counts (`hierarchy.md` §7): the same
     // downward kind of dependency as `render2d`, and cheaper than routing a renderer's
     // statistics through the engine loop for one panel. `anim` joined at M34 for the same
-    // reason `nav` did at M33: a panel prints a report, a value a game fills.
-    .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "anim", "nav", "render2d", "render3d", "scene", "audio", "app" } },
+    // reason `nav` did at M33: a panel prints a report, a value a game fills. `physics3d`
+    // joined at M38 Step 8 for that reason alone, `physics3d.Report` (`collision-scale.md`
+    // §10); `physics2d` stays out.
+    .{ .name = "debug", .deps = &.{ "core", "data", "ui", "asset", "anim", "nav", "physics3d", "render2d", "render3d", "scene", "audio", "app" } },
 
     // L5 — the one public API surface (I4, ADR-0004, docs/design/public-abi.md). A **peer
     // of `debug`, not a layer over `app`** (ADR-0026), and the reason is visible one screen

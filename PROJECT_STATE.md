@@ -1,7 +1,12 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-11
-**Current handoff: M38 Step 7 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 8, `debug`: there is no physics panel yet, `debug` has no `physics3d` grant, and no package yet holds a baked tree or a `.fhul`. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 8 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 9, `sandbox3d`'s yard: no yard, hillside, boulder or stage exists, no package holds a baked tree or a `.fhul`, and no sample hands the overlay a physics report. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 8 is done (2026-11-11): the physics panel.**
+- **`debug` is granted `physics3d`,** for `physics3d.Report` alone; `physics2d` stays out.
+- **`debug.Sources.physics`** is a `?*const physics3d.Report` a game fills. The eighth built-in panel, `physics`, prints what the world holds (bodies, characters, meshes, triangles, baked meshes, hulls, faces, the broadphase's nodes and height), each query kind asked by `QueryKind`'s own name, the work they did and the closed-form/GJK split, refits and the game's move p95. With no report it says so. It is numbers only, with no write path.
+- Seven guards verified by mutation. Bar 2,981/2,991 (ten skips), 132/132 steps, four new tests; every check, sample, `fdt-check`, the tour and `court-test` passed, and no pin moved.
 
 **M38 Step 7 is done (2026-11-11): `author` bakes the tree and compiles a hull.**
 - **`author` is granted `physics3d`.** A derived or proxy collision mesh of 1,024 triangles or more (`gltf.translate.collision_tree_threshold`) is written as `.fcol` version 3 with the tree `physics3d.mesh.buildTree` builds, converted to the file's node. One under it keeps its version 1 or 2 bytes, and every existing mesh is under it, so no file moved.

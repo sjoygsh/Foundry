@@ -12,6 +12,7 @@ const audio = @import("audio");
 const core = @import("core");
 const data = @import("data");
 const nav = @import("nav");
+const physics3d = @import("physics3d");
 const render2d = @import("render2d");
 const render3d = @import("render3d");
 const scene = @import("scene");
@@ -23,6 +24,7 @@ const content_panel = @import("content_panel.zig");
 const entity_panel = @import("entity_panel.zig");
 const memory_panel = @import("memory_panel.zig");
 const navigation_panel = @import("navigation_panel.zig");
+const physics_panel = @import("physics_panel.zig");
 const profiler_panel = @import("profiler_panel.zig");
 
 const Rect = core.math.Rect;
@@ -186,6 +188,9 @@ pub const Sources = struct {
     /// What animation is doing, as the game fills it in each tick (`animation-logic.md` §8). A
     /// game with none passes nothing, and the panel says so.
     animation: ?*const anim.Report = null,
+    /// What collision holds and was asked, as the game fills it from its world
+    /// (`collision-scale.md` §10). A game with none passes nothing, and the panel says so.
+    physics: ?*const physics3d.Report = null,
 };
 
 /// What a panel is handed.
@@ -290,6 +295,7 @@ pub const Overlay = struct {
     content: content_panel.State = .{},
     navigation: navigation_panel.State = .{},
     animation: animation_panel.State = .{},
+    physics: physics_panel.State = .{},
 
     /// Heap-allocated because the built-in panels are registered with pointers into it, the
     /// same reason `app.Engine.init` returns a pointer.
@@ -341,6 +347,12 @@ pub const Overlay = struct {
                 .title = "animation",
                 .ctx = &self.animation,
                 .describe = animation_panel.State.describe,
+            });
+            _ = try self.addPanel(.{
+                .id = root_id.child("physics"),
+                .title = "physics",
+                .ctx = &self.physics,
+                .describe = physics_panel.State.describe,
             });
         }
         return self;
@@ -647,10 +659,10 @@ pub fn countText(ctx: *const ui.Context) usize {
 
 const testing = std.testing;
 
-test "an overlay registers the seven built-in panels" {
+test "an overlay registers the eight built-in panels" {
     const o = try Overlay.init(testing.allocator, .{});
     defer o.deinit();
-    try testing.expectEqual(@as(usize, 7), o.panels.items.len);
+    try testing.expectEqual(@as(usize, 8), o.panels.items.len);
     // The profiler is the one that is open to begin with: it is the panel that answers the
     // question the overlay exists for.
     try testing.expect(o.panels.items[0].open);
