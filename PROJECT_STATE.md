@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38 Step 5 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 6, `asset`: `.fcol` version 3, `foundry:collision_hull` and `collision_import` version 2 do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 6 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 7, `author`: nothing bakes a tree into an `.fcol` yet, a `shape hull` import is refused rather than compiled, and `author` has no `physics3d` grant. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 6 is done (2026-11-10): the records.**
+- **`.fcol` version 3** appends a tree to version 2's layout: a node count, 32-byte `asset.collision_mesh.TreeNode`s (`min`, `max`, `link`, `count`) and the order. It is written only when `writeWith` is given a tree; every other mesh keeps its version 1 or 2 bytes. `CollisionMesh.tree()` is null for older versions. `asset` checks what it can without memory, and `physics3d.validateTree` the rest. The file's node is not `physics3d.mesh.Node`, so `author` (Step 7) and the samples (Step 9) convert it.
+- **`foundry:collision_hull`** is a new asset kind, derived from `.fhul`: version 1 holds 4 to 256 points and their bounds, no faces. `asset.collision_hull` reads and writes it, and `collisionHullLoader` loads an `asset.CollisionHull`.
+- **`foundry:collision_import` version 2** has `shape`, `mesh` by default. Version 1 reads as a mesh. `author` refuses an unknown shape by name, and refuses `hull` until Step 7 compiles it, so a hull import is never compiled as a mesh.
+- Fifteen guards verified by mutation. Bar 2,974/2,984 (ten skips), 132/132 steps, ten new tests; every check, sample, `fdt-check`, the tour and `court-test` passed, and no pin moved. `distribution-test` and the court's macOS staging passed too.
 
 **M38 Step 5 is done (2026-11-10): closed-form pairs. The walking pins moved, once.**
 - `physics3d/pairs.zig` measures a point and a segment against a triangle in closed form, and answers a ray against a triangle in one step. `narrow.separation` and `narrow.cast` use them for a sphere, a capsule and a ray against a triangle. Cores that meet, boxes, hulls and every other pair stay on GJK and EPA. `narrow.separationGeneral` and `castGeneral` are GJK for any pair, the tests' reference.

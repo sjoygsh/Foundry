@@ -117,6 +117,16 @@ pub const collision_mesh: Schema = .{
     .fields = &.{.{ .name = source_field, .type = .string }},
 };
 
+/// A convex hull's points (ADR-0078, `collision-scale.md` §7), in its `.fhul` source. A game adds
+/// it to `physics3d` by this record's ID; nothing names one from a model.
+pub const collision_hull_name = "foundry:collision_hull";
+pub const collision_hull_extension = "fhul";
+pub const collision_hull: Schema = .{
+    .id = SchemaId.fromStringUnchecked(collision_hull_name),
+    .version = 1,
+    .fields = &.{.{ .name = source_field, .type = .string }},
+};
+
 /// A canonical runtime mesh. The geometry and bounds are all in its `.fmesh` source.
 pub const mesh: Schema = .{
     .id = SchemaId.fromStringUnchecked(mesh_name),
@@ -250,22 +260,29 @@ const surface_mapping_type: data.FieldType = .{ .nested = &.{
 pub const surface_mappings_type: data.FieldType = .{ .list = &surface_mapping_type };
 
 pub const collision_import_name = "foundry:collision_import";
+pub const collision_import_shape_field = "shape";
+pub const collision_import_shape_mesh = "mesh";
+pub const collision_import_shape_hull = "hull";
 
 /// A proxy (`collision-extras.md` §9): collision authored apart from what is drawn, from a glTF
 /// file, compiled into the `foundry:collision_mesh` of its own ID. Build-only, as
 /// `foundry:model_import` is (ADR-0055), so no runtime path reads it. `front` and `exclude` are
 /// `model_import`'s `front` and `collision_exclude`; `surfaces` maps materials to surfaces.
 ///
+/// Version 2 (M38, `collision-scale.md` §7) adds `shape`: `mesh`, the default and all version 1
+/// meant, or `hull`, which compiles into the `foundry:collision_hull` of its own ID instead.
+///
 /// No extension derives one: a `.gltf` derives a `model_import`, and a proxy is a choice an
 /// author writes down.
 pub const collision_import: Schema = .{
     .id = SchemaId.fromStringUnchecked(collision_import_name),
-    .version = 1,
+    .version = 2,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
         .{ .name = "exclude", .type = .{ .list = &exclusion_name_type }, .presence = .optional },
         .{ .name = "surfaces", .type = surface_mappings_type, .presence = .optional },
+        .{ .name = collision_import_shape_field, .type = .string, .since = 2, .presence = .{ .default = .{ .string = collision_import_shape_mesh } } },
     },
 };
 
@@ -359,6 +376,7 @@ pub const kinds = [_]Kind{
     .{ .name = collision_mesh_name, .schema = collision_mesh, .extensions = &.{collision_mesh_extension} },
     .{ .name = skeleton_name, .schema = skeleton, .extensions = &.{"fskel"} },
     .{ .name = animation_name, .schema = animation, .extensions = &.{"fanim"} },
+    .{ .name = collision_hull_name, .schema = collision_hull, .extensions = &.{collision_hull_extension} },
 };
 
 /// Engine-defined record schemas with no source bytes of their own.
@@ -666,6 +684,47 @@ test "model v2 reads under v3 with no collision, and v3 names one" {
     try compileRecords("foundry:model test:new { slots [] parts [] collision test:new.collision }", &registry, &package, &diags);
     try testing.expectEqual(@as(usize, 5), package.records()[1].values.len);
     try testing.expect(package.records()[1].value(model, 4).?.id.eql(core.ContentId.fromString("test:new.collision")));
+}
+
+test "collision_import v1 reads under v2 as a mesh, and v2 names its shape" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    // A v1 import compiled against the v1 schema, as an older source tree's compiler saw it.
+    var old_registry: Registry = .init(gpa, .default);
+    defer old_registry.deinit(gpa);
+    _ = try old_registry.register(gpa, .{ .id = collision_import.id, .version = 1, .fields = collision_import.fields[0..4] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    try compileRecords("foundry:collision_import test:old { source \"old.gltf\" exclude [ \"Moss\" ] }", &old_registry, &package, &diags);
+    const shape = collision_import.fieldIndex(collision_import_shape_field).?;
+    try testing.expectEqual(@as(usize, 4), package.records()[0].values.len);
+    // Read under version 2, the field it lacks is its default.
+    try testing.expectEqualStrings(collision_import_shape_mesh, package.records()[0].value(collision_import, shape).?.string);
+    try testing.expectEqual(@as(usize, 1), package.records()[0].value(collision_import, 2).?.list.len);
+    try compileRecords(
+        \\foundry:collision_import test:plain { source "plain.gltf" }
+        \\foundry:collision_import test:boulder { source "boulder.gltf" shape "hull" }
+    , &registry, &package, &diags);
+    try testing.expectEqualStrings(collision_import_shape_mesh, package.records()[1].value(collision_import, shape).?.string);
+    try testing.expectEqualStrings(collision_import_shape_hull, package.records()[2].value(collision_import, shape).?.string);
+
+    var bad_package = try data.Package.init(gpa, "test:bad", 1, .default);
+    defer bad_package.deinit(gpa);
+    var bad_diags: data.Diagnostics = .init(gpa, .default);
+    defer bad_diags.deinit(gpa);
+    try testing.expectError(error.ContentInvalid, compileRecords("foundry:collision_import test:bad { source \"a.gltf\" shape hull }", &registry, &bad_package, &bad_diags));
+    try testing.expect(bad_diags.count() >= 1);
+}
+
+test "collision_hull is a kind a .fhul derives" {
+    const kind = kindForExtension(collision_hull_extension).?;
+    try testing.expectEqualStrings(collision_hull_name, kind.name);
+    try testing.expect(kind.schema.id.eql(collision_hull.id));
+    try testing.expect(kindForExtension("FHUL") == null);
 }
 
 test "collision_import accepts a proxy record and refuses wrong types" {

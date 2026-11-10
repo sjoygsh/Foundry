@@ -42,6 +42,10 @@ pub const Rigs = rigs.Rigs;
 pub const collision_mesh = @import("collision_mesh.zig");
 pub const CollisionMesh = collision_mesh.CollisionMesh;
 pub const collisionMeshLoader = collision_mesh.collisionMeshLoader;
+/// `foundry:collision_hull`, a hull's points (ADR-0078, M38).
+pub const collision_hull = @import("collision_hull.zig");
+pub const CollisionHull = collision_hull.CollisionHull;
+pub const collisionHullLoader = collision_hull.collisionHullLoader;
 pub const mesh = @import("mesh.zig");
 pub const mesh_file = @import("mesh_file.zig");
 pub const mips = @import("mips.zig");
@@ -160,6 +164,7 @@ test {
     _ = animation_machine;
     _ = @import("animation_asset_tests.zig");
     _ = collision_mesh;
+    _ = collision_hull;
     _ = image;
     _ = mesh;
     _ = mesh_file;

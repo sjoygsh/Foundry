@@ -495,6 +495,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.schemas.texture_name,
     asset.schemas.mesh_name,
     asset.schemas.collision_mesh_name,
+    asset.schemas.collision_hull_name,
     asset.schemas.collision_import_name,
     asset.schemas.skeleton_name,
     asset.schemas.animation_name,
@@ -1258,6 +1259,18 @@ fn importSettings(
         }
     }
     if (proxy) {
+        // `shape` arrived in version 2 (`collision-scale.md` §7); a version 1 record is a mesh.
+        const shape = if (record.value(schema, schema.fieldIndex(asset.schemas.collision_import_shape_field).?)) |value| value.string else asset.schemas.collision_import_shape_mesh;
+        if (std.mem.eql(u8, shape, asset.schemas.collision_import_shape_hull)) {
+            // Compiling a hull is M38 Step 7's (`collision-scale.md` §9). Until it is, a hull
+            // import is refused rather than compiled as the mesh it did not ask for.
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has shape 'hull', which this compiler cannot compile yet", .{ noun, record.text });
+            return error.ContentInvalid;
+        }
+        if (!std.mem.eql(u8, shape, asset.schemas.collision_import_shape_mesh)) {
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has shape '{s}'; expected 'mesh' or 'hull'", .{ noun, record.text, shape });
+            return error.ContentInvalid;
+        }
         var excluded: []const []const u8 = &.{};
         if (record.value(schema, schema.fieldIndex("exclude").?)) |value| {
             const names = try arena.alloc([]const u8, value.list.len);
@@ -2861,7 +2874,7 @@ test "a model import maps materials to surfaces, a proxy compiles into its recor
     // A proxy: its own ID, its own file, no lit material needed, and a model naming it. The
     // glTF is claimed by both, so no model is derived from the file as well.
     try f.write("models.fdt", surface_records ++
-        \\foundry:collision_import demo:proxy { source "models/two.gltf" exclude [] surfaces [ { material "Stone" surface demo:surface.stone } ] }
+        \\foundry:collision_import demo:proxy { source "models/two.gltf" shape "mesh" exclude [] surfaces [ { material "Stone" surface demo:surface.stone } ] }
         \\foundry:model_import demo:hero { source "models/two.gltf" collision_mesh demo:proxy
     ++ " " ++ shared_materials ++ " }");
     try f.compileIt("demo:content");
@@ -2915,6 +2928,8 @@ test "every refusal of a surface, a proxy and a model's collision names its reco
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" surfaces [ { material \"Grass\" surface demo:surface.mud } ] }", .says = "collision import 'demo:proxy' maps a material to surface 'demo:surface.mud'" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/none.gltf\" }", .says = "collision import 'demo:proxy' names 'models/none.gltf', which is not a .gltf" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" front \"+x\" }", .says = "collision import 'demo:proxy' has front '+x'" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"sphere\" }", .says = "collision import 'demo:proxy' has shape 'sphere'; expected 'mesh' or 'hull'" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"hull\" }", .says = "collision import 'demo:proxy' has shape 'hull', which this compiler cannot compile yet" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" exclude [ \"Ground\" ] }", .says = "collision_import derives an empty collision mesh" },
     };
     for (cases) |case| {

@@ -7,6 +7,14 @@
 //! in its low 16 bits (`no_surface` for none) and the one-sided flag in bit 16. The other bits are
 //! zero. A mesh with no surface and no one-sided face is written as version 1, so it keeps its
 //! bytes.
+//!
+//! **Version 3 appends the mesh's tree** (ADR-0077, `collision-scale.md` §7): version 2's layout,
+//! its table and its u32 a triangle always present, then a u32 node count, that many 32-byte
+//! `TreeNode`s in preorder, and a u32 a triangle, the order the leaves hold them in. This file
+//! checks what it can without memory: the counts against the file's length, a leaf's count, a
+//! right child and a run in range, and the order's values. `physics3d.mesh.validateTree` checks
+//! the rest, since it is the one that trusts the tree. A mesh written with no tree is version 1
+//! or 2, as before.
 const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("core");
@@ -23,7 +31,7 @@ comptime {
 pub const magic = "FCOL";
 /// The newest version read and written. Version 1 is still read, and still written for a mesh
 /// version 2 would add nothing to.
-pub const format_version: u32 = 2;
+pub const format_version: u32 = 3;
 pub const header_size: usize = 40;
 pub const max_surfaces: u32 = 65_535;
 pub const no_surface: u16 = 0xFFFF;
@@ -43,6 +51,32 @@ pub const min_triangle_area: f32 = 1e-12;
 pub const ReadError = error{ NotACollisionMesh, UnsupportedVersion, Malformed, OverLimit };
 pub const WriteError = error{ InvalidMesh, TooLarge, OutOfMemory };
 pub const Bounds = struct { min: Vec3, max: Vec3 };
+/// The most triangles a leaf of a version 3 tree holds.
+pub const max_leaf_triangles: u32 = 4;
+
+/// One node of a version 3 tree, as the file lays it out. For a leaf, `link` is the first place
+/// in the order and `count` is 1 to `max_leaf_triangles`. For an inner node, `count` is zero and
+/// `link` is the right child's index; the left child is the next node.
+pub const TreeNode = extern struct {
+    min: Vec3,
+    max: Vec3,
+    link: u32,
+    count: u32,
+
+    pub fn leaf(self: TreeNode) bool {
+        return self.count != 0;
+    }
+};
+
+comptime {
+    if (@sizeOf(TreeNode) != 32) @compileError(".fcol tree node layout changed");
+}
+
+/// A version 3 tree as `writeWith` takes it: nodes in preorder, the root first, and the order.
+pub const Tree = struct {
+    nodes: []const TreeNode,
+    order: []const u32,
+};
 
 pub fn versionOf(bytes: []const u8) ?u32 {
     if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], magic)) return null;
@@ -54,6 +88,8 @@ pub fn versionOf(bytes: []const u8) ?u32 {
 pub const Attributes = struct {
     surfaces: []const core.ContentId = &.{},
     triangle_attributes: []const u32 = &.{},
+    /// A tree makes the file version 3; none leaves it version 1 or 2.
+    tree: ?Tree = null,
 };
 
 /// A triangle attribute's surface index, or null for none.
@@ -74,6 +110,9 @@ pub const View = struct {
     /// Version 2's, and empty for version 1: no surfaces, and every triangle plain.
     surfaces: []align(1) const core.ContentId = &.{},
     triangle_attributes: []align(1) const u32 = &.{},
+    /// Version 3's, and empty for versions 1 and 2.
+    tree_nodes: []align(1) const TreeNode = &.{},
+    tree_order: []align(1) const u32 = &.{},
 
     /// An aligned, owned copy for consumers such as physics3d.World.addMesh.
     pub fn copy(self: View, gpa: Allocator) Allocator.Error!CollisionMesh {
@@ -85,11 +124,17 @@ pub const View = struct {
         errdefer gpa.free(surfaces);
         const attributes = try gpa.alloc(u32, self.triangle_attributes.len);
         errdefer gpa.free(attributes);
+        const nodes = try gpa.alloc(TreeNode, self.tree_nodes.len);
+        errdefer gpa.free(nodes);
+        const order = try gpa.alloc(u32, self.tree_order.len);
+        errdefer gpa.free(order);
         for (positions, self.positions) |*to, from| to.* = from;
         for (indices, self.indices) |*to, from| to.* = from;
         for (surfaces, self.surfaces) |*to, from| to.* = from;
         for (attributes, self.triangle_attributes) |*to, from| to.* = from;
-        return .{ .positions = positions, .indices = indices, .bounds = self.bounds, .surfaces = surfaces, .triangle_attributes = attributes };
+        for (nodes, self.tree_nodes) |*to, from| to.* = from;
+        for (order, self.tree_order) |*to, from| to.* = from;
+        return .{ .positions = positions, .indices = indices, .bounds = self.bounds, .surfaces = surfaces, .triangle_attributes = attributes, .tree_nodes = nodes, .tree_order = order };
     }
 };
 
@@ -100,12 +145,24 @@ pub const CollisionMesh = struct {
     /// Version 2's, and empty for version 1 (`View`).
     surfaces: []core.ContentId = &.{},
     triangle_attributes: []u32 = &.{},
+    /// Version 3's, and empty for versions 1 and 2 (`View`). A game hands it to `physics3d` as
+    /// it does surfaces, and `physics3d` validates it before trusting it.
+    tree_nodes: []TreeNode = &.{},
+    tree_order: []u32 = &.{},
 
     pub fn deinit(self: *CollisionMesh, gpa: Allocator) void {
         gpa.free(self.positions);
         gpa.free(self.indices);
         gpa.free(self.surfaces);
         gpa.free(self.triangle_attributes);
+        gpa.free(self.tree_nodes);
+        gpa.free(self.tree_order);
+    }
+
+    /// The baked tree, or null when the file carried none.
+    pub fn tree(self: *const CollisionMesh) ?Tree {
+        if (self.tree_nodes.len == 0) return null;
+        return .{ .nodes = self.tree_nodes, .order = self.tree_order };
     }
 
     /// Triangle `index`'s surface, or `.none`.
@@ -122,7 +179,7 @@ pub const CollisionMesh = struct {
 
 pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
     const version = versionOf(bytes) orelse return error.NotACollisionMesh;
-    if (version != 1 and version != 2) return error.UnsupportedVersion;
+    if (version < 1 or version > format_version) return error.UnsupportedVersion;
     if (bytes.len > @min(limits.max_file_bytes, Limits.default.max_file_bytes)) return error.OverLimit;
     if (bytes.len < header_size) return error.Malformed;
     const vertices = std.mem.readInt(u32, bytes[8..12], .little);
@@ -133,19 +190,34 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
     const end_positions = header_size + @as(u64, vertices) * 12;
     const end = end_positions + @as(u64, triangles) * 12;
     if (version == 1 and end != bytes.len) return error.Malformed;
-    if (version == 2 and end + 4 > bytes.len) return error.Malformed;
+    if (version >= 2 and end + 4 > bytes.len) return error.Malformed;
     const positions = std.mem.bytesAsSlice(Vec3, bytes[header_size..@intCast(end_positions)]);
     const indices = std.mem.bytesAsSlice(u32, bytes[@intCast(end_positions)..@intCast(end)]);
     var surfaces: []align(1) const core.ContentId = &.{};
     var attributes: []align(1) const u32 = &.{};
-    if (version == 2) {
+    var nodes: []align(1) const TreeNode = &.{};
+    var order: []align(1) const u32 = &.{};
+    if (version >= 2) {
         const at: usize = @intCast(end);
         const count = std.mem.readInt(u32, bytes[at..][0..4], .little);
         if (count > max_surfaces) return error.Malformed;
         const end_surfaces = at + 4 + @as(u64, count) * 8;
-        if (end_surfaces + @as(u64, triangles) * 4 != bytes.len) return error.Malformed;
+        const end_attributes = end_surfaces + @as(u64, triangles) * 4;
+        if (version == 2 and end_attributes != bytes.len) return error.Malformed;
+        if (version == 3) {
+            if (end_attributes + 4 > bytes.len) return error.Malformed;
+            const tree_at: usize = @intCast(end_attributes);
+            const node_count = std.mem.readInt(u32, bytes[tree_at..][0..4], .little);
+            // A tree of n triangles has 1 to 2n - 1 nodes.
+            if (node_count == 0 or node_count > 2 * @as(u64, triangles) - 1) return error.Malformed;
+            const end_nodes = tree_at + 4 + @as(u64, node_count) * @sizeOf(TreeNode);
+            if (end_nodes + @as(u64, triangles) * 4 != bytes.len) return error.Malformed;
+            nodes = std.mem.bytesAsSlice(TreeNode, bytes[tree_at + 4 .. @intCast(end_nodes)]);
+            order = std.mem.bytesAsSlice(u32, bytes[@intCast(end_nodes)..]);
+            if (!treeShaped(nodes, order, triangles)) return error.Malformed;
+        }
         surfaces = std.mem.bytesAsSlice(core.ContentId, bytes[at + 4 .. @intCast(end_surfaces)]);
-        attributes = std.mem.bytesAsSlice(u32, bytes[@intCast(end_surfaces)..]);
+        attributes = std.mem.bytesAsSlice(u32, bytes[@intCast(end_surfaces)..@intCast(end_attributes)]);
         // No table entry is the absent ID, which no content compiler emits.
         for (surfaces) |id| if (id.isNone()) return error.Malformed;
         for (attributes) |a| {
@@ -161,7 +233,21 @@ pub fn read(bytes: []const u8, limits: Limits) ReadError!View {
             p.x > bounds.max.x or p.y > bounds.max.y or p.z > bounds.max.z) return error.Malformed;
     }
     for (indices) |index| if (index >= vertices) return error.Malformed;
-    return .{ .positions = positions, .indices = indices, .bounds = bounds, .surfaces = surfaces, .triangle_attributes = attributes };
+    return .{ .positions = positions, .indices = indices, .bounds = bounds, .surfaces = surfaces, .triangle_attributes = attributes, .tree_nodes = nodes, .tree_order = order };
+}
+
+/// What a tree's bytes can be checked for without memory (§7): a leaf of 1 to
+/// `max_leaf_triangles` whose run is inside the order, an inner node whose right child comes
+/// after its left one and is a node, and an order of triangle indices. Whether the nodes form one
+/// walk, the order is a permutation and the boxes contain what they hold is `physics3d`'s.
+fn treeShaped(nodes: []align(1) const TreeNode, order: []align(1) const u32, triangles: u32) bool {
+    for (nodes, 0..) |node, i| {
+        if (node.leaf()) {
+            if (node.count > max_leaf_triangles or @as(u64, node.link) + node.count > triangles) return false;
+        } else if (node.link <= i + 1 or node.link >= nodes.len) return false;
+    }
+    for (order) |triangle| if (triangle >= triangles) return false;
+    return true;
 }
 
 pub fn positionValid(p: Vec3) bool {
@@ -181,7 +267,8 @@ pub fn write(gpa: Allocator, positions: []const Vec3, indices: []const u32) Writ
 /// `write`, with surfaces and one-sided faces. Version 2 only when `attributes` has a surface
 /// or a triangle that is not `plain_attribute`; otherwise version 1, byte for byte `write`'s.
 /// Refused as `InvalidMesh`: a table past `max_surfaces` or holding `.none`, attributes that are
-/// not one a triangle, reserved bits, or an index past the table.
+/// not one a triangle, reserved bits, or an index past the table. With a tree, version 3, with
+/// the table and the attributes always written; a tree the reader would refuse is `InvalidMesh`.
 pub fn writeWith(gpa: Allocator, positions: []const Vec3, indices: []const u32, attributes: Attributes) WriteError![]u8 {
     if (positions.len > Limits.default.max_vertices or indices.len / 3 > Limits.default.max_triangles) return error.TooLarge;
     if (positions.len == 0 or indices.len == 0 or indices.len % 3 != 0) return error.InvalidMesh;
@@ -202,11 +289,18 @@ pub fn writeWith(gpa: Allocator, positions: []const Vec3, indices: []const u32, 
         if (surfaceIndex(a)) |index| if (index >= attributes.surfaces.len) return error.InvalidMesh;
         if (a != plain_attribute) plain = false;
     }
+    if (attributes.tree) |tree| {
+        if (tree.nodes.len == 0 or tree.nodes.len > 2 * triangles - 1 or tree.order.len != triangles or
+            !treeShaped(tree.nodes, tree.order, @intCast(triangles))) return error.InvalidMesh;
+        plain = false;
+    }
     const v1_size = header_size + positions.len * 12 + indices.len * 4;
-    const size = if (plain) v1_size else v1_size + 4 + attributes.surfaces.len * 8 + triangles * 4;
+    const v2_size = v1_size + 4 + attributes.surfaces.len * 8 + triangles * 4;
+    const size = if (plain) v1_size else if (attributes.tree) |tree| v2_size + 4 + tree.nodes.len * @sizeOf(TreeNode) + triangles * 4 else v2_size;
     const bytes = try gpa.alloc(u8, size);
     @memcpy(bytes[0..4], magic);
-    std.mem.writeInt(u32, bytes[4..8], if (plain) 1 else 2, .little);
+    const version: u32 = if (plain) 1 else if (attributes.tree != null) 3 else 2;
+    std.mem.writeInt(u32, bytes[4..8], version, .little);
     std.mem.writeInt(u32, bytes[8..12], @intCast(positions.len), .little);
     std.mem.writeInt(u32, bytes[12..16], @intCast(indices.len / 3), .little);
     writeVec(bytes, 16, bounds.min);
@@ -222,6 +316,17 @@ pub fn writeWith(gpa: Allocator, positions: []const Vec3, indices: []const u32, 
         const a = if (attributes.triangle_attributes.len == 0) plain_attribute else attributes.triangle_attributes[i];
         std.mem.writeInt(u32, bytes[at + i * 4 ..][0..4], a, .little);
     }
+    const tree = attributes.tree orelse return bytes;
+    std.mem.writeInt(u32, bytes[v2_size..][0..4], @intCast(tree.nodes.len), .little);
+    for (tree.nodes, 0..) |node, i| {
+        const node_at = v2_size + 4 + i * @sizeOf(TreeNode);
+        writeVec(bytes, node_at, node.min);
+        writeVec(bytes, node_at + 12, node.max);
+        std.mem.writeInt(u32, bytes[node_at + 24 ..][0..4], node.link, .little);
+        std.mem.writeInt(u32, bytes[node_at + 28 ..][0..4], node.count, .little);
+    }
+    const order_at = v2_size + 4 + tree.nodes.len * @sizeOf(TreeNode);
+    for (tree.order, 0..) |triangle, i| std.mem.writeInt(u32, bytes[order_at + i * 4 ..][0..4], triangle, .little);
     return bytes;
 }
 
@@ -292,7 +397,7 @@ test "fcol: every read refusal, bounded counts, finite positions, bounds and exa
     for (8..bytes.len) |length| try testing.expectError(error.Malformed, read(bytes[0..length], .default));
     try testing.expectError(error.OverLimit, read(bytes, .{ .max_file_bytes = bytes.len - 1 }));
     const cases = [_]struct { offset: usize, value: u32, err: ReadError }{
-        .{ .offset = 4, .value = 3, .err = error.UnsupportedVersion },
+        .{ .offset = 4, .value = 4, .err = error.UnsupportedVersion },
         .{ .offset = 8, .value = 0, .err = error.Malformed },
         .{ .offset = 12, .value = 0, .err = error.Malformed },
         .{ .offset = 8, .value = Limits.default.max_vertices + 1, .err = error.OverLimit },
@@ -359,7 +464,7 @@ test "fcol: loader owns its decoded product, preserves version refusals and unwi
     try testing.expectEqualDeep(fixture_positions[1], fromPayload(payload).positions[1]);
     try testing.expectError(error.InvalidAsset, loader.load(null, testing.allocator, record, bytes));
     @memcpy(bytes[0..4], magic);
-    std.mem.writeInt(u32, bytes[4..8], 3, .little);
+    std.mem.writeInt(u32, bytes[4..8], 4, .little);
     try testing.expectError(error.UnsupportedVersion, loader.load(null, testing.allocator, record, bytes));
 }
 
@@ -488,4 +593,206 @@ fn allocationProofV2(gpa: Allocator) !void {
 
 test "fcol v2: the loader reads version 2 and unwinds every allocation" {
     try testing.checkAllAllocationFailures(testing.allocator, allocationProofV2, .{});
+}
+
+// Version 3: a 3 by 3 grid of vertices, eight triangles, and a root over two leaves of four.
+const grid_positions = blk: {
+    var p: [9]Vec3 = undefined;
+    for (0..3) |z| for (0..3) |x| {
+        p[z * 3 + x] = .init(@floatFromInt(x), 0, @floatFromInt(z));
+    };
+    break :blk p;
+};
+const grid_indices = blk: {
+    var i: [24]u32 = undefined;
+    var at: usize = 0;
+    for (0..2) |z| for (0..2) |x| {
+        const a: u32 = @intCast(z * 3 + x);
+        for ([_]u32{ a, a + 4, a + 1, a, a + 3, a + 4 }) |index| {
+            i[at] = index;
+            at += 1;
+        }
+    };
+    break :blk i;
+};
+const grid_nodes = [_]TreeNode{
+    .{ .min = .zero, .max = .init(2, 0, 2), .link = 2, .count = 0 },
+    .{ .min = .zero, .max = .init(2, 0, 1), .link = 0, .count = 4 },
+    .{ .min = .init(0, 0, 1), .max = .init(2, 0, 2), .link = 4, .count = 4 },
+};
+// Not the identity, so the test shows the order is the file's.
+const grid_order = [_]u32{ 1, 0, 3, 2, 5, 4, 7, 6 };
+const grid_tree: Tree = .{ .nodes = &grid_nodes, .order = &grid_order };
+const grid_v2_size = header_size + 9 * 12 + 24 * 4 + 4 + 8 * 4;
+
+test "fcol v3: the tree round trips, with surfaces or without, and older versions carry none" {
+    const gpa = testing.allocator;
+    const bytes = try writeWith(gpa, &grid_positions, &grid_indices, .{ .tree = grid_tree });
+    defer gpa.free(bytes);
+    try testing.expectEqual(@as(?u32, 3), versionOf(bytes));
+    // Version 2's table and attributes are written even when there is nothing in them.
+    try testing.expectEqual(grid_v2_size + 4 + 3 * 32 + 8 * 4, bytes.len);
+    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, bytes[header_size + 9 * 12 + 24 * 4 ..][0..4], .little));
+    const offset = try gpa.alloc(u8, bytes.len + 1);
+    defer gpa.free(offset);
+    @memcpy(offset[1..], bytes);
+    const view = try read(offset[1..], .default);
+    try testing.expectEqual(@as(usize, 3), view.tree_nodes.len);
+    try testing.expectEqual(@as(u32, 2), view.tree_nodes[0].link);
+    try testing.expect(!view.tree_nodes[0].leaf() and view.tree_nodes[2].leaf());
+    try testing.expectEqualDeep(grid_nodes[2].min, view.tree_nodes[2].min);
+    for (view.triangle_attributes) |a| try testing.expectEqual(plain_attribute, a);
+    var owned = try view.copy(gpa);
+    defer owned.deinit(gpa);
+    @memset(offset, 0);
+    const tree = owned.tree().?;
+    try testing.expectEqualSlices(u32, &grid_order, tree.order);
+    try testing.expectEqualDeep(grid_nodes[1], tree.nodes[1]);
+    try testing.expect(owned.surfaceOf(3).isNone() and !owned.oneSidedAt(3));
+    const again = try writeWith(gpa, owned.positions, owned.indices, .{ .surfaces = owned.surfaces, .triangle_attributes = owned.triangle_attributes, .tree = owned.tree() });
+    defer gpa.free(again);
+    try testing.expectEqualSlices(u8, bytes, again);
+
+    // With surfaces and a one-sided face too.
+    var attributes = [_]u32{plain_attribute} ** 8;
+    attributes[5] = 0 | one_sided_bit;
+    const rich = try writeWith(gpa, &grid_positions, &grid_indices, .{ .surfaces = &.{grass}, .triangle_attributes = &attributes, .tree = grid_tree });
+    defer gpa.free(rich);
+    var rich_owned = try (try read(rich, .default)).copy(gpa);
+    defer rich_owned.deinit(gpa);
+    try testing.expect(rich_owned.surfaceOf(5).eql(grass) and rich_owned.oneSidedAt(5) and rich_owned.surfaceOf(4).isNone());
+    try testing.expectEqualSlices(u32, &grid_order, rich_owned.tree().?.order);
+
+    // A single leaf is a whole tree.
+    const one = try writeWith(gpa, &square_positions, &square_indices, .{ .tree = .{ .nodes = &.{.{ .min = .zero, .max = .init(1, 0, 1), .link = 0, .count = 2 }}, .order = &.{ 0, 1 } } });
+    defer gpa.free(one);
+    try testing.expectEqual(@as(usize, 1), (try read(one, .default)).tree_nodes.len);
+
+    // Without a tree, versions 1 and 2 keep their bytes and have none.
+    const v1 = try writeWith(gpa, &fixture_positions, &fixture_indices, .{});
+    defer gpa.free(v1);
+    try testing.expectEqual(@as(u64, 0xc854ac2cc345318d), core.id.fnv1a64(v1));
+    var v1_owned = try (try read(v1, .default)).copy(gpa);
+    defer v1_owned.deinit(gpa);
+    try testing.expect(v1_owned.tree() == null);
+    const v2 = try writeWith(gpa, &grid_positions, &grid_indices, .{ .surfaces = &.{grass}, .triangle_attributes = &attributes });
+    defer gpa.free(v2);
+    try testing.expectEqual(@as(?u32, 2), versionOf(v2));
+    var v2_owned = try (try read(v2, .default)).copy(gpa);
+    defer v2_owned.deinit(gpa);
+    try testing.expect(v2_owned.tree() == null);
+}
+
+test "fcol v3: every read refusal of the tree" {
+    const gpa = testing.allocator;
+    const bytes = try writeWith(gpa, &grid_positions, &grid_indices, .{ .tree = grid_tree });
+    defer gpa.free(bytes);
+    for (8..bytes.len) |length| try testing.expectError(error.Malformed, read(bytes[0..length], .default));
+    const long = try gpa.alloc(u8, bytes.len + 1);
+    defer gpa.free(long);
+    @memcpy(long[0..bytes.len], bytes);
+    long[bytes.len] = 0;
+    try testing.expectError(error.Malformed, read(long, .default));
+    const count_at = grid_v2_size;
+    const node_at = count_at + 4;
+    const order_at = node_at + 3 * 32;
+    const Case = struct { offset: usize, value: u32 };
+    const cases = [_]Case{
+        // No nodes, more than two a triangle less one, or more than the file holds.
+        .{ .offset = count_at, .value = 0 },
+        .{ .offset = count_at, .value = 16 },
+        .{ .offset = count_at, .value = 4 },
+        .{ .offset = count_at, .value = 2 },
+        // The root's right child is its left one, or past the last node.
+        .{ .offset = node_at + 24, .value = 1 },
+        .{ .offset = node_at + 24, .value = 3 },
+        // A leaf of five, inside the order.
+        .{ .offset = node_at + 32 + 28, .value = 5 },
+        // A leaf whose run goes past the order.
+        .{ .offset = node_at + 64 + 24, .value = 5 },
+        // A triangle the mesh does not have.
+        .{ .offset = order_at + 7 * 4, .value = 8 },
+    };
+    for (cases) |case| {
+        const bad = try gpa.dupe(u8, bytes);
+        defer gpa.free(bad);
+        std.mem.writeInt(u32, bad[case.offset..][0..4], case.value, .little);
+        try testing.expectError(error.Malformed, read(bad, .default));
+    }
+    // Two triangles and four nodes, every one well shaped and the length the file's: one too many.
+    const square_nodes = [_]TreeNode{
+        .{ .min = .zero, .max = .init(1, 0, 1), .link = 2, .count = 0 },
+        .{ .min = .zero, .max = .init(1, 0, 1), .link = 0, .count = 1 },
+        .{ .min = .zero, .max = .init(1, 0, 1), .link = 1, .count = 1 },
+    };
+    const three = try writeWith(gpa, &square_positions, &square_indices, .{ .tree = .{ .nodes = &square_nodes, .order = &.{ 0, 1 } } });
+    defer gpa.free(three);
+    _ = try read(three, .default);
+    const order_bytes = three.len - 2 * 4;
+    const four = try gpa.alloc(u8, three.len + 32);
+    defer gpa.free(four);
+    @memcpy(four[0..order_bytes], three[0..order_bytes]);
+    @memcpy(four[order_bytes..][0..32], three[order_bytes - 32 .. order_bytes]);
+    @memcpy(four[order_bytes + 32 ..], three[order_bytes..]);
+    std.mem.writeInt(u32, four[order_bytes - 3 * 32 - 4 ..][0..4], 4, .little);
+    try testing.expectError(error.Malformed, read(four, .default));
+    // A leaf of four that starts at the order's last place runs past it as well.
+    const tail = try gpa.dupe(u8, bytes);
+    defer gpa.free(tail);
+    std.mem.writeInt(u32, tail[node_at + 64 + 24 ..][0..4], 7, .little);
+    try testing.expectError(error.Malformed, read(tail, .default));
+    // Version 3 with no tree is version 2's bytes, and version 2 with a tree is too long.
+    const v2 = try writeWith(gpa, &grid_positions, &grid_indices, .{ .triangle_attributes = &([_]u32{one_sided_bit | no_surface} ** 8) });
+    defer gpa.free(v2);
+    std.mem.writeInt(u32, v2[4..8], 3, .little);
+    try testing.expectError(error.Malformed, read(v2, .default));
+    const relabelled = try gpa.dupe(u8, bytes);
+    defer gpa.free(relabelled);
+    std.mem.writeInt(u32, relabelled[4..8], 2, .little);
+    try testing.expectError(error.Malformed, read(relabelled, .default));
+    // What the bytes cannot show without memory is left to `physics3d`: a triangle twice is read.
+    const twice = try gpa.dupe(u8, bytes);
+    defer gpa.free(twice);
+    std.mem.writeInt(u32, twice[order_at..][0..4], 0, .little);
+    _ = try read(twice, .default);
+}
+
+test "fcol v3: the writer refuses a tree the reader would" {
+    const gpa = testing.allocator;
+    const Bad = struct { nodes: []const TreeNode, order: []const u32 = &grid_order };
+    var five = grid_nodes;
+    five[1].count = 5;
+    var past = grid_nodes;
+    past[2].link = 5;
+    var left = grid_nodes;
+    left[0].link = 1;
+    var beyond = grid_nodes;
+    beyond[0].link = 3;
+    const too_many = [_]TreeNode{grid_nodes[1]} ** 16;
+    const cases = [_]Bad{
+        .{ .nodes = &.{} },
+        .{ .nodes = &too_many },
+        .{ .nodes = &five },
+        .{ .nodes = &past },
+        .{ .nodes = &left },
+        .{ .nodes = &beyond },
+        .{ .nodes = &grid_nodes, .order = grid_order[0..7] },
+        .{ .nodes = &grid_nodes, .order = &.{ 1, 0, 3, 2, 5, 4, 7, 8 } },
+    };
+    for (cases) |case| try testing.expectError(error.InvalidMesh, writeWith(gpa, &grid_positions, &grid_indices, .{ .tree = .{ .nodes = case.nodes, .order = case.order } }));
+}
+
+fn allocationProofV3(gpa: Allocator) !void {
+    const bytes = try writeWith(gpa, &grid_positions, &grid_indices, .{ .surfaces = &.{grass}, .triangle_attributes = &([_]u32{0} ** 8), .tree = grid_tree });
+    defer gpa.free(bytes);
+    const loader = collisionMeshLoader();
+    const payload = try loader.load(null, gpa, std.mem.zeroes(@import("data").store.Record), bytes);
+    defer loader.unload(null, gpa, payload);
+    const mesh = fromPayload(payload);
+    try testing.expectEqualSlices(u32, &grid_order, mesh.tree().?.order);
+    try testing.expect(mesh.surfaceOf(7).eql(grass));
+}
+
+test "fcol v3: the loader reads version 3 and unwinds every allocation" {
+    try testing.checkAllAllocationFailures(testing.allocator, allocationProofV3, .{});
 }

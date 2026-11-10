@@ -309,6 +309,11 @@ is not finite or is past the coordinate limit, and trailing bytes.
 **`foundry:collision_import` version 2** gains one optional field, `shape`, which is `mesh` or
 `hull`, `mesh` when absent. A version 1 record reads unchanged.
 
+> **2026-11-10, Step 6.** `asset` also checks that a leaf's run lies inside the order and that the
+> order names only triangles the mesh has, each a comparison. `.fhul`'s bounds must be finite and
+> ordered and hold every point, as `.fcol`'s do. `author` refuses `shape hull` by name until Step 7
+> compiles it, so no hull import is compiled as a mesh in between (its Resolution).
+
 **Nothing names a hull from a model.** `foundry:model` version 3's `collision` names a mesh. A
 game that wants a hull body adds it by the hull's ID. A model that names several shapes is a
 compound, and compounds are M51's, with the bodies that need them.
@@ -1114,3 +1119,82 @@ the seam of a riser and its tread.
 
 **The bar.** `zig build test` passed 2,964 of 2,974 tests (ten skips) in 132 of 132 steps. The four
 checks, the four headless samples and `fdt-check` passed. The physics suite takes about 25 s.
+
+## Resolution — Step 6: `.fcol` version 3, `foundry:collision_hull`, `collision_import` version 2 (2026-11-10)
+
+**What it pinned.**
+- **`.fcol` version 3** is written by `collision_mesh.writeWith` whenever `Attributes.tree` is
+  given, and only then; a mesh with no tree is version 1 or 2, byte for byte as before (the
+  version 1 hash `c854ac2cc345318d` is still pinned). The file's node is
+  `collision_mesh.TreeNode`, an extern struct of 32 bytes: `min`, `max`, then `link` and `count`.
+  For a leaf, `link` is the first place in the order and `count` 1 to `max_leaf_triangles` (4);
+  for an inner node `count` is zero and `link` is the right child. This is not
+  `physics3d.mesh.Node`, which keeps `left`, `right`, `first` and `count` apart, so whoever hands
+  a baked tree to `physics3d` converts it: an inner node's `left` is its own index plus one. That
+  conversion is `author`'s at Step 7 and the samples' at Step 9, since nothing below them sees
+  both modules.
+- `View` gains `tree_nodes` and `tree_order`, `CollisionMesh` gains them owned, with `tree()`,
+  which is null for versions 1 and 2. The loader copies them, and every allocation unwinds.
+- **`foundry:collision_hull`** is a new kind in `asset.schemas.kinds`, appended last, which a
+  `.fhul` derives, read by `asset.collision_hull` and loaded by `collisionHullLoader` into an
+  `asset.CollisionHull` of points and bounds. `.fhul` version 1 is a 36-byte header (magic,
+  version, count, bounds) and the points. `author`'s `engine_schema_names` gains its spelling.
+- **`foundry:collision_import` version 2** has `shape`, a string defaulting to `mesh`
+  (`asset.schemas.collision_import_shape_*`). A version 1 record read under version 2 has its
+  default, `mesh`.
+
+**Where the implementation sharpened the design.**
+- **What `asset` checks of a tree.** §7 said the counts, a leaf's count and a right child in
+  range. It also checks, still without memory, that a leaf's run lies inside the order and that
+  every entry of the order names a triangle the mesh has, since both are a comparison each. A
+  right child must come after the left one (`link > i + 1`) and be a node. What needs memory or
+  a walk, a permutation, preorder, depth and containment, stays `physics3d.validateTree`'s, and a
+  test shows a triangle named twice is read by `asset` and left to it. A node count is refused
+  when it is zero or over 2n − 1, before its length is compared with the file's.
+- **The writer refuses what the reader would,** as `InvalidMesh`, and nothing more: an empty
+  tree, too many nodes, an order of the wrong length, and every shape the reader refuses.
+- **An infinite box.** A node box of infinite extent passes both `asset` and `validateTree`,
+  since containment is the whole test of a box. It is slow and not wrong: `candidates` compares
+  boxes, so it is a box that always overlaps, and a NaN box contains nothing and is refused as
+  `leaf_bounds` or `parent_bounds`. Nothing was changed for it.
+- **`.fhul`'s refusals by name.** A count under 4 is `Malformed` and one over 256 is
+  `OverLimit`, as `.fcol` names a zero count and one past its limit; a file longer than 256 points
+  could make is `OverLimit` before its count is read. Beyond §7's list, the bounds must be finite
+  and ordered, and every point inside them, as `.fcol` requires. `write` does not ask whether the
+  points span a volume: that is `physics3d.hull`'s answer, which `author` asks at Step 7.
+  `max_points` is 256 in `asset` and in `physics3d.hull`, two constants that cannot see each
+  other; Step 7's `author`, granted both, checks they agree.
+- **`shape hull` before Step 7.** Without a change, `author` would have compiled a hull import as
+  the mesh it did not ask for. So `author` now reads `shape`, compiles `mesh` as before, refuses a
+  value that is neither by name, and refuses `hull` as "which this compiler cannot compile yet".
+  Step 7 replaces the second refusal with the compile. The proxy test now writes `shape "mesh"`
+  and its bytes did not move.
+- **Docs.** `docs/modding/content-mods.md`'s proxy section gains the hull when it compiles, at
+  Step 7.
+
+**Guards verified by mutation,** fifteen, each failing a test:
+- in `.fcol`: a node count of 2n allowed; a leaf of five allowed; a right child that is the left
+  one, or one past the last node; a leaf's run past the order; an order entry past the triangles;
+  version 2's exact length dropped, so a version 2 file could carry a tree; and the writer's order
+  length loosened;
+- in `.fhul`: a count under 4, and over 256, each allowed; a length longer than the count's; a
+  point past the bounds' maximum; and the writer's count range dropped;
+- in `author`: `shape hull` compiled as a mesh, and an unknown shape accepted.
+
+Two survived the first run, the node count and the count under four, because their tests' files
+were also the wrong length and were refused for that. Each now has a test whose file is the
+length its count makes.
+
+**Tests.** Ten new. In `collision_mesh.zig`: version 3 round trips with and without surfaces, a
+single leaf, and versions 1 and 2 carrying no tree; every read refusal of the tree; the writer's;
+and the loader under every allocation failure. In `collision_hull.zig`: the round trip, from an
+unaligned start and at 4 and 256 points; every read refusal; the writer's; and the loader. In
+`schemas.zig`: `collision_import` version 1 under version 2, with `shape` of each kind and of the
+wrong type; and `.fhul` deriving the hull. Two refusals joined `author`'s proxy test.
+
+**The bar.** `zig build test` passed 2,974 of 2,984 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` (87 of 89,
+two skips) passed, and no pin moved. Because the engine gained an asset kind, `zig build
+distribution-test` (33 of 33) and the court's macOS staging were run too, and passed. Windows
+staging was not run: no package holds a `.fhul` yet, and the first that does is the yard's, at
+Step 9.
