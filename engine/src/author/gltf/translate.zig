@@ -7,6 +7,7 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
+const physics3d = @import("physics3d");
 
 const accessor = @import("accessor.zig");
 const document = @import("document.zig");
@@ -46,7 +47,25 @@ pub const Settings = struct {
     /// A `foundry:collision_import`: only the `foundry:collision_mesh` of `model_id`'s own ID
     /// and its `.fcol`. Nothing drawn is emitted, and materials need nothing a renderer would.
     proxy: bool = false,
+    /// A proxy whose `shape` is `hull`: the `foundry:collision_hull` of `model_id`'s own ID and
+    /// its `.fhul`, the corners of every vertex its triangles use (`collision-scale.md` §9).
+    hull: bool = false,
 };
+
+/// A derived or proxy collision mesh with at least this many triangles carries its tree in its
+/// `.fcol` (version 3); one with fewer is written as it was before, so its bytes do not move
+/// (`collision-scale.md` §9, moved from 4,096 by Step 1's measurement).
+pub const collision_tree_threshold: usize = 1024;
+
+comptime {
+    // Two constants that cannot see each other below `author`, which sees both (ADR-0078).
+    if (asset.collision_hull.max_points != physics3d.hull.max_points or
+        asset.collision_hull.max_points != physics3d.shape.max_hull_points or
+        asset.collision_hull.min_points != physics3d.shape.min_hull_points)
+        @compileError(".fhul's point limits and physics3d's disagree");
+    if (asset.collision_mesh.max_leaf_triangles != physics3d.mesh.leaf_capacity)
+        @compileError(".fcol's leaf size and physics3d's disagree");
+}
 
 pub const ImageInput = struct {
     bytes: []const u8,
@@ -786,6 +805,9 @@ const Context = struct {
         defer indices.deinit(self.gpa);
         var attributes: std.ArrayList(u32) = .empty;
         defer attributes.deinit(self.gpa);
+        // For a hull, which vertices a triangle uses, degenerate or not: every one is a point.
+        var used: std.ArrayList(bool) = .empty;
+        defer used.deinit(self.gpa);
         var dropped: u64 = 0;
 
         // The surface table, in the order the mappings name surfaces, each once; and what a
@@ -838,6 +860,7 @@ const Context = struct {
                     }
                     if (!asset.collision_mesh.positionValid(p)) return self.failNode(@intCast(node_index), "has collision geometry outside the finite ±8192 m envelope", .{});
                     try positions.append(self.gpa, p);
+                    if (self.settings.hull) try used.append(self.gpa, false);
                 }
             }
             const primitives = self.doc.meshes[mesh_index].primitives;
@@ -855,6 +878,10 @@ const Context = struct {
                             .uint32 => std.mem.readInt(u32, mesh.indices[offset..][0..4], .little),
                         };
                     }
+                    if (self.settings.hull) {
+                        for (triangle) |index| used.items[index] = true;
+                        continue;
+                    }
                     if (asset.collision_mesh.degenerate(positions.items[triangle[0]], positions.items[triangle[1]], positions.items[triangle[2]])) {
                         dropped += 1;
                         continue;
@@ -866,16 +893,25 @@ const Context = struct {
                 }
             }
         }
+        if (self.settings.hull) return self.emitHull(out, generated, positions.items, used.items);
         if (dropped != 0) try self.warn(noun, null, "dropped {d} degenerate triangle(s)", .{dropped});
         if (indices.items.len == 0) return self.fail(noun, null, "derives an empty collision mesh", .{});
         // Private generated path. A model's collision is its ID plus the unnumbered segment; a
         // proxy's is its own ID, and its file a `proxy` beside a model's from the same source.
         const numbered = try self.generatedPath(if (self.settings.proxy) "proxy" else "collision", 0, asset.schemas.collision_mesh_extension);
-        // Version 2 only when a triangle has a surface or one side: `writeWith` writes every
-        // plain mesh as version 1, byte for byte, so existing collision keeps its bytes.
+        // At the threshold the tree `physics3d` would build at load is built here, by the same
+        // builder, and carried in the file (ADR-0077).
+        const tree: ?asset.collision_mesh.Tree = if (indices.items.len / 3 >= collision_tree_threshold)
+            try self.bakeTree(noun, positions.items, indices.items)
+        else
+            null;
+        // Version 2 only when a triangle has a surface or one side, and 3 only with a tree:
+        // `writeWith` writes every plain mesh as version 1, byte for byte, so existing
+        // collision keeps its bytes.
         const bytes = asset.collision_mesh.writeWith(self.arena, positions.items, indices.items, .{
             .surfaces = table.items,
             .triangle_attributes = attributes.items,
+            .tree = tree,
         }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return self.fail(noun, null, "cannot encode collision geometry: {s}", .{@errorName(err)}),
@@ -886,6 +922,61 @@ const Context = struct {
         } else {
             try out.print(self.arena, "{s} {s}.collision {{ source ", .{ asset.schemas.collision_mesh_name, self.settings.model_id });
         }
+        try self.writeString(out, numbered);
+        try out.appendSlice(self.arena, " }\n");
+    }
+
+    /// The tree `physics3d.mesh.buildTree` builds for these triangles, in `.fcol`'s layout.
+    /// The file keeps one link a node where `physics3d` keeps two: an inner node's left child is
+    /// always the node after it, so only the right one is written (`collision-scale.md` §7).
+    fn bakeTree(self: *Context, noun: []const u8, positions: []const Vec3, indices: []const u32) Error!asset.collision_mesh.Tree {
+        var built = physics3d.mesh.buildTree(self.gpa, positions, indices) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // Every position was checked against the same envelope above, so this is a
+            // disagreement between the two modules' limits, said as plainly as it can be.
+            error.InvalidMesh => return self.fail(noun, null, "has triangles physics3d refuses, so no collision tree can be built", .{}),
+        };
+        defer built.deinit(self.gpa);
+        const nodes = try self.arena.alloc(asset.collision_mesh.TreeNode, built.nodes.len);
+        for (built.nodes, nodes, 0..) |node, *baked, i| {
+            const leaf = node.count != 0;
+            if (!leaf and node.left != i + 1) return self.fail(noun, null, "has a collision tree whose left child is not the next node", .{});
+            baked.* = .{
+                .min = node.bounds.min,
+                .max = node.bounds.max,
+                .link = if (leaf) node.first else node.right,
+                .count = node.count,
+            };
+        }
+        return .{ .nodes = nodes, .order = try self.arena.dupe(u32, built.order) };
+    }
+
+    /// A `shape hull` import: the corners of every point its triangles use, in the order the
+    /// placements and their vertices give them, written as `.fhul` (`collision-scale.md` §9).
+    fn emitHull(self: *Context, out: *std.ArrayList(u8), generated: *std.ArrayList(GeneratedAsset), positions: []const Vec3, used: []const bool) Error!void {
+        const noun = try std.fmt.allocPrint(self.arena, "collision import '{s}'", .{self.settings.model_id});
+        var points: std.ArrayList(Vec3) = .empty;
+        defer points.deinit(self.gpa);
+        for (positions, used) |p, is_used| if (is_used) try points.append(self.gpa, p);
+        if (points.items.len == 0) return self.fail(noun, null, "derives an empty collision hull", .{});
+        const corners = physics3d.hull.cornersOf(self.gpa, points.items) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Flat => return self.fail(noun, null, "is flat: its points are one point, a line or a plane, so they make no hull (HullFlat)", .{}),
+            error.Tangled => return self.fail(noun, null, "has points no hull could be built over (HullTangled)", .{}),
+        };
+        defer self.gpa.free(corners);
+        if (corners.len > physics3d.hull.max_points)
+            return self.fail(noun, null, "has {d} points on its hull, more than {d}; make a simpler shape (HullTooManyPoints)", .{ corners.len, physics3d.hull.max_points });
+        // What `World.addHull` asks of the points, asked here so a hull that compiles also loads.
+        if (!(physics3d.shape.hullVolume(corners) >= physics3d.shape.min_hull_volume))
+            return self.fail(noun, null, "is flat: its points span less than {e} m³ (HullFlat)", .{physics3d.shape.min_hull_volume});
+        const bytes = asset.collision_hull.write(self.arena, corners) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidHull => return self.fail(noun, null, "cannot encode its hull: {s}", .{@errorName(err)}),
+        };
+        const numbered = try self.generatedPath("hull", 0, asset.schemas.collision_hull_extension);
+        try generated.append(self.arena, .{ .path = numbered, .bytes = bytes });
+        try out.print(self.arena, "{s} {s} {{ source ", .{ asset.schemas.collision_hull_name, self.settings.model_id });
         try self.writeString(out, numbered);
         try out.appendSlice(self.arena, " }\n");
     }

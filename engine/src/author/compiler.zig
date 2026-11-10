@@ -30,6 +30,7 @@ const platform = @import("platform");
 
 const dependency = @import("dependency.zig");
 const gltf = @import("gltf/root.zig");
+const physics3d = @import("physics3d");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -1043,7 +1044,12 @@ fn checkImportReferences(
         const origin = reference.record.origin;
         switch (reference.kind) {
             .surface => try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' maps a material to surface '{s}', which names no record in this package or its dependencies", .{ reference.noun, reference.record.text, reference.spelling }),
-            .collision_mesh => try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' names collision_mesh '{s}', which is no foundry:collision_mesh or foundry:collision_import in this package or its dependencies", .{ reference.noun, reference.record.text, reference.spelling }),
+            // Nothing names a hull from a model (`collision-scale.md` §7): a game adds a hull
+            // body by the hull's own ID.
+            .collision_mesh => if (recordInView(pkg, dependencies, reference.id, asset.schemas.collision_hull.id))
+                try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' names collision_mesh '{s}', which is a foundry:collision_hull; a model's collision is a mesh, and a game adds a hull's body by the hull's ID", .{ reference.noun, reference.record.text, reference.spelling })
+            else
+                try diags.addFmt(gpa, .err, origin.location(), origin.length, origin.line_text, "{s} '{s}' names collision_mesh '{s}', which is no foundry:collision_mesh or foundry:collision_import in this package or its dependencies", .{ reference.noun, reference.record.text, reference.spelling }),
         }
     }
     return ok;
@@ -1261,13 +1267,14 @@ fn importSettings(
     if (proxy) {
         // `shape` arrived in version 2 (`collision-scale.md` §7); a version 1 record is a mesh.
         const shape = if (record.value(schema, schema.fieldIndex(asset.schemas.collision_import_shape_field).?)) |value| value.string else asset.schemas.collision_import_shape_mesh;
-        if (std.mem.eql(u8, shape, asset.schemas.collision_import_shape_hull)) {
-            // Compiling a hull is M38 Step 7's (`collision-scale.md` §9). Until it is, a hull
-            // import is refused rather than compiled as the mesh it did not ask for.
-            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has shape 'hull', which this compiler cannot compile yet", .{ noun, record.text });
+        const hull = std.mem.eql(u8, shape, asset.schemas.collision_import_shape_hull);
+        if (hull and surfaces.len != 0) {
+            // A hull is one convex shape with one surface, its body's, and both sides solid,
+            // so a mapping or a one-sided face would mean nothing (`collision-scale.md` §9).
+            try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has shape 'hull' and maps surfaces; a hull has no surfaces or one-sided faces of its own, so give its body the surface", .{ noun, record.text });
             return error.ContentInvalid;
         }
-        if (!std.mem.eql(u8, shape, asset.schemas.collision_import_shape_mesh)) {
+        if (!hull and !std.mem.eql(u8, shape, asset.schemas.collision_import_shape_mesh)) {
             try diags.addFmt(gpa, .err, record.origin.location(), record.origin.length, record.origin.line_text, "{s} '{s}' has shape '{s}'; expected 'mesh' or 'hull'", .{ noun, record.text, shape });
             return error.ContentInvalid;
         }
@@ -1277,7 +1284,7 @@ fn importSettings(
             for (value.list, names) |entry, *name| name.* = entry.string;
             excluded = names;
         }
-        return .{ .model_id = record.text, .source = source, .front = front, .collision = true, .collision_exclude = excluded, .surfaces = surfaces, .proxy = true };
+        return .{ .model_id = record.text, .source = source, .front = front, .collision = true, .collision_exclude = excluded, .surfaces = surfaces, .proxy = true, .hull = hull };
     }
 
     const mappings_index = schema.fieldIndex("materials").?;
@@ -2929,7 +2936,8 @@ test "every refusal of a surface, a proxy and a model's collision names its reco
         .{ .text = "foundry:collision_import demo:proxy { source \"models/none.gltf\" }", .says = "collision import 'demo:proxy' names 'models/none.gltf', which is not a .gltf" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" front \"+x\" }", .says = "collision import 'demo:proxy' has front '+x'" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"sphere\" }", .says = "collision import 'demo:proxy' has shape 'sphere'; expected 'mesh' or 'hull'" },
-        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"hull\" }", .says = "collision import 'demo:proxy' has shape 'hull', which this compiler cannot compile yet" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"hull\" surfaces [ { material \"Grass\" surface demo:surface.grass } ] }", .says = "collision import 'demo:proxy' has shape 'hull' and maps surfaces" },
+        .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" shape \"hull\" }", .says = "collision import 'demo:proxy' is flat: its points are one point, a line or a plane" },
         .{ .text = "foundry:collision_import demo:proxy { source \"models/two.gltf\" exclude [ \"Ground\" ] }", .says = "collision_import derives an empty collision mesh" },
     };
     for (cases) |case| {
@@ -2943,6 +2951,282 @@ test "every refusal of a surface, a proxy and a model's collision names its reco
         var buf: [4096]u8 = undefined;
         const rendered = try g.rendered(&buf);
         try testing.expect(std.mem.indexOf(u8, rendered, case.says) != null);
+    }
+}
+
+/// One mesh of one primitive with no material, at node "Shape": `positions`, and `indices` into
+/// them as u32s, at `models/<stem>.gltf`.
+fn writeIndexedModel(f: *Fixture, stem: []const u8, positions: []const [3]f32, indices: []const u32) !void {
+    const gpa = testing.allocator;
+    const position_bytes = positions.len * 12;
+    const bin = try gpa.alloc(u8, position_bytes + indices.len * 4);
+    defer gpa.free(bin);
+    for (positions, 0..) |corner, v| for (corner, 0..) |c, lane| {
+        std.mem.writeInt(u32, bin[(v * 3 + lane) * 4 ..][0..4], @bitCast(c), .little);
+    };
+    for (indices, 0..) |index, i| std.mem.writeInt(u32, bin[position_bytes + i * 4 ..][0..4], index, .little);
+    const bin_path = try std.fmt.allocPrint(gpa, "models/{s}.bin", .{stem});
+    defer gpa.free(bin_path);
+    try f.write(bin_path, bin);
+    const text = try std.fmt.allocPrint(gpa,
+        \\{{"asset":{{"version":"2.0"}},
+        \\ "buffers":[{{"uri":"{s}.bin","byteLength":{d}}}],
+        \\ "bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{d}}},{{"buffer":0,"byteOffset":{d},"byteLength":{d}}}],
+        \\ "accessors":[{{"bufferView":0,"componentType":5126,"count":{d},"type":"VEC3"}},{{"bufferView":1,"componentType":5125,"count":{d},"type":"SCALAR"}}],
+        \\ "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],
+        \\ "nodes":[{{"name":"Shape","mesh":0}}],"scenes":[{{"nodes":[0]}}],"scene":0}}
+    , .{ stem, bin.len, position_bytes, position_bytes, indices.len * 4, positions.len, indices.len });
+    defer gpa.free(text);
+    const gltf_path = try std.fmt.allocPrint(gpa, "models/{s}.gltf", .{stem});
+    defer gpa.free(gltf_path);
+    try f.write(gltf_path, text);
+}
+
+/// The first `triangles` triangles of a 32 by 16 grid of one-metre squares, two to a square.
+fn writeGridModel(f: *Fixture, stem: []const u8, triangles: usize) !void {
+    const gpa = testing.allocator;
+    const columns = 32;
+    const rows = 16;
+    var positions: [(columns + 1) * (rows + 1)][3]f32 = undefined;
+    for (0..rows + 1) |z| for (0..columns + 1) |x| {
+        // A gentle rise, so the grid is not one plane and its boxes have height.
+        positions[z * (columns + 1) + x] = .{ @floatFromInt(x), @as(f32, @floatFromInt(x * z)) * 0.01, @floatFromInt(z) };
+    };
+    var indices: std.ArrayList(u32) = .empty;
+    defer indices.deinit(gpa);
+    for (0..rows) |z| for (0..columns) |x| {
+        const a: u32 = @intCast(z * (columns + 1) + x);
+        const b = a + 1;
+        const c = a + columns + 1;
+        const d = c + 1;
+        try indices.appendSlice(gpa, &.{ a, c, b, b, c, d });
+    };
+    try writeIndexedModel(f, stem, &positions, indices.items[0 .. triangles * 3]);
+}
+
+/// An unaligned slice of a file's view, copied out to the testing allocator.
+fn copyOut(comptime T: type, from: []align(1) const T) ![]T {
+    const out = try testing.allocator.alloc(T, from.len);
+    for (out, 0..) |*item, i| item.* = from[i];
+    return out;
+}
+
+/// A tree read from a `.fcol` in `physics3d`'s layout: an inner node's left child is the next.
+fn physicsNodes(gpa: Allocator, view: asset.collision_mesh.View) ![]physics3d.mesh.Node {
+    const nodes = try gpa.alloc(physics3d.mesh.Node, view.tree_nodes.len);
+    for (nodes, 0..) |*node, i| {
+        const baked = view.tree_nodes[i];
+        node.* = .{ .bounds = .{ .min = baked.min, .max = baked.max } };
+        if (baked.leaf()) {
+            node.first = baked.link;
+            node.count = baked.count;
+        } else {
+            node.left = @intCast(i + 1);
+            node.right = baked.link;
+        }
+    }
+    return nodes;
+}
+
+test "a collision mesh at the threshold carries the tree physics3d builds, and one under it keeps its bytes" {
+    const threshold = gltf.translate.collision_tree_threshold;
+    var f = try Fixture.init();
+    defer f.deinit();
+    try writeGridModel(f, "under", threshold - 1);
+    try writeGridModel(f, "at", threshold);
+    try f.write("models.fdt",
+        \\foundry:collision_import demo:under { source "models/under.gltf" }
+        \\foundry:collision_import demo:at { source "models/at.gltf" }
+    );
+    try f.compileIt("demo:content");
+    const first = try testing.allocator.dupe(u8, f.bytes.items);
+    defer testing.allocator.free(first);
+
+    // One under: version 1, byte for byte what `write` makes of its triangles.
+    const under = try f.readGenerated("models/under/proxy0.fcol");
+    defer testing.allocator.free(under);
+    try testing.expectEqual(@as(?u32, 1), asset.collision_mesh.versionOf(under));
+    {
+        const view = try asset.collision_mesh.read(under, .default);
+        try testing.expectEqual(threshold - 1, view.indices.len / 3);
+        const positions = try copyOut(core.math.Vec3, view.positions);
+        defer testing.allocator.free(positions);
+        const indices = try copyOut(u32, view.indices);
+        defer testing.allocator.free(indices);
+        const plain = try asset.collision_mesh.write(testing.allocator, positions, indices);
+        defer testing.allocator.free(plain);
+        try testing.expectEqualSlices(u8, plain, under);
+    }
+
+    // At it: version 3, and the tree is the one `physics3d` builds for the same triangles,
+    // node for node, which its validation passes.
+    const at = try f.readGenerated("models/at/proxy0.fcol");
+    defer testing.allocator.free(at);
+    try testing.expectEqual(@as(?u32, 3), asset.collision_mesh.versionOf(at));
+    {
+        const view = try asset.collision_mesh.read(at, .default);
+        try testing.expectEqual(threshold, view.indices.len / 3);
+        const positions = try copyOut(core.math.Vec3, view.positions);
+        defer testing.allocator.free(positions);
+        const indices = try copyOut(u32, view.indices);
+        defer testing.allocator.free(indices);
+        const order = try testing.allocator.alloc(u32, view.tree_order.len);
+        defer testing.allocator.free(order);
+        for (order, 0..) |*o, i| o.* = view.tree_order[i];
+        const nodes = try physicsNodes(testing.allocator, view);
+        defer testing.allocator.free(nodes);
+        const tree: physics3d.mesh.Tree = .{ .nodes = nodes, .order = order };
+        const validation = try physics3d.mesh.validateTree(testing.allocator, positions, indices, tree);
+        try testing.expect(validation.valid);
+        try testing.expect(tree.height() > 1);
+        var built = try physics3d.mesh.buildTree(testing.allocator, positions, indices);
+        defer built.deinit(testing.allocator);
+        try testing.expectEqualSlices(u32, built.order, order);
+        try testing.expectEqual(built.nodes.len, nodes.len);
+        for (built.nodes, nodes) |expected, actual| {
+            // What each kind of node means: a leaf its run, an inner node its two children.
+            try testing.expectEqual(expected.count, actual.count);
+            if (expected.count != 0) {
+                try testing.expectEqual(expected.first, actual.first);
+            } else {
+                try testing.expectEqual(expected.left, actual.left);
+                try testing.expectEqual(expected.right, actual.right);
+            }
+            try testing.expectEqual(expected.bounds.min, actual.bounds.min);
+            try testing.expectEqual(expected.bounds.max, actual.bounds.max);
+        }
+        // And a world takes it as it is, building nothing.
+        var world: physics3d.World = .empty;
+        defer world.deinit(testing.allocator);
+        const handle = try world.addMeshWith(testing.allocator, positions, indices, .{ .tree = tree });
+        _ = handle;
+    }
+
+    // Output depends on the source bytes alone (ADR-0055).
+    try f.compileIt("demo:content");
+    try testing.expectEqualSlices(u8, first, f.bytes.items);
+    const again = try f.readGenerated("models/at/proxy0.fcol");
+    defer testing.allocator.free(again);
+    try testing.expectEqualSlices(u8, at, again);
+}
+
+/// A cube's eight corners from −1 to 1, given after points inside it, on a face and along an
+/// edge, and one point no triangle uses, far outside.
+const boulder_points = [_][3]f32{
+    .{ 0, 0, 0 },       .{ 0.5, 0.2, -0.3 }, .{ 1, 0, 0 },   .{ 1, 1, 0 },
+    .{ -1, -1, -1 },    .{ 1, -1, -1 },      .{ -1, 1, -1 }, .{ 1, 1, -1 },
+    .{ -1, -1, 1 },     .{ 1, -1, 1 },       .{ -1, 1, 1 },  .{ 1, 1, 1 },
+    .{ 0.1, 0.1, 0.1 }, .{ 50, 50, 50 },
+};
+const boulder_indices = [_]u32{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 4, 11 };
+
+test "a hull import compiles into the corners of its points, the same bytes twice, and loads as a hull" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try writeIndexedModel(f, "boulder", &boulder_points, &boulder_indices);
+    try f.write("models.fdt",
+        \\foundry:collision_import demo:boulder { source "models/boulder.gltf" shape "hull" }
+    );
+    try f.compileIt("demo:content");
+    const first = try testing.allocator.dupe(u8, f.bytes.items);
+    defer testing.allocator.free(first);
+    const bytes = try f.readGenerated("models/boulder/hull0.fhul");
+    defer testing.allocator.free(bytes);
+    {
+        const view = try asset.collision_hull.read(bytes);
+        try testing.expectEqual(@as(usize, 8), view.points.len);
+        for (0..8) |i| {
+            const p = boulder_points[4 + i];
+            try testing.expectEqual(core.math.Vec3.init(p[0], p[1], p[2]), view.points[i]);
+        }
+        const points = try testing.allocator.alloc(core.math.Vec3, view.points.len);
+        defer testing.allocator.free(points);
+        for (points, 0..) |*p, i| p.* = view.points[i];
+        const faces = try physics3d.hull.faces(testing.allocator, points);
+        defer testing.allocator.free(faces);
+        try testing.expectEqual(@as(usize, 6), faces.len);
+        var world: physics3d.World = .empty;
+        defer world.deinit(testing.allocator);
+        _ = try world.addHull(testing.allocator, points);
+    }
+    {
+        var package = try f.open();
+        defer package.deinit();
+        try testing.expect(recordNamed(&package, "demo:boulder").?.schema_id.eql(asset.schemas.collision_hull.id));
+        for (0..package.record_count) |i| {
+            const schema = package.record(@intCast(i)).?.schema_id;
+            try testing.expect(!schema.eql(asset.schemas.collision_import.id));
+            try testing.expect(!schema.eql(asset.schemas.collision_mesh.id));
+        }
+    }
+    try f.compileIt("demo:content");
+    try testing.expectEqualSlices(u8, first, f.bytes.items);
+    const again = try f.readGenerated("models/boulder/hull0.fhul");
+    defer testing.allocator.free(again);
+    try testing.expectEqualSlices(u8, bytes, again);
+
+    // Loaded through the registry, as a game would.
+    var store = data.Store.init(testing.allocator, .default);
+    defer store.deinit(testing.allocator);
+    const package_handle = try store.add(testing.allocator, "demo:content", f.bytes.items, &f.registry, &f.diags);
+    var assets = asset.Registry.init(testing.allocator, f.os, &store, .{});
+    defer assets.deinit(testing.allocator);
+    try assets.registerLoader(testing.allocator, asset.collisionHullLoader());
+    try assets.mount(testing.allocator, package_handle, f.gen);
+    const handle = try assets.acquire(testing.allocator, core.ContentId.fromString("demo:boulder"));
+    try testing.expectEqual(@as(usize, 8), asset.collision_hull.fromPayload(assets.payloadOf(handle).?).points.len);
+    assets.release(handle);
+}
+
+test "a hull import with too many corners, too little volume, or named as a model's collision, is refused by name" {
+    // Three hundred points on a sphere, every one a corner.
+    var sphere: [300][3]f32 = undefined;
+    for (&sphere, 0..) |*p, i| {
+        const t = (@as(f32, @floatFromInt(i)) + 0.5) / 300;
+        const y = 1 - 2 * t;
+        const radius = @sqrt(1 - y * y);
+        const angle = @as(f32, @floatFromInt(i)) * 2.399963;
+        p.* = .{ radius * @cos(angle), y, radius * @sin(angle) };
+    }
+    var indices: [300]u32 = undefined;
+    for (&indices, 0..) |*index, i| index.* = @intCast(i);
+    {
+        var f = try Fixture.init();
+        defer f.deinit();
+        try writeIndexedModel(f, "ball", &sphere, &indices);
+        try f.write("models.fdt", "foundry:collision_import demo:ball { source \"models/ball.gltf\" shape \"hull\" }");
+        try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+        var buf: [4096]u8 = undefined;
+        const rendered = try f.rendered(&buf);
+        try testing.expect(std.mem.indexOf(u8, rendered, "collision import 'demo:ball' has 300 points on its hull, more than 256; make a simpler shape") != null);
+    }
+    {
+        // A millimetre's tetrahedron: not flat to the builder, which measures by the hull's
+        // own size, but less volume than `World.addHull` takes, so it would compile and never
+        // load.
+        const pebble = [_][3]f32{ .{ 0, 0, 0 }, .{ 1e-3, 0, 0 }, .{ 0, 1e-3, 0 }, .{ 0, 0, 1e-3 } };
+        var f = try Fixture.init();
+        defer f.deinit();
+        try writeIndexedModel(f, "pebble", &pebble, &.{ 0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3 });
+        try f.write("models.fdt", "foundry:collision_import demo:pebble { source \"models/pebble.gltf\" shape \"hull\" }");
+        try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+        var buf: [4096]u8 = undefined;
+        const rendered = try f.rendered(&buf);
+        try testing.expect(std.mem.indexOf(u8, rendered, "collision import 'demo:pebble' is flat: its points span less than") != null);
+    }
+    {
+        var f = try Fixture.init();
+        defer f.deinit();
+        try writeIndexedModel(f, "boulder", &boulder_points, &boulder_indices);
+        try writeTwoMaterialModel(f);
+        try f.write("models.fdt", surface_records ++
+            \\foundry:collision_import demo:boulder { source "models/boulder.gltf" shape "hull" }
+            \\foundry:model_import demo:hero { source "models/two.gltf" collision_mesh demo:boulder
+        ++ " " ++ shared_materials ++ " }");
+        try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+        var buf: [4096]u8 = undefined;
+        const rendered = try f.rendered(&buf);
+        try testing.expect(std.mem.indexOf(u8, rendered, "model import 'demo:hero' names collision_mesh 'demo:boulder', which is a foundry:collision_hull") != null);
     }
 }
 

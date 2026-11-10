@@ -404,6 +404,14 @@ import's own transform, and keeps the hull's vertices (`hull.reduce`). It refuse
 - `HullFlat`, when the points span less than `min_hull_volume`;
 - `surfaces` or `one_sided` on a hull import, which have no meaning for one.
 
+> **2026-11-11, Step 7.** The vertices are those a triangle uses, degenerate triangles included,
+> and not every vertex the file holds. `HullFlat` is refused twice: when `hull` finds the points
+> flat for their size, and when the corners span less than `min_hull_volume`, so a hull that
+> compiles is one `World.addHull` takes. `hull.cornersOf` is `reduce` without the limit, so the
+> diagnostic can count. A model naming a hull as its collision is refused as a hull, by name. The
+> twice-compiled test uses a grid and a cube of `author`'s own; the hillside and the boulder are
+> Step 9's (its Resolution).
+
 **Output depends on the source bytes alone,** as ADR-0055 requires, and a test compiles the
 hillside and the boulder twice and compares the bytes. Step 11 compares them across machines.
 
@@ -1198,3 +1206,75 @@ two skips) passed, and no pin moved. Because the engine gained an asset kind, `z
 distribution-test` (33 of 33) and the court's macOS staging were run too, and passed. Windows
 staging was not run: no package holds a `.fhul` yet, and the first that does is the yard's, at
 Step 9.
+
+## Resolution — Step 7: `author` bakes the tree and compiles a hull (2026-11-11)
+
+**What it pinned.**
+- **`author` is granted `physics3d`** in `build.zig`, the downward grant ADR-0077 names, with its
+  reason beside it. Nothing else changed in the graph.
+- **The bake.** A derived or proxy collision mesh of `gltf.translate.collision_tree_threshold`
+  (1,024) triangles or more is written as `.fcol` version 3 with the tree
+  `physics3d.mesh.buildTree` builds for the same positions and indices. One under it is written as
+  before, version 1 or 2, byte for byte. The conversion to the file's node is `bakeTree`: a leaf's
+  `link` is its `first`, an inner node's its `right`, and an inner node whose `left` is not the
+  next node is refused rather than written wrong. Every collision mesh that exists is under 1,024
+  triangles, so no file in the repository moved.
+- **The hull.** `foundry:collision_import` with `shape "hull"` compiles into the
+  `foundry:collision_hull` of its own ID and a `hull0.fhul` beside the source's other generated
+  files. Its points are every vertex a triangle of the placed, unexcluded nodes uses, after the
+  import's `front`, in placement and vertex order; its corners are those points that are corners
+  (`physics3d.hull.cornersOf`), in that order. Refusals, each naming the record:
+  `HullTooManyPoints` with the count ("has 300 points on its hull, more than 256; make a simpler
+  shape"); `HullFlat` when the builder finds the points flat, and again when the corners span less
+  than `shape.min_hull_volume`; `HullTangled`, which no input is known to reach; an empty hull; and
+  `surfaces` on a hull import, refused in `importSettings` before any geometry is read. `one_sided`
+  lives inside a surface mapping, so refusing `surfaces` refuses it too. An empty `surfaces []` is
+  accepted, as `exclude []` is.
+- **Agreement between modules.** A comptime check in `translate.zig` fails the build when `.fhul`'s
+  point limits differ from `physics3d.hull.max_points` and `shape`'s, or `.fcol`'s leaf size from
+  `physics3d.mesh.leaf_capacity`: the two constants Step 6 left unable to see each other.
+
+**Where the implementation sharpened the design.**
+- **Which vertices.** §9 said "every vertex of the file's triangles". A vertex no triangle uses is
+  left out, and a degenerate triangle's are kept: a degenerate triangle is dropped from a mesh
+  because it has no face, but its corners are still points of the shape. The test's cube carries a
+  far point no triangle uses, and it is not in the hull.
+- **`HullFlat` twice.** `hull` measures flatness against the hull's own size, so a millimetre's
+  tetrahedron is a hull to it, while `World.addHull` refuses anything under 1 mm³. Without the
+  second check such a hull would compile and never load. A test compiles that tetrahedron.
+- **`hull.cornersOf`.** `reduce` returned `TooManyPoints` with no count, and §9's diagnostic says
+  how many there were. `physics3d.hull` gains `cornersOf`, `reduce` without the limit, and `reduce`
+  is now that and the limit; its tests did not change.
+- **A model naming a hull.** A model's `collision_mesh` naming a hull import was refused as "no
+  foundry:collision_mesh or foundry:collision_import", which a hull import is. It now says the
+  record is a `foundry:collision_hull`, and that a game adds a hull body by its ID (§7: nothing
+  names a hull from a model).
+- **What the bake test compares.** `buildTree`'s nodes keep values in the fields their kind does
+  not use, such as an inner node's `first`. The file keeps only what each kind means, so the test
+  compares a leaf's run and an inner node's two children, and the boxes exactly.
+- **The fixtures.** §9's twice-compiled test names the hillside and the boulder, which are Step 9's
+  yard. Step 7's tests use a 32 by 16 grid with a gentle rise, at 1,023 and 1,024 triangles, and a
+  cube with points inside, on a face, along an edge and one unused; Step 9 compiles the yard's own.
+- **The modding guide** gains baked trees and hull imports now, beside proxies, since this is the
+  step that makes them compile; Step 12 still checks it.
+
+**Guards verified by mutation,** twelve, each failing a test: the threshold as `>` and baking
+never; an inner node's link written as its left child; a vertex no triangle uses taken; the points
+written unreduced; the corner limit dropped; the volume check dropped; surfaces on a hull allowed;
+a hull compiled as a mesh; a hull reference given the generic refusal; a hull's triangles sent down
+the mesh's path; and `.fhul`'s `max_points` made 255, which the comptime check refuses to build.
+
+**Tests.** Three new in `compiler.zig`: a mesh at and one under the threshold, the tree
+`validateTree` passes and equal node for node to `buildTree`'s, taken by `World.addMeshWith`, and
+the same bytes twice; a hull import's corners, six faces, `World.addHull`, its record and bytes
+twice, and its load through `collisionHullLoader`; and the refusals of too many corners, too little
+volume and a model naming a hull. Two cases joined the proxy refusal test, replacing Step 6's "cannot
+compile yet".
+
+**The bar.** `zig build test` passed 2,977 of 2,987 tests (ten skips) in 132 of 132 steps. The
+four checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` (87 of
+89, two skips) passed, and no pin moved. The first run found one more place that compiles the
+translator, the skin proof in `build.zig`, which names its imports by hand; it gains `physics3d`,
+which `author` now has, so nothing is widened. Because `author` compiles a new kind, `zig build
+distribution-test` (33 of 33) and the court's macOS staging ran too, and passed. Windows staging
+waits for the yard's package, the first to hold a `.fhul` or a baked tree, at Step 9.

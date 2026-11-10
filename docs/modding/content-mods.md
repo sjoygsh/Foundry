@@ -644,9 +644,29 @@ foundry:model_import sandbox3d:models.rock {
   - a surface that is no record, dependencies included;
   - surfaces with no collision;
   - collision and a proxy together;
-  - a `collision_mesh` that is not a collision import.
+  - a `collision_mesh` that is not a collision import, or is a hull.
 - **Plain collision keeps its bytes.** Collision with no surface and no one-sided face is still
   version 1, so adding a mapping is the only thing that changes a mesh.
+- **A large mesh carries its tree.** Collision of 1,024 triangles or more, derived or a proxy, is
+  written with the tree the engine searches it by, so it loads without building one. You write
+  nothing for it. The engine checks a tree when it loads one, and refuses a mesh with a wrong one.
+- **A hull** is one convex shape, which collides faster than a mesh of the same triangles. A
+  `foundry:collision_import` with `shape "hull"` compiles into a `foundry:collision_hull` of its
+  own ID: the hull around every vertex its triangles use, after `exclude` and `front`, keeping only
+  the corners. A hull has no surfaces and no one-sided faces, so its body's surface is the one a
+  hit reports. A model never names a hull as its collision; a game adds a hull body by the hull's
+  ID.
+
+  ```
+  foundry:collision_import mymod:rocks.boulder {
+      source "models/boulder.gltf"
+      shape "hull"
+  }
+  ```
+
+  `fpack` refuses, by the record, a hull with `surfaces`, one whose points lie on a plane, a line
+  or a point, or span less than a cubic millimetre, and one with more than 256
+  corners: make a simpler shape, and the message says how many there were.
 
 **The order a game runs a world in,** once a tick, is what makes platforms, doors and footsteps
 agree. Each of the three steps is the game's:

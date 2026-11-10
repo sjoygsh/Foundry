@@ -1,7 +1,13 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-10
-**Current handoff: M38 Step 6 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 7, `author`: nothing bakes a tree into an `.fcol` yet, a `shape hull` import is refused rather than compiled, and `author` has no `physics3d` grant. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Last updated:** 2026-11-11
+**Current handoff: M38 Step 7 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 8, `debug`: there is no physics panel yet, `debug` has no `physics3d` grant, and no package yet holds a baked tree or a `.fhul`. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 7 is done (2026-11-11): `author` bakes the tree and compiles a hull.**
+- **`author` is granted `physics3d`.** A derived or proxy collision mesh of 1,024 triangles or more (`gltf.translate.collision_tree_threshold`) is written as `.fcol` version 3 with the tree `physics3d.mesh.buildTree` builds, converted to the file's node. One under it keeps its version 1 or 2 bytes, and every existing mesh is under it, so no file moved.
+- **`shape "hull"`** compiles a `foundry:collision_import` into the `foundry:collision_hull` of its ID and a `hull0.fhul`. The hull is the corners of every vertex its triangles use, found by the new `physics3d.hull.cornersOf`. It is refused, by record, with more than 256 corners (with the count), when flat or under 1 mm³ (what `World.addHull` would refuse), and with `surfaces`. A model naming a hull as its collision is refused as a hull.
+- A comptime check fails the build if `.fhul`'s point limits or `.fcol`'s leaf size disagree with `physics3d`'s. `docs/modding/content-mods.md` gains baked trees and hull imports.
+- Twelve guards verified by mutation. Bar 2,977/2,987 (ten skips), 132/132 steps, three new tests; every check, sample, `fdt-check`, the tour and `court-test` passed, and no pin moved. `distribution-test` and the court's macOS staging passed too.
 
 **M38 Step 6 is done (2026-11-10): the records.**
 - **`.fcol` version 3** appends a tree to version 2's layout: a node count, 32-byte `asset.collision_mesh.TreeNode`s (`min`, `max`, `link`, `count`) and the order. It is written only when `writeWith` is given a tree; every other mesh keeps its version 1 or 2 bytes. `CollisionMesh.tree()` is null for older versions. `asset` checks what it can without memory, and `physics3d.validateTree` the rest. The file's node is not `physics3d.mesh.Node`, so `author` (Step 7) and the samples (Step 9) convert it.

@@ -69,6 +69,16 @@ pub fn faces(gpa: Allocator, points: []const Vec3) error{OutOfMemory}![]Plane {
 /// The points that are corners of the hull, in the order they were given, owned by the caller.
 /// A point inside the hull, on a face or along an edge is not one, and neither is a repeat.
 pub fn reduce(gpa: Allocator, points: []const Vec3) ReduceError![]Vec3 {
+    const found = try cornersOf(gpa, points);
+    if (found.len > max_points) {
+        gpa.free(found);
+        return error.TooManyPoints;
+    }
+    return found;
+}
+
+/// `reduce` without the limit, for a caller that says how many corners there were.
+pub fn cornersOf(gpa: Allocator, points: []const Vec3) error{ OutOfMemory, Flat, Tangled }![]Vec3 {
     var builder = try Builder.init(gpa, points);
     defer builder.deinit();
     // A corner is where three faces or more meet. A point two faces share is along an edge.
@@ -88,7 +98,6 @@ pub fn reduce(gpa: Allocator, points: []const Vec3) ReduceError![]Vec3 {
     }
     var count: usize = 0;
     for (met) |m| count += @intFromBool(m[2] != none);
-    if (count > max_points) return error.TooManyPoints;
     const out = try gpa.alloc(Vec3, count);
     var at: usize = 0;
     for (met, points) |m, p| if (m[2] != none) {

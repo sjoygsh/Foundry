@@ -151,7 +151,10 @@ const layering = [_]Module{
     // unit-tests with no device, no window and no frame. `asset`, `mod` and `scene` are
     // here because the schemas a package's records are checked against are declared by
     // them, and `platform` because `data` cannot open a file and the content is in files.
-    .{ .name = "author", .deps = &.{ "core", "data", "platform", "asset", "mod", "scene" } },
+    // `physics3d` joined at M38 Step 7 (ADR-0077): a mesh's tree is baked into its `.fcol`
+    // by the builder that would otherwise build it at load, and a hull's corners found by the
+    // routine that finds its faces, so there is one of each and the two cannot drift.
+    .{ .name = "author", .deps = &.{ "core", "data", "platform", "asset", "mod", "scene", "physics3d" } },
 
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
@@ -1597,7 +1600,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "asset", "anim" }) |name| animation_import_mod.addImport(name, modules.get(name).?);
+    // `physics3d` since M38 Step 7, because the translator this proof compiles bakes trees.
+    for ([_][]const u8{ "core", "data", "asset", "anim", "physics3d" }) |name| animation_import_mod.addImport(name, modules.get(name).?);
     const animation_import_tests = b.addTest(.{ .root_module = animation_import_mod });
     check_step.dependOn(&animation_import_tests.step);
     const animation_import_run = b.addRunArtifact(animation_import_tests);
