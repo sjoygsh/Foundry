@@ -844,10 +844,10 @@ test "court: the warden's animation moves no body: every script keeps its digest
     // Taken from the code before M35 Step 9 put the warden on a machine: every tick's world, and every
     // event but `warden_step`, which comes from whichever clip leads.
     for ([_]struct { script: *const play.Script, ticks: usize, digest: u64 }{
-        .{ .script = &play.win, .ticks = 2441, .digest = 0x2495783980aedff1 },
-        .{ .script = &play.caught, .ticks = 92, .digest = 0x757a204cc05d1b02 },
-        .{ .script = &play.fell, .ticks = 185, .digest = 0x6b4fdba4db5b669e },
-        .{ .script = &play.soundtrack, .ticks = 42023, .digest = 0x806953eeb8f10db8 },
+        .{ .script = &play.win, .ticks = 2441, .digest = 0x4cea12a2d26686ba },
+        .{ .script = &play.caught, .ticks = 92, .digest = 0x448a83a95a46f1af },
+        .{ .script = &play.fell, .ticks = 185, .digest = 0x489ec244f5946487 },
+        .{ .script = &play.soundtrack, .ticks = 42023, .digest = 0x38ee55e6ad5b65da },
     }) |case| {
         var env = try TestEnv.init(gpa);
         defer env.deinit(gpa);
@@ -881,7 +881,7 @@ test "court: footsteps carry the surface underfoot, paving or stone, and play th
     try testing.expect(sounds_mod.surfaceSound(&env.store, .fromString("court:sounds.step"), .step) == null);
     try testing.expect(sounds_mod.surfaceSound(null, stone, .step) == null);
 
-    const Heard = struct { steps: u32 = 0, lands: u32 = 0, other: u32 = 0, warden: u32 = 0 };
+    const Heard = struct { steps: u32 = 0, lands: u32 = 0, other: u32 = 0, warden: u32 = 0, warden_links: u32 = 0 };
     const listen = struct {
         fn run(g: *game_mod.Game, sounds: *sounds_mod.Sounds, ticks: usize, intent: walk_mod.Intent, want: core.ContentId) !Heard {
             var heard: Heard = .{};
@@ -893,7 +893,13 @@ test "court: footsteps carry the surface underfoot, paving or stone, and play th
                         if (!event.surface.eql(want)) heard.other += 1;
                         if (event.kind == .step) heard.steps += 1 else heard.lands += 1;
                     },
-                    .warden_step, .warden_land => heard.warden += 1,
+                    // A warden that comes down off a jump link was in the air over it, with no
+                    // ground to name: that landing plays the sound set's own (`warden.zig`).
+                    .warden_step, .warden_land => if (event.kind == .warden_land and event.surface.isNone()) {
+                        heard.warden_links += 1;
+                    } else {
+                        heard.warden += 1;
+                    },
                     else => {},
                 };
             }
@@ -912,7 +918,10 @@ test "court: footsteps carry the surface underfoot, paving or stone, and play th
     const floor = try listen(game, &sounds, 90, .{ .direction = .init(0, 0, -1) }, paving);
     try testing.expect(floor.steps >= 1 and floor.other == 0);
     try testing.expectEqual(wall.steps + wall.lands + wall.warden + floor.steps + floor.lands + floor.warden, sounds.surfaced);
-    try testing.expectEqual(@as(u32, 0), sounds.unsurfaced);
+    // Whether the warden takes the link over the low wall while it chases depends on which side
+    // of z = 1 the player's feet round to, since the test walks them along a seam of the
+    // navigation mesh. Either way, nothing but such a landing went without a surface.
+    try testing.expectEqual(wall.warden_links + floor.warden_links, sounds.unsurfaced);
     // The warden's footfalls take the surface under its controller.
     const w = &game.warden.?;
     try testing.expect(w.surface.eql(paving));

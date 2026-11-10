@@ -359,6 +359,15 @@ a cast, so they hold.
    finds where and says why before any pin is changed.
 4. **Then re-pin,** each new value beside its old one in the Resolution.
 
+> **2026-11-10, Step 5.** Three things here turned out otherwise (its Resolution):
+> - The routines work in f64 between f32 arguments and answers. In f32 a point's place on a thin
+>   triangle lost most of its digits.
+> - A ray is one step only where one step can be sure. A ray that starts within the cast's
+>   tolerance of the triangle, lies in its plane, or passes an edge or corner within that
+>   tolerance goes to the general cast, as before.
+> - Fewer pins moved than this section lists. The walker's, the pacer's three and the strafer's
+>   held. The player's, the corner's and the court's four moved.
+
 **The other choice, and why not.** The routines could be used only to skip triangles a cast
 cannot reach, and leave GJK to answer. No pin would move. But the cost is in the pairs that do
 answer: the triangles under a character's feet, every tick. Skipping the far ones is what the
@@ -955,3 +964,153 @@ dying with it.
 
 **The bar.** `zig build test` passed 2,953 of 2,963 tests (ten skips) in 132 of 132 steps. The four
 checks, the four headless samples and `fdt-check` passed.
+
+## Resolution — Step 5: closed-form pairs (2026-11-10)
+
+**What the step added.**
+- `physics3d/pairs.zig`: `pointTriangle`, by the triangle's seven regions; `segmentTriangle`,
+  the least of each end against the triangle and the segment against each edge, and zero where
+  the segment passes through the face; and `rayTriangle`, three edge tests and the plane.
+- `physics3d/wide.zig`: `D3`, three f64s, which `pairs.zig` and `hull.zig` now share.
+- `narrow.separation` measures a point core or a segment core against a triangle by those
+  routines while the cores are apart, and `narrow.cast` answers a ray against a triangle in one
+  step. `narrow.separationGeneral` and `narrow.castGeneral` are GJK for any pair, as before,
+  and the tests' reference. `narrow.closedPair` says which route a pair takes.
+- `Report.pairs_closed` is filled. `World`'s query logic is otherwise as it was.
+
+**What did not change.** A cast is still conservative advancement to the same skin, tolerance
+and 32 advances. When cores are within GJK's `intersect_distance` they meet, and the pair goes
+to GJK and EPA on both routes, so depth is EPA's. Boxes, hulls and pairs without a triangle
+never leave GJK.
+
+**Where the code sharpened the design.**
+- **The routines work in f64.** Their arguments and answers are f32. In f32 the comparison
+  with GJK found witness points wrong by up to millimetres on a thin triangle far from the
+  query, since a point's place on a triangle is a difference of products. In f64 the distances
+  agree with GJK within 1e-6 m over 200,000 configurations.
+- **A ray is one step only where one step can be sure.** The edge tests are exact negatives
+  across a shared edge, so no ray passes between two triangles along a seam. At a corner
+  several edges meet and each test's sign is rounding, and a first version let a ray aimed
+  exactly at a corner through. Now a ray that passes an edge by less than the cast's tolerance,
+  lies in the triangle's plane, or starts within the tolerance of it, is not called by one
+  step: it goes to the general cast, which hits what a ray comes within 1e-5 m of, as it always
+  did. 12,000 rays at the corners and seams of a closed ball of triangles, near and 1.5 km out,
+  each hit it.
+- **A ray's hit point is on the triangle.** It is the triangle's corners weighed by the edge
+  tests, so a hit on a level floor is at the floor's height exactly, as GJK's witness was. The
+  court's foot placement tests for that.
+- **The contact normal over a face is the face's own,** the same bits as the hit's surface
+  normal. Elsewhere it is the unit way between the two nearest points, found in f64.
+
+**The general cast loses real ray hits, and the closed form does not.** This was found, not
+looked for. A ray has no radius, so near a face GJK's normal comes from two points a rounding
+apart. An advance that lands a few hundredths of a millimetre past the face then reads as
+moving away, and the cast reports no hit. Over 100,000 random rays and triangles:
+
+| What | Rays |
+| --- | --- |
+| Hits both casts report, in all three frames | 43,515 |
+| Real crossings the general cast missed, within 10 m of the origin | 73 |
+| Real crossings the general cast missed, 1.5 km from the origin | 14,257 |
+| Hits the general cast alone reports, a rim grazed within its tolerance | 2 |
+
+Each missed crossing was confirmed by measuring the ray as a segment against the triangle, a
+different route from the ray's own. A third of the rays are in each frame. So before this step
+a raycast near the origin could pass through a triangle about once in five hundred hits, and
+1.5 km out it missed most of them. The samples' worlds are within tens of metres.
+
+**Measured** on the Mac, ReleaseSafe, unpaced, with Step 1's harness:
+
+| What | GJK alone (Step 2) | Closed forms |
+| --- | --- | --- |
+| A move with 12 bodies, median | 0.0118 ms | **0.0068 ms** |
+| The same, p95 | 0.0201 ms | 0.0111 ms |
+| A move with 2,114 bodies, median | 0.0300 ms | **0.0173 ms** |
+| The same, p95 | 0.0420 ms | 0.0232 ms |
+| Pairs sent to GJK in a move, 12 bodies | 74.9 | 0.3 |
+| The same, 2,114 bodies | 171.4 | 7.8 |
+
+The walks end within a centimetre of where they did. The paced budgets are read at Steps 9
+to 11.
+
+**The three tests of §8.**
+1. *Pair by pair.* 100,000 points and 100,000 segments against triangles, in the three frames
+   `collision3d.md`'s mesh tests use. Every distance agrees with GJK within 2e-6 m, plus what
+   f32 holds at the frame's distance. The worst was 9.5e-7 m. Witness points agree within
+   1e-4 m in 99,987 of 100,000 for a point and 99,253 of 99,265 for a segment. The rest are
+   GJK's own: its tolerance is on the distance, which leaves a far witness loose. 735 segments
+   passed through the face, where both routes are GJK's and the answers are equal.
+2. *Never through.* 6,619 sphere and capsule casts that hit. At each stopping place GJK
+   measures the shape at least the skin less the tolerance from the triangle. The closed-form
+   cast and the general one stop within 0.16 mm of each other along the way.
+3. *Tour by tour.* Below.
+
+**Every run was compared with its GJK run, tick by tick.** A line added to the controller for
+the comparison, and removed after it, printed the feet after every character move. It was
+captured before the change and after, from the sandbox's tour and from `court-test`,
+`sandbox3d-test`, the props and native tests, and the ABI and integration tests: 150,653 moves.
+
+| Run | Moves | Worst difference |
+| --- | --- | --- |
+| The sandbox's tour, 2,400 frames | 10,886 | 0.0019 mm |
+| `sandbox3d-test` | 27,726 | 0.12 mm, the walk over the generated patch. 0.002 mm elsewhere |
+| The props and native tests | 3,330 | 0.0019 mm |
+| The ABI and integration tests | 1,924 | none |
+| `court-test`, with the four scripts | 106,787 | 0.0015 mm, but for one stretch |
+
+The band was 1 mm. The court's four scripts end on the ticks they did: 2,441, 92, 185 and
+42,023.
+
+**The one stretch outside the band, and why.** In `court-test`'s footsteps test the warden
+takes a different path for about 200 moves. That test walks the player along z = 1 on the low
+wall, which is the seam between two polygons of the navigation mesh. The player's z was
+1.0000001 and is now 0.99999994, one f32 step to either side. The warden's chase target is
+where it last saw the player, so it falls on the other polygon, and the path to it crosses the
+link over the wall. The warden's landing off a link has no surface, by design, so the test's
+count of sounds with a surface was one short. The test now counts such a landing apart. No
+scripted ending and no tour passes through this.
+
+**The pins, old and new.**
+
+| Pin | Before | After |
+| --- | --- | --- |
+| The player's tour | `cb99ccfcf2b6d6c3` | `b85b52c97d259db4` |
+| The corner's replay | `832fe43a3a82db13` | `e2992f93e5323345` |
+| The court's win | `2495783980aedff1` | `4cea12a2d26686ba` |
+| The court's caught | `757a204cc05d1b02` | `448a83a95a46f1af` |
+| The court's fell | `6b4fdba4db5b669e` | `489ec244f5946487` |
+| The court's soundtrack | `806953eeb8f10db8` | `38ee55e6ad5b65da` |
+| The generated patch's walk, end y | 0.074692 | 0.074569 |
+
+**Pins §8 expected to move that held:** the walker's `655e865f98779129`, the pacer's
+`e46c09dc62b1eeac`, `222e0a9b12fd152c` and `47f67027ff3a12b0`, and the strafer's
+`27f549beaaf0e20b`. Why they held was not looked into. Each is still checked by its test.
+
+**A tie rule tried, and taken out.** While the routines were still in f32, a tilted world took
+a step a tick apart from the upright one: a capsule meets a riser and its tread at the edge
+they share, and rounding chose between them. A rule preferring the face that best agreed with
+the contact made a character jitter by 2 mm against the sandbox's plinth, which the tick
+comparison caught. A rule giving such a tie to the lower triangle cured both. Once the routines
+were in f64 no test could tell that rule from none, 200 turned steps included, so it was taken
+out. `World`'s choice among hits is as M37 left it.
+
+**Guards verified by mutation,** each failing a test:
+- a point's edge region and its corner region left out;
+- the segment's passage through the face, its other end, and its edges, each left out;
+- a grazing ray called a miss, and a ray in the plane called a miss;
+- a ray's hit past its end accepted;
+- the closed form answering cores that meet;
+- the face's own normal left for the line between the points;
+- a ray that starts on the triangle sent to the one step;
+- the hit point taken from the ray and not the triangle;
+- the dispatch to the closed forms removed;
+- every pair counted as GJK's.
+
+**Tests.** Eleven new. Three in `pairs.zig`: the seven regions, the segment's cases, and the
+ray's. Eight in `pairs_tests.zig`: a point and a segment against GJK; rays against the general
+cast and their own crossing; casts that never pass through; seams and corners; the hit on the
+triangle and the ray that starts on it; the face's normal and cores that meet; and a slide into
+the seam of a riser and its tread.
+
+**The bar.** `zig build test` passed 2,964 of 2,974 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples and `fdt-check` passed. The physics suite takes about 25 s.

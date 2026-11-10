@@ -224,7 +224,8 @@ test "mesh: BVH output matches individual triangle cores, sorted by original ind
         var best_triangle: u32 = physics.none_triangle;
         for (0..16) |t| {
             const vertices = mesh.triangle(@intCast(t));
-            const individual: Convex = .{ .core = .{ .points = &vertices }, .radius = 0, .pose = .identity };
+            // As a triangle, so the oracle and the world break a tie between equals alike.
+            const individual: Convex = .{ .core = .{ .triangle = vertices }, .radius = 0, .pose = .identity };
             const individual_hit = physics.narrow.cast(.{ .core = .point, .radius = 0.5, .pose = .at(.init(0, 3, 0)) }, .init(0, -6, 0), individual, physics.contact_skin).?;
             if (individual_hit.fraction < best_fraction) {
                 best_fraction = individual_hit.fraction;

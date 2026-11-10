@@ -49,7 +49,7 @@ test "report: the counts are what the world holds" {
     try t.expect(r.tree_height >= 3 and r.tree_height <= 4);
     // The one hull is a tetrahedron.
     try t.expectEqual(@as(u32, 4), r.hull_faces);
-    // What later steps fill, and nothing fills yet.
+    // No mesh came with its tree, and nothing has been asked.
     try t.expectEqual(@as(u32, 0), r.meshes_baked + r.pairs_closed);
 }
 
@@ -69,7 +69,9 @@ test "report: each query is counted by its kind, with the bodies and triangles i
     try t.expect(r.bodies_visited >= 1 and r.bodies_visited < 9);
     try t.expectEqual(@as(u32, 1), r.bodies_tested);
     try t.expectEqual(@as(u32, 2), r.triangles_tested);
-    try t.expectEqual(@as(u32, 2), r.pairs_gjk);
+    // A ray against a triangle is a closed form's.
+    try t.expectEqual(@as(u32, 2), r.pairs_closed);
+    try t.expectEqual(@as(u32, 0), r.pairs_gjk);
 
     // A mask that admits nothing walks the same nodes and tests no body's bounds.
     const walked = r.bodies_visited;
@@ -78,7 +80,7 @@ test "report: each query is counted by its kind, with the bodies and triangles i
     r = y.w.report();
     try t.expectEqual(walked, r.bodies_visited);
     try t.expectEqual(@as(u32, 0), r.bodies_tested);
-    try t.expectEqual(@as(u32, 0), r.pairs_gjk);
+    try t.expectEqual(@as(u32, 0), r.pairs_gjk + r.pairs_closed);
 
     // A ball inside a box is one pair, and no triangle.
     _ = y.w.takeCounters();
@@ -93,7 +95,9 @@ test "report: each query is counted by its kind, with the bodies and triangles i
     r = y.w.report();
     try t.expectEqual(@as(u32, 0), r.count(.ray));
     inline for (.{ .overlap, .contacts, .cast, .sweep, .move }) |kind| try t.expectEqual(@as(u32, 1), r.count(kind));
-    try t.expect(r.pairs_gjk > r.triangles_tested and r.triangles_tested > 0);
+    // The ball and the capsule against triangles are closed forms', and against boxes GJK's.
+    try t.expectEqual(r.triangles_tested, r.pairs_closed);
+    try t.expect(r.pairs_gjk > 0 and r.triangles_tested > 0);
 
     // A refused query counts nothing.
     _ = y.w.takeCounters();

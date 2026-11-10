@@ -1,7 +1,16 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38 Step 4 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 5, closed-form pairs: `physics3d/pairs.zig` does not exist yet, and every pair is still GJK's. **Step 5 is where every walking pin and the court's four digests move, once.** M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 5 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 6, `asset`: `.fcol` version 3, `foundry:collision_hull` and `collision_import` version 2 do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 5 is done (2026-11-10): closed-form pairs. The walking pins moved, once.**
+- `physics3d/pairs.zig` measures a point and a segment against a triangle in closed form, and answers a ray against a triangle in one step. `narrow.separation` and `narrow.cast` use them for a sphere, a capsule and a ray against a triangle. Cores that meet, boxes, hulls and every other pair stay on GJK and EPA. `narrow.separationGeneral` and `castGeneral` are GJK for any pair, the tests' reference.
+- Every character move in the tour and in the court, sandbox, ABI and integration tests, 150,653 of them, was compared with its GJK run tick by tick. All are within 0.12 mm, against a 1 mm band, but for one explained stretch in the court's footsteps test, which walks the player along a seam of the navigation mesh.
+- **New pins:** the player's `b85b52c97d259db4` (was `cb99ccfcf2b6d6c3`), the corner's `e2992f93e5323345` (was `832fe43a3a82db13`), the court's win `4cea12a2d26686ba`, caught `448a83a95a46f1af`, fell `489ec244f5946487` and soundtrack `38ee55e6ad5b65da`. The walker's, the pacer's three and the strafer's held. The old values are in the Resolution.
+- On the Mac, unpaced, a move fell from 0.0118 to 0.0068 ms with 12 bodies and from 0.030 to 0.0173 ms with 2,114.
+- Found on the way: GJK's ray cast missed real crossings, about one in five hundred near the origin and most of them 1.5 km out. The closed form does not.
+- Sharpened: the routines work in f64 between f32 values; a ray near an edge, a corner or the plane, or starting on the triangle, goes to the general cast; a seam tie rule was tried and taken out, so `World`'s choice among hits is unchanged.
+- Fourteen guards verified by mutation. Bar 2,964/2,974 (ten skips), 132/132 steps, eleven new tests; every check, sample and `fdt-check` passed.
 
 **M38 Step 4 is done (2026-11-10): hull faces.**
 - `physics3d/hull.zig` finds a hull's faces from its points: `faces` returns each face's plane, and `reduce` returns the points that are corners, for `author` at Step 7. `addHull` keeps the faces beside the points, which stay as given, and `World.hullFaces` lends them.

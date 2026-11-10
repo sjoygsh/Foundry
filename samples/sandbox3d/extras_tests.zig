@@ -60,10 +60,10 @@ test "extras: M23's five stages keep their pin beside the corner, whose six pass
     defer first.deinit(engine);
     try testing.expectEqual(@as(usize, 3), first.walk.settings.?.len);
     try testing.expect(first.tour.failed == null);
-    try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), first.tour.hash);
+    try testing.expectEqual(@as(u64, 0xb85b52c97d259db4), first.tour.hash);
     try testing.expect(first.corner.failed == null);
     try testing.expectEqual(CornerTour.names.len, first.corner.stage);
-    try testing.expectEqual(@as(u64, 0x832fe43a3a82db13), first.corner.hash);
+    try testing.expectEqual(@as(u64, 0xe2992f93e5323345), first.corner.hash);
     const second = try testing.allocator.create(Run);
     defer testing.allocator.destroy(second);
     try second.init(engine, .identity);

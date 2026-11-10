@@ -3,11 +3,19 @@
 //! `gjk.zig` measures cores; this file adds the radii back, chooses a normal, and turns distance
 //! into a cast by conservative advancement. Every normal here points **out of B, toward A**: the
 //! way A would be pushed to leave B.
+//!
+//! **Three pairs do not go to GJK** (`collision-scale.md` §8, ADR-0078). A point core or a
+//! segment core against a triangle is measured by `pairs.zig`'s closed forms, and a ray against a
+//! triangle is answered in one step. What a cast means does not change: it is still conservative
+//! advancement to the same skin and tolerance, asking a closed form for each distance. When the
+//! cores meet, the pair goes to GJK and EPA as every other pair does. `separationGeneral` and
+//! `castGeneral` are the one routine for every pair, kept as it was: the reference in tests.
 
 const std = @import("std");
 const core = @import("core");
 
 const gjk = @import("gjk.zig");
+const pairs = @import("pairs.zig");
 const shape = @import("shape.zig");
 
 const Convex = shape.Convex;
@@ -35,6 +43,40 @@ pub const Separation = struct {
 };
 
 pub fn separation(a: Convex, b: Convex) Separation {
+    return closedSeparation(a, b) orelse separationGeneral(a, b);
+}
+
+/// Whether `separation` measures this pair by a closed form while its cores are apart.
+pub fn closedPair(a: Convex, b: Convex) bool {
+    return b.core == .triangle and (a.core == .point or a.core == .segment);
+}
+
+/// A point or a segment against a triangle, by `pairs.zig`. Null for any other pair, and when
+/// the cores are within GJK's own `intersect_distance`: then they meet, and depth is EPA's.
+fn closedSeparation(a: Convex, b: Convex) ?Separation {
+    if (b.core != .triangle) return null;
+    const local = b.core.triangle;
+    const triangle = [3]Vec3{ b.pose.apply(local[0]), b.pose.apply(local[1]), b.pose.apply(local[2]) };
+    const nearest = switch (a.core) {
+        .point => pairs.pointTriangle(a.pose.position, triangle),
+        .segment => |h| pairs.segmentTriangle(a.pose.apply(.init(0, h, 0)), a.pose.apply(.init(0, -h, 0)), triangle),
+        else => return null,
+    };
+    if (!(nearest.distance > gjk.intersect_distance)) return null;
+    // Over the face the normal is the face's own, exact however small the gap. Elsewhere it
+    // is the line between the two points.
+    const n = if (nearest.face) b.surfaceNormal(nearest.toward_core, nearest.on_triangle) else nearest.toward_core;
+    return .{
+        .distance = nearest.distance - (a.radius + b.radius),
+        .normal = n,
+        .point_a = nearest.on_core.sub(n.scale(a.radius)),
+        .point_b = nearest.on_triangle.add(n.scale(b.radius)),
+        .cores_intersect = false,
+    };
+}
+
+/// `separation` by GJK and EPA alone, for any pair.
+pub fn separationGeneral(a: Convex, b: Convex) Separation {
     const d = gjk.distance(a, b);
     const radii = a.radius + b.radius;
     if (!d.intersect) {
@@ -93,9 +135,36 @@ pub const Cast = struct {
 /// normal can never step past contact. A cast that uses its whole budget reports its last safe
 /// fraction — short, never through.
 pub fn cast(a: Convex, displacement: Vec3, b: Convex, target: f32) ?Cast {
-    var s = separation(a, b);
+    return advance(a, displacement, b, target, true);
+}
+
+/// `cast` by GJK and EPA alone, for any pair.
+pub fn castGeneral(a: Convex, displacement: Vec3, b: Convex, target: f32) ?Cast {
+    return advance(a, displacement, b, target, false);
+}
+
+fn advance(a: Convex, displacement: Vec3, b: Convex, target: f32, closed: bool) ?Cast {
+    var s = if (closed) separation(a, b) else separationGeneral(a, b);
     if (s.distance < 0) {
         return .{ .fraction = 0, .normal = s.normal, .point = s.point_b, .started_inside = true };
+    }
+    // A ray against a triangle is one step, not an advance. A ray that starts within the
+    // tolerance of the triangle has already arrived, and one that grazes an edge or lies in the
+    // triangle's plane is not one step's to call: those are the loop's, below, which hits what
+    // the ray comes within the tolerance of, as it always did.
+    if (closed and a.core == .point and a.radius == 0 and target == 0 and b.core == .triangle and s.distance > cast_tolerance) {
+        // In the triangle's own space, so every triangle of a mesh sees the same ray and the
+        // same corners, and the seams between them are watertight (`pairs.rayTriangle`).
+        const origin = b.pose.inverseDirection(a.pose.position.sub(b.pose.position));
+        const along = b.pose.inverseDirection(displacement);
+        switch (pairs.rayTriangle(origin, along, b.core.triangle, cast_tolerance)) {
+            .miss => return null,
+            .hit => |crossing| {
+                const point = b.pose.apply(crossing.point);
+                return .{ .fraction = crossing.fraction, .normal = b.surfaceNormal(displacement.neg(), point), .point = point, .started_inside = false };
+            },
+            .unsure => {},
+        }
     }
     var t: f32 = 0;
     var iteration: u32 = 0;
@@ -106,7 +175,8 @@ pub fn cast(a: Convex, displacement: Vec3, b: Convex, target: f32) ?Cast {
         if (!(closing > 1e-12)) return null;
         const next_t = t + gap / closing;
         if (next_t > 1) return null;
-        var next = separation(a.translated(displacement.scale(next_t)), b);
+        const moved = a.translated(displacement.scale(next_t));
+        var next = if (closed) separation(moved, b) else separationGeneral(moved, b);
         // A point exactly on a two-sided triangle has no side. Preserve the approach side
         // from the last separated iterate rather than choosing the triangle's winding.
         if (b.core == .triangle and next.distance <= cast_tolerance and target == 0 and a.radius == 0)

@@ -76,7 +76,7 @@ test "props: compiled plinth draws lit, blocks actual player, and refresh retire
     var tour: Tour = .{ .emit = false };
     while (!tour.done()) try tour.advance(&walk, dt);
     try testing.expect(tour.failed == null);
-    try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
+    try testing.expectEqual(@as(u64, 0xb85b52c97d259db4), tour.hash);
     const feet = walk.result.feet;
     const character = walk.character;
     try props.refresh(gpa, &engine.store, &walk.world, &content, &engine.assets);
@@ -345,7 +345,7 @@ test "props: the tour's hash does not move with the gallery requested on its tic
             if (!model.isNone() and !try content.modelReady(model)) pending_ticks += 1;
         }
         try testing.expect(tour.failed == null);
-        try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
+        try testing.expectEqual(@as(u64, 0xb85b52c97d259db4), tour.hash);
         // It was requested, and was not there at once.
         try testing.expect(!model.isNone());
         try testing.expect(pending_ticks > 0);

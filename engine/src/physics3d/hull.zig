@@ -13,6 +13,7 @@
 const std = @import("std");
 const core = @import("core");
 const Vec3 = core.math.Vec3;
+const D3 = @import("wide.zig").D3;
 const Allocator = std.mem.Allocator;
 
 /// A face's plane in the hull's own space: `normal · p == offset` on it, and less inside.
@@ -96,28 +97,6 @@ pub fn reduce(gpa: Allocator, points: []const Vec3) ReduceError![]Vec3 {
     };
     return out;
 }
-
-const D3 = struct {
-    x: f64,
-    y: f64,
-    z: f64,
-
-    fn of(p: Vec3) D3 {
-        return .{ .x = p.x, .y = p.y, .z = p.z };
-    }
-    fn sub(a: D3, b: D3) D3 {
-        return .{ .x = a.x - b.x, .y = a.y - b.y, .z = a.z - b.z };
-    }
-    fn dot(a: D3, b: D3) f64 {
-        return a.x * b.x + a.y * b.y + a.z * b.z;
-    }
-    fn cross(a: D3, b: D3) D3 {
-        return .{ .x = a.y * b.z - a.z * b.y, .y = a.z * b.x - a.x * b.z, .z = a.x * b.y - a.y * b.x };
-    }
-    fn scale(a: D3, s: f64) D3 {
-        return .{ .x = a.x * s, .y = a.y * s, .z = a.z * s };
-    }
-};
 
 const no_tri = std.math.maxInt(u32);
 

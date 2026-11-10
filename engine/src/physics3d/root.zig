@@ -30,6 +30,7 @@ pub const broadphase = @import("broadphase.zig");
 pub const gjk = @import("gjk.zig");
 pub const hull = @import("hull.zig");
 pub const narrow = @import("narrow.zig");
+pub const pairs = @import("pairs.zig");
 pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
 pub const mesh = @import("mesh.zig");
@@ -101,6 +102,7 @@ test {
     _ = gjk;
     _ = hull;
     _ = narrow;
+    _ = pairs;
     _ = shape;
     _ = world;
     _ = mesh;
@@ -116,4 +118,5 @@ test {
     _ = @import("broadphase_tests.zig");
     _ = @import("tree_tests.zig");
     _ = @import("hull_tests.zig");
+    _ = @import("pairs_tests.zig");
 }

@@ -62,7 +62,7 @@ test "walker: compiled patrol, both clips, cross-fade, fresh-world replay and un
     }
     try testing.expect(walker.proofPassed() and replay.proofPassed());
     try testing.expect(tour.failed == null and tour.done());
-    try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
+    try testing.expectEqual(@as(u64, 0xb85b52c97d259db4), tour.hash);
     // Same-binary replay above is exact. These are the two math-provider pins (animation3d.md
     // Step 6), moved once by M34, when time went from `f32` to `f64` within the tolerance `M24`
     // proves. Linking v6 also pulls compiler-runtime sin into an optimized host, so optimization

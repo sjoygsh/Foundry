@@ -141,7 +141,7 @@ fn proof(consented: bool) !u64 {
     var tour: Tour = .{ .emit = false };
     while (!tour.done()) try tour.advance(&walk, dt);
     try testing.expect(tour.failed == null);
-    try testing.expectEqual(@as(u64, 0xcb99ccfcf2b6d6c3), tour.hash);
+    try testing.expectEqual(@as(u64, 0xb85b52c97d259db4), tour.hash);
     const fingerprint = native.hash;
     // The cost-mode bound uses actual plinth content, not a synthetic renderer object.
     const plinth_bytes = try engine.os.readFile(gpa, options.plinth_package, 16 * 1024 * 1024);

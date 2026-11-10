@@ -201,9 +201,9 @@ pub const World = struct {
         self.counters.queries[@intFromEnum(kind)] +%= 1;
     }
 
-    /// One narrowphase test against `part`. Every pair is GJK's until §8.
-    fn tested(self: *World, part: Part) void {
-        self.counters.pairs_gjk +%= 1;
+    /// One narrowphase test of `query` against `part`, counted by the routine it goes to (§8).
+    fn tested(self: *World, query: Convex, part: Part) void {
+        if (narrow.closedPair(query, part.convex)) self.counters.pairs_closed +%= 1 else self.counters.pairs_gjk +%= 1;
         if (part.triangle != none_triangle) self.counters.triangles_tested +%= 1;
     }
 
@@ -448,7 +448,7 @@ pub const World = struct {
         var candidates = self.candidate(handle, b.*, query.bounds(), .{}) orelse return false;
         while (candidates.next()) |part| {
             if (!part.admits(query.pose.position, .zero)) continue;
-            self.tested(part);
+            self.tested(query, part);
             if (part.separation(query).distance < 0) return true;
         }
         return false;
@@ -573,7 +573,7 @@ pub const World = struct {
             var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
-                self.tested(other);
+                self.tested(query, other);
                 const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (best) |b| if (-s.distance <= b.depth) continue;
@@ -690,7 +690,7 @@ pub const World = struct {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, motion)) continue;
-                self.tested(other);
+                self.tested(moving, other);
                 const s = narrow.separation(moving, other.convex);
                 if (best) |b| if (!(s.distance < b.separation.distance)) continue;
                 best = .{ .separation = s, .part = other, .body = entry.id, .user = entry.value.user };
@@ -710,7 +710,7 @@ pub const World = struct {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
-                self.tested(other);
+                self.tested(query, other);
                 if (narrow.separation(query, other.convex).distance >= 0) continue;
                 if (found.count < out.len) {
                     out[found.count] = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .surface = other.surface };
@@ -734,7 +734,7 @@ pub const World = struct {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
-                self.tested(other);
+                self.tested(query, other);
                 const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (found.count < out.len) {
@@ -782,7 +782,7 @@ pub const World = struct {
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, displacement)) continue;
-                self.tested(other);
+                self.tested(moving, other);
                 const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
                 if (layer != null and !c.started_inside and c.fraction == 0 and displacement.dot(c.normal) >= -1e-7) continue;
                 var face = other.convex.surfaceNormal(c.normal, c.point);

@@ -502,7 +502,8 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
   rest.
 - **M37's collision costs.** Run them when `physics3d`'s controller, sweeps or collision loading
   change.
-  - The tour now ends with the corner's six stages and their replay, `832fe43a3a82db13`. It
+  - The tour now ends with the corner's six stages and their replay, `e2992f93e5323345` since
+    M38 Step 5 (`832fe43a3a82db13` before it). It
     prints `character:`, the player's move carried and pushing, and `door:`, one `shapeSweep` a
     tick, against 0.25 and 0.05 ms. They read 0.231 and 0.014 ms on the M5, and 0.090–0.114 and
     0.008 ms on the i3.

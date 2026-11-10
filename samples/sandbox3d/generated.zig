@@ -898,9 +898,9 @@ fn ms(ns: i64) f64 {
 
 // Pinned from the first run on the Mac; see Step 6's Resolution.
 const PATCH_DIGEST = 11729102987930533220;
-const PATCH_END_X = 22.390009;
-const PATCH_END_Y = 0.074692;
-const PATCH_END_Z = 1.227917;
+const PATCH_END_X = 22.390017;
+const PATCH_END_Y = 0.074569;
+const PATCH_END_Z = 1.227919;
 const SPIRE_DIGEST = 17175394173672716032;
 /// The same spire where the binary's `sinf`/`cosf` come from the platform's libm rather than
 /// compiler-rt, as an optimized macOS build's do (public3d.md §10's two math providers).

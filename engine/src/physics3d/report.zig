@@ -30,9 +30,10 @@ pub const Counters = struct {
     bodies_tested: u32 = 0,
     /// Narrowphase tests against a mesh's triangle.
     triangles_tested: u32 = 0,
-    /// Narrowphase tests answered by a closed-form routine (§8). None until one exists.
+    /// Narrowphase tests sent to a closed-form routine (§8): a ray, a sphere or a capsule against
+    /// a triangle. One whose cores meet is still finished by GJK and EPA, and is counted here.
     pairs_closed: u32 = 0,
-    /// Narrowphase tests answered by GJK.
+    /// Narrowphase tests answered by GJK: every other pair.
     pairs_gjk: u32 = 0,
     /// Bodies whose place in the broadphase changed (§4). None until it exists.
     refits: u32 = 0,
