@@ -1448,3 +1448,38 @@ checks, the four headless samples, `fdt-check`, the 2,400-frame tour, the tilted
 `court-test` (87 of 89, two skips) passed. Because the sandbox's package gained a hull and a baked
 mesh, `zig build distribution-test` (33 of 33) ran too and passed. No release stages `sandbox3d`;
 the ReleaseSafe install above is the relocated run.
+
+## Resolution — Step 10: the court (2026-11-11)
+
+**The one line.** `samples/court/main.zig` now builds a `physics3d.Report` for each frame from the
+walk world, `world.report().withCounters(world.takeCounters())`, and hands it to the overlay as
+`Sources.physics`, so **F1**'s `physics` panel shows the court's world and the frame's work. Nothing
+else in the court reads the counters, so the frame takes them. Nothing in the court's content
+changed. The step adds no guard, so there was nothing to break by mutation; the panel's own guards
+were Step 8's.
+
+**The digests.** The four re-pinned at Step 5 (`win` `4cea12a2d26686ba`, `caught` `448a83a95a46f1af`,
+`fell` `489ec244f5946487`, `soundtrack` `38ee55e6ad5b65da`) are tests since M35, and they held:
+`court-test` passed 87 of 89 in Debug (two skips) and 89 of 89 at ReleaseSafe, where the ten-minute
+soundtrack runs.
+
+**From a relocated, read-only ReleaseSafe install on Metal** (the M5), each scripted play replayed
+every tick against a fresh simulation. A windowed run is not one tick a frame (2,435 frames held
+2,440 ticks), so the relocated plays prove the per-tick replay, and the tests prove the digests.
+
+| Play | Ending | Ticks matched | Whole tick, p95 (line 0.25 ms) |
+| --- | --- | --- | --- |
+| `win` | won at ticks 1219 and 2434 | 2,440 | 0.127 ms |
+| `caught` | caught at tick 90 | 92 | 0.151 ms |
+| `fell` | fell at tick 186 | 188 | 0.168 ms |
+
+The court's files under Application Support were fingerprinted before and after the scripted plays
+and were unchanged.
+
+**The owner's play.** The owner played the same install by hand and won at tick 1397: whole tick
+p95 0.174 ms, frame work p95 1.93 ms, the warden's skinning p95 0.073 ms, audio p95 0.024 ms, all 13
+music starts on their frame, no underrun, no frame skipped. **Their verdict: "All good"**; it feels
+the same.
+
+**The bar.** `zig build test` passed 2,984 of 2,994 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` passed.

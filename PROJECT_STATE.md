@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-11
-**Current handoff: M38 Step 9 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 10, the court: it hands the overlay no physics report yet, its tick has not been read from a relocated install for this step's sake, and the owner has not played it. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 10 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 11, Windows/Vulkan: nothing of M38 has run on the owner's PC yet, and the PC holds no Foundry clone. M37 is complete and pushed (tag `m37`).
+
+**M38 Step 10 is done (2026-11-11): the court.**
+- **One line:** the court hands the overlay a `physics3d.Report` each frame (`world.report().withCounters(world.takeCounters())`), so F1's `physics` panel shows its world. No content changed.
+- **The four Step 5 digests held:** `court-test` 87/89 in Debug (two skips), 89/89 at ReleaseSafe with the soundtrack.
+- **Relocated ReleaseSafe install on Metal:** `win`, `caught` and `fell` each replayed every tick against a fresh simulation (2,440, 92 and 188 ticks), whole tick p95 0.127, 0.151 and 0.168 ms against 0.25 ms. The court's settings files were unchanged by the scripted runs.
+- **The owner played it** and won (tick p95 0.174 ms, frame p95 1.93 ms, no skipped frame, every music start on its frame): "All good".
+- Bar 2,984/2,994 (ten skips), 132/132 steps; every check, sample, `fdt-check`, the tour and `court-test` passed.
 
 **M38 Step 9 is done (2026-11-11): `sandbox3d`'s yard.**
 - **The yard** is at (70, 0, 0) (`sandbox3d:yard.main`):

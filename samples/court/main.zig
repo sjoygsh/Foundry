@@ -160,7 +160,7 @@ const Screens = struct {
 
     /// The debug overlay's frame, over the court's own. The renderers and the mixer are the
     /// game's, so the game hands them over.
-    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer, navigation: *const nav.Report, animation: ?*const anim.Report) !void {
+    fn describePanels(self: *Screens, engine: *app.Engine, size: core.math.Vec2, renderer: *const render3d.Renderer, mixer: ?*const audio.Mixer, navigation: *const nav.Report, animation: ?*const anim.Report, collision: *const physics.Report) !void {
         if (!self.panels_open) return;
         self.panels_ctx.style = panelStyle(self.plainFont(engine));
         self.panels_ctx.begin(.{
@@ -170,7 +170,7 @@ const Screens = struct {
             .frame = engine.frame_index,
         }, .init(0, 0, size.x, size.y));
         defer self.panels_ctx.end();
-        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer, .navigation = navigation, .animation = animation });
+        try self.panels.describe(&self.panels_ctx, engine, .{ .renderer = &self.overlay, .world3d = renderer, .mixer = mixer, .navigation = navigation, .animation = animation, .physics = collision });
     }
 
     /// Describes the HUD or the menu for this frame and reports what the pointer did.
@@ -519,7 +519,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (navigation.mesh()) |mesh| nav_report.readMesh(mesh);
         nav_report.readMeshes(&navigation.meshes, navigation.current);
         if (game.crowd) |*crowd| nav_report.readCrowd(crowd);
-        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer, &nav_report, if (game.warden) |*w| &w.report else null);
+        // What the court's world holds, and the frame's work, for the physics panel
+        // (`collision-scale.md` §12). Nothing else reads the counters, so the frame takes them.
+        const physics_report = game.walk.world.report().withCounters(game.walk.world.takeCounters());
+        try screens.describePanels(engine, .init(@floatFromInt(logical.width), @floatFromInt(logical.height)), &renderer, mixer, &nav_report, if (game.warden) |*w| &w.report else null, &physics_report);
 
         // 3. The menu's answer. Only a phase change travels to the tick.
         const by_hand = script_driver == null;
