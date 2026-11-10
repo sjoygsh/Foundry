@@ -560,7 +560,7 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | Walking on walls: an up that changes with each step | M50 | Its third-person body's; §3's up is one a world |
 | A friction or speed a surface sets in the controller | M50 | The controller moves what it is asked, and until then a game scales its own displacement by a surface |
 | Heightfield collision | M63 | Terrain II |
-| The BVH baked into `.fcol`, a broadphase over bodies, hull assets, specialised pairs, a physics panel | M38 | Collision at scale, the next milestone |
+| The BVH baked into `.fcol`, a broadphase over bodies, hull assets, specialised pairs, a physics panel | M38 | Collision at scale, the next milestone; designed 2026-11-10 in [`collision-scale.md`](collision-scale.md) |
 | All of this in the public table, and in Lua | M48, M49 | §15 |
 
 ## 19. Decisions acceptance fixes

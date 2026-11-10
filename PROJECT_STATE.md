@@ -1,7 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-09
-**Current handoff: M37 is complete** (2026-11-09, tag `m37`, not pushed; [`docs/design/collision-extras.md`](docs/design/collision-extras.md), ADR-0075, ADR-0076). Stop before M38's design, Collision at scale. The PC holds no Foundry clone.
+**Last updated:** 2026-11-10
+**Current handoff: M38's design is proposed** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078); awaiting acceptance of §17. Stop before Step 1. M37 is complete and pushed (2026-11-09, tag `m37`). The PC holds no Foundry clone.
+
+**M38's design (2026-11-10):**
+- `physics3d` gains a balanced bounding-volume tree over bodies whose candidates are sorted by handle, so no answer changes; a mesh tree accepted from outside and validated in linear time; and a `Report` (ADR-0077).
+- `.fcol` v3 carries the tree, baked by `author` at 4,096 triangles and above, so existing files keep their bytes. `author` and `debug` are each granted `physics3d`, the owner's decisions in §17.
+- Hulls gain faces and become content, `foundry:collision_hull`. A ray, a sphere and a capsule meet a triangle by closed-form routines (ADR-0078). **Every walking pin and the court's four digests move once, at Step 5,** after each tour stays within 1 mm of its GJK run.
+- The sandbox gains a yard: 2,048 stones and 64 movers on a baked hillside of about 32,000 triangles, and a hull boulder. The overlay gains a physics panel. The owner plays the court at Step 10.
+- Twelve steps, the PC at Step 11.
 
 **M37 Step 10 is done (2026-11-09): M37 closed.**
 - `CLAUDE.md` §4.1, §4.3 and §9, the roadmap (M37 complete, M48 gains M37's surface), the design index, the README and ADR-0075/0076 say implemented.

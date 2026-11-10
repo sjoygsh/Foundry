@@ -1240,7 +1240,7 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M35 | Animation logic II | State machines, layers, masks and additive poses; also clips of different lengths kept in step, a clip played backward, and a ladder's climb fitted to its height (M34). **Complete 2026-11-06, tag `m35`: [`animation-states.md`](design/animation-states.md), ADR-0072** |
 | M36 | Animation logic III | Inverse kinematics: foot placement and look-at; also blend spaces, many clips mixed continuously by one or two parameters, on M35's sync groups (M35). **Complete 2026-11-09, tag `m36`: [`animation-ik.md`](design/animation-ik.md), ADR-0073/0074.** |
 | M37 | Character and collision extras | Moving platforms, pushing, surface types, one-sided triangles, rotational sweeps, runtime scale, collision proxies; also a configurable up axis, and a model record that names its collision. **Complete 2026-11-09, tag `m37`: [`collision-extras.md`](design/collision-extras.md), ADR-0075/0076.** |
-| M38 | Collision at scale | A broadphase, the tree baked into `.fcol`, hull assets, and a physics panel in the overlay; also specialised pair routines such as analytic capsule–triangle |
+| M38 | Collision at scale | A broadphase, the tree baked into `.fcol`, hull assets, and a physics panel in the overlay; also specialised pair routines such as analytic capsule–triangle. **Proposed 2026-11-10: [`collision-scale.md`](design/collision-scale.md), ADR-0077/0078.** |
 | M39 | Shadows II | Cascaded shadow maps |
 | M40 | Shadows III | Point and spot shadows; translucent shadows |
 | M41 | Environment | Sky, cubemaps and image-based lighting; an engine light record, glTF light import and tangent generation; also cubemaps and texture arrays in the RHI |

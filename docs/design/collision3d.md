@@ -1318,6 +1318,9 @@ overlay grant, no new dependency. Linux is compile-only.
 > (M27–M149). Each trigger below no longer decides whether its item is built; it still names
 > the need and the budget that milestone's design must meet.
 
+> **2026-11-10:** M38's rows (the baked tree, the broadphase, specialised pairs, hull faces and
+> assets, the physics panel) are designed in [`collision-scale.md`](collision-scale.md).
+
 > **2026-11-09:** M37's rows are designed in [`collision-extras.md`](collision-extras.md), and at
 > its close the same day each is struck through with what was built.
 
