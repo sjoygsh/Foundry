@@ -262,6 +262,16 @@ pub fn HandlePool(comptime Tag: type, comptime T: type) type {
             return .{ .pool = self };
         }
 
+        /// The live entry in slot `index`, as `iterator` would give it, or null for a free
+        /// slot or one past the end. For a structure that keeps slot indices and must turn
+        /// one back into an entry; the index is never an identity on its own (I1).
+        pub fn entryAt(self: *Self, index: u32) ?Entry {
+            if (index >= self.slots.items.len) return null;
+            const slot = &self.slots.items[index];
+            if (!slot.occupied) return null;
+            return .{ .id = .{ .index = index, .generation = slot.generation }, .value = &slot.value };
+        }
+
         // -- snapshot and restore ----------------------------------------------
 
         /// One slot exactly as the pool holds it: the generation it will hand out next,

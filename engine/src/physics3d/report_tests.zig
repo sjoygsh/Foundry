@@ -44,8 +44,11 @@ test "report: the counts are what the world holds" {
     try t.expectEqual(@as(u32, 1), r.meshes);
     try t.expectEqual(@as(u64, 2), r.triangles);
     try t.expectEqual(@as(u32, 1), r.hulls);
+    // Five bodies are five leaves and four nodes above them.
+    try t.expectEqual(@as(u32, 9), r.tree_nodes);
+    try t.expect(r.tree_height >= 3 and r.tree_height <= 4);
     // What later steps fill, and nothing fills yet.
-    try t.expectEqual(@as(u32, 0), r.meshes_baked + r.hull_faces + r.tree_nodes + r.tree_height + r.pairs_closed + r.refits);
+    try t.expectEqual(@as(u32, 0), r.meshes_baked + r.hull_faces + r.pairs_closed);
 }
 
 test "report: each query is counted by its kind, with the bodies and triangles it tested" {
@@ -55,21 +58,23 @@ test "report: each query is counted by its kind, with the bodies and triangles i
     _ = y.w.takeCounters();
     const ball: p.Shape = .{ .sphere = .{ .radius = 0.25 } };
 
-    // Straight down onto the floor, far from every box: five bodies are visited and their
-    // bounds tested, and only the floor's two triangles reach the narrowphase.
+    // Straight down onto the floor, far from every box: the broadphase walks some of its nine
+    // nodes and passes on the floor alone, whose two triangles reach the narrowphase.
     try t.expect((try y.w.raycast(.init(2, 3, 2), .init(0, -1, 0), 10, .{})) != null);
     var r = y.w.report();
     try t.expectEqual(@as(u32, 1), r.count(.ray));
-    try t.expectEqual(@as(u32, 5), r.bodies_visited);
-    try t.expectEqual(@as(u32, 5), r.bodies_tested);
+    try t.expectEqual(@as(u32, 9), r.tree_nodes);
+    try t.expect(r.bodies_visited >= 1 and r.bodies_visited < 9);
+    try t.expectEqual(@as(u32, 1), r.bodies_tested);
     try t.expectEqual(@as(u32, 2), r.triangles_tested);
     try t.expectEqual(@as(u32, 2), r.pairs_gjk);
 
-    // A mask that admits nothing visits every body and tests none.
+    // A mask that admits nothing walks the same nodes and tests no body's bounds.
+    const walked = r.bodies_visited;
     _ = y.w.takeCounters();
     try t.expect((try y.w.raycast(.init(2, 3, 2), .init(0, -1, 0), 10, .{ .mask = 0 })) == null);
     r = y.w.report();
-    try t.expectEqual(@as(u32, 5), r.bodies_visited);
+    try t.expectEqual(walked, r.bodies_visited);
     try t.expectEqual(@as(u32, 0), r.bodies_tested);
     try t.expectEqual(@as(u32, 0), r.pairs_gjk);
 
@@ -105,7 +110,7 @@ test "report: taking the counters returns them and leaves zero, and the counts s
     _ = try y.w.raycast(.init(2, 3, 2), .init(0, -1, 0), 10, .{});
     const taken = y.w.takeCounters();
     try t.expectEqual(@as(u32, 2), taken.queries[@intFromEnum(p.QueryKind.ray)]);
-    try t.expectEqual(@as(u32, 10), taken.bodies_tested);
+    try t.expectEqual(@as(u32, 2), taken.bodies_tested);
     try t.expectEqual(p.Counters{}, y.w.takeCounters());
     const r = y.w.report();
     try t.expectEqual(@as(u32, 0), r.count(.ray));

@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38 Step 1 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 2, the broadphase: `broadphase.zig`, `World.place`, the body scratch and the test-only scan do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 2 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 3, a tree from outside: `mesh.Attributes.tree`, `validateTree` and a public `buildTree` do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 2 is done (2026-11-10): the broadphase.**
+- `physics3d/broadphase.zig` is a balanced bounding-volume tree over bodies. Every query takes its bodies from it, sorted by handle index, and tests each as the scan did. `World.place` is the one writer of a pose, and every setter that changes bounds refits.
+- Two worlds given the same 2,400 bodies, changes, queries and character moves, one through the tree and one by scan, answer equally bit for bit. Every pin holds: the player's, the walker's, the pacer's three, the corner's and the court's four.
+- On the Mac, unpaced, a move among 2,114 bodies fell from 0.357 ms to 0.030 ms, and it tests 16 bodies' bounds where the scan tested 17,931. A move among 12 bodies is unchanged.
+- Sharpened: a walk past the tree's stack falls back to the scan and never panics; the equivalence test runs 48 rounds, not 200, which took 86 s in Debug.
+- Eight guards verified by mutation. Bar 2,931/2,941 (ten skips), 132/132 steps, eight new tests; every check, sample and `fdt-check` passed.
 
 **M38 Step 1 is done (2026-11-10): the `Report`, and the measurements.**
 - The owner's request for Step 1 accepted §17. ADR-0077 and ADR-0078 are Accepted and in `CLAUDE.md` §4.1.

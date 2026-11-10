@@ -4,18 +4,22 @@
 //! this by that* or *what is there*; gravity, jumping and speed are the game's.
 //!
 //! **A body is read through a const pointer and changed through named calls**, for
-//! `physics2d`'s reason: there is only a linear scan to keep in step today, but a broadphase
-//! added later must see every change, and a field write would bypass it. The setters take an
-//! allocator for that future structure now, so their signatures do not change when it arrives.
+//! `physics2d`'s reason: the broadphase must see every change, and a field write would bypass
+//! it. Every write of a pose goes through `place`, and every setter that changes a body's bounds
+//! refits its leaf. The setters take an allocator they do not use: what the broadphase needs is
+//! reserved when a body is added.
 //!
-//! **Queries allocate nothing.** They scan bodies in ascending handle-index order — which is
-//! also the order ties resolve in (§5.4) — and write into caller buffers that report a `total`,
-//! so a caller whose buffer was short learns that it truncated.
+//! **Queries allocate nothing.** They take the bodies near them from the broadphase
+//! (`collision-scale.md` §4), sorted into ascending handle-index order, which is also the order
+//! ties resolve in (§5.4), and test each as a scan of every body would. They write into caller
+//! buffers that report a `total`, so a caller whose buffer was short learns that it truncated.
+//! A query in progress holds the world's scratch, so queries do not nest.
 
 const std = @import("std");
 const core = @import("core");
 
 const body_mod = @import("body.zig");
+const broadphase = @import("broadphase.zig");
 const narrow = @import("narrow.zig");
 const shape_mod = @import("shape.zig");
 const mesh_mod = @import("mesh.zig");
@@ -145,6 +149,15 @@ pub const World = struct {
     up_rotation: core.math.Quat = core.math.Quat.identity,
     /// Work done since they were last taken (`collision-scale.md` §3). Never simulation state.
     counters: Counters = .{},
+    /// The broadphase (`collision-scale.md` §4), a leaf a body.
+    tree: broadphase.Tree = .{},
+    /// Each body's leaf, by handle index. Meaningful only for a live body.
+    leaf_of: []u32 = &.{},
+    /// Where a query's bodies are gathered. As long as there are bodies.
+    body_scratch: []u32 = &.{},
+    /// For tests alone: answer every query by scanning every body, as M23 did. The equivalence
+    /// test asks each question both ways, and the answers must be equal byte for byte.
+    scan_reference: bool = false,
 
     pub const empty: World = .{};
 
@@ -164,6 +177,8 @@ pub const World = struct {
         };
         var meshes = self.meshes.iterator();
         while (meshes.next()) |entry| out.triangles += entry.value.order.len;
+        out.tree_nodes = self.tree.nodeCount();
+        out.tree_height = self.tree.height();
         return out.withCounters(self.counters);
     }
 
@@ -202,6 +217,9 @@ pub const World = struct {
         while (meshes.next()) |entry| entry.value.deinit(gpa);
         self.meshes.deinit(gpa);
         gpa.free(self.triangle_scratch);
+        self.tree.deinit(gpa);
+        gpa.free(self.leaf_of);
+        gpa.free(self.body_scratch);
         self.bodies.deinit(gpa);
         self.* = .empty;
     }
@@ -279,16 +297,55 @@ pub const World = struct {
         stored.pose = try shape_mod.validatePose(new.pose);
         stored.motion = .{ .from = stored.pose, .to = stored.pose };
         stored.serial = 0;
+        // Everything the broadphase needs for one more body, before the body exists, so that
+        // nothing after `add` can fail and no later call allocates.
+        const wanted: usize = self.bodies.count() + 1;
+        try self.tree.reserve(gpa, wanted);
+        if (self.body_scratch.len < wanted) self.body_scratch = try gpa.realloc(self.body_scratch, @max(wanted, self.body_scratch.len * 2));
+        // A new body takes a free slot or the next one, so its index is at most the slots' count.
+        const slots = self.bodies.slots.items.len + 1;
+        if (self.leaf_of.len < slots) self.leaf_of = try gpa.realloc(self.leaf_of, @max(slots, self.leaf_of.len * 2));
         const handle = try self.bodies.add(gpa, stored);
         self.retain(stored.shape);
+        self.leaf_of[handle.index] = self.tree.insert(handle.index, self.leafBox(stored));
         return handle;
     }
 
     pub fn removeBody(self: *World, gpa: Allocator, handle: BodyHandle) bool {
-        _ = gpa; // for the broadphase that does not exist yet (see the file's header)
+        _ = gpa;
         const existing = self.bodies.get(handle) orelse return false;
         self.release(existing.shape);
+        self.tree.remove(self.leaf_of[handle.index]);
         return self.bodies.remove(handle);
+    }
+
+    /// The one writer of a body's pose (`collision-scale.md` §4). `pose` is already valid.
+    pub fn place(self: *World, handle: BodyHandle, pose: Pose) void {
+        self.bodies.get(handle).?.pose = pose;
+        self.refit(handle);
+    }
+
+    /// A body's box in the broadphase: its bounds with the 2 mm every bounds test allows, and
+    /// `broadphase.margin` more for a kinematic body.
+    fn leafBox(self: *World, b: Body) Aabb {
+        const tight = self.bodyBounds(b).expand(bounds_padding);
+        return if (b.kind == .kinematic) tight.expand(broadphase.margin) else tight;
+    }
+
+    /// Puts a body's leaf where its bounds now are. A kinematic body still inside its box
+    /// stays put, and a static body's box is exactly its bounds.
+    fn refit(self: *World, handle: BodyHandle) void {
+        const b = self.bodies.get(handle).?.*;
+        const leaf = self.leaf_of[handle.index];
+        const held = self.tree.boxOf(leaf);
+        const tight = self.bodyBounds(b).expand(bounds_padding);
+        const stays = switch (b.kind) {
+            .kinematic => contains(held, tight),
+            .static => held.min.eql(tight.min) and held.max.eql(tight.max),
+        };
+        if (stays) return;
+        self.tree.update(leaf, self.leafBox(b));
+        self.counters.refits +%= 1;
     }
 
     /// A body, for reading. Const on purpose (see the file's header).
@@ -311,9 +368,9 @@ pub const World = struct {
         _ = gpa;
         const valid = try shape_mod.validatePose(pose);
         const existing = self.bodies.get(handle) orelse return false;
-        existing.pose = valid;
         existing.motion = .{ .from = valid, .to = valid };
         existing.serial +%= 1;
+        self.place(handle, valid);
         return true;
     }
 
@@ -350,7 +407,7 @@ pub const World = struct {
                 result.crushed.total += 1;
             }
         }
-        _ = gpa; // for the broadphase that does not exist yet (see the file's header)
+        _ = gpa;
         return result;
     }
 
@@ -358,8 +415,8 @@ pub const World = struct {
     pub fn moveBodyAlone(self: *World, handle: BodyHandle, pose: Pose) void {
         const existing = self.bodies.get(handle).?;
         existing.motion = .{ .from = existing.pose, .to = pose };
-        existing.pose = pose;
         existing.serial +%= 1;
+        self.place(handle, pose);
     }
 
     /// Whether the body `handle` overlaps `other`'s shape: penetrates, not merely touches.
@@ -394,6 +451,7 @@ pub const World = struct {
         self.retain(new);
         self.release(existing.shape);
         existing.shape = new;
+        self.refit(handle);
         return true;
     }
 
@@ -404,6 +462,7 @@ pub const World = struct {
         const existing = self.bodies.get(handle) orelse return false;
         if (!body_mod.scaleValid(existing.shape, scale)) return error.InvalidShape;
         existing.scale = scale;
+        self.refit(handle);
         return true;
     }
 
@@ -433,6 +492,7 @@ pub const World = struct {
         if (existing.shape == .mesh and kind != .static) return error.InvalidShape;
         if (!body_mod.pushValid(kind, existing.push)) return error.InvalidShape;
         existing.kind = kind;
+        self.refit(handle);
         return true;
     }
 
@@ -485,9 +545,8 @@ pub const World = struct {
     pub fn controllerContact(self: *World, query: Convex, source: BodyHandle, also: BodyHandle) ?Contact {
         const actor = self.bodies.get(source) orelse return null;
         var best: ?Contact = null;
-        var it = self.bodies.iterator();
+        var it = self.near(query.bounds());
         while (it.next()) |entry| {
-            self.counters.bodies_visited +%= 1;
             if (entry.value.mask & actor.layer == 0) continue;
             if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
@@ -605,9 +664,8 @@ pub const World = struct {
     /// One-sided triangles are judged against `motion`, the sweep's travel.
     fn nearestTo(self: *World, moving: Convex, motion: Vec3, area: Aabb, filter: Filter) ?Nearest {
         var best: ?Nearest = null;
-        var it = self.bodies.iterator();
+        var it = self.near(area);
         while (it.next()) |entry| {
-            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, motion)) continue;
@@ -626,9 +684,8 @@ pub const World = struct {
         self.counted(.overlap);
         const area = query.bounds();
         var found: Found = .{ .count = 0, .total = 0 };
-        var it = self.bodies.iterator();
+        var it = self.near(area);
         while (it.next()) |entry| {
-            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
@@ -651,9 +708,8 @@ pub const World = struct {
         self.counted(.contacts);
         const area = query.bounds();
         var found: Found = .{ .count = 0, .total = 0 };
-        var it = self.bodies.iterator();
+        var it = self.near(area);
         while (it.next()) |entry| {
-            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
@@ -698,9 +754,8 @@ pub const World = struct {
     fn earliestPair(self: *World, moving: Convex, displacement: Vec3, target: f32, filter: Filter, layer: ?u32, ground_y: ?f32, sliding: bool, also: BodyHandle) ?Hit {
         const area = moving.bounds().sweptBy(displacement).expand(target);
         var best: ?Hit = null;
-        var it = self.bodies.iterator();
+        var it = self.near(area);
         while (it.next()) |entry| {
-            self.counters.bodies_visited +%= 1;
             if (layer) |l| if (entry.value.mask & l == 0) continue;
             if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
@@ -757,6 +812,37 @@ pub const World = struct {
             }
         }
         return best;
+    }
+
+    /// The bodies a query may meet, in ascending handle-index order: those the broadphase finds
+    /// near `area`, or every body under `scan_reference`. The broadphase's are a superset of the
+    /// bodies whose padded bounds overlap `area`, which is the test `candidate` then makes.
+    const Near = struct {
+        world: *World,
+        scan: ?core.HandlePool(Bodies, Body).Iterator = null,
+        indices: []const u32 = &.{},
+        cursor: usize = 0,
+
+        fn next(self: *Near) ?core.HandlePool(Bodies, Body).Entry {
+            if (self.scan) |*all| {
+                const entry = all.next() orelse return null;
+                self.world.counters.bodies_visited +%= 1;
+                return entry;
+            }
+            if (self.cursor == self.indices.len) return null;
+            const index = self.indices[self.cursor];
+            self.cursor += 1;
+            return self.world.bodies.entryAt(index).?;
+        }
+    };
+
+    fn near(self: *World, area: Aabb) Near {
+        if (!self.scan_reference) {
+            if (self.tree.query(area, self.body_scratch, &self.counters.bodies_visited)) |count| {
+                return .{ .world = self, .indices = self.body_scratch[0..count] };
+            }
+        }
+        return .{ .world = self, .scan = self.bodies.iterator() };
     }
 
     const Part = struct {
@@ -836,7 +922,7 @@ pub const World = struct {
         if (filter.ignore) |ignored| if (ignored.eql(id)) return null;
         if (!body_mod.maskAdmits(filter.mask, b)) return null;
         self.counters.bodies_tested +%= 1;
-        if (!self.bodyBounds(b).expand(0.002).overlaps(area)) return null;
+        if (!self.bodyBounds(b).expand(bounds_padding).overlaps(area)) return null;
         if (b.shape == .mesh) {
             const m = self.meshes.get(b.shape.mesh).?;
             return .{ .mesh = m, .pose = b.pose, .scale = b.scale, .surface = b.surface, .triangles = m.candidates(b.pose, b.scale, area, self.triangle_scratch) };
@@ -892,6 +978,14 @@ pub const World = struct {
         if (shape == .mesh) self.meshes.get(shape.mesh).?.users -= 1;
     }
 };
+
+/// What every test of a body's bounds allows for `f32` rounding in posing them, metres.
+const bounds_padding: f32 = 0.002;
+
+fn contains(outer: Aabb, inner: Aabb) bool {
+    return outer.min.x <= inner.min.x and outer.min.y <= inner.min.y and outer.min.z <= inner.min.z and
+        outer.max.x >= inner.max.x and outer.max.y >= inner.max.y and outer.max.z >= inner.max.z;
+}
 
 /// The farthest a convex shape reaches from its pose's origin, its radius included.
 fn reachOf(c: Convex) f32 {

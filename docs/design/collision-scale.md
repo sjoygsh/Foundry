@@ -196,6 +196,9 @@ body's pose, and it refits the leaf. `setPose`, `moveBodyAlone` and the two writ
 `character.zig` call it. `setShape` and `setScale` refit too. The guard is the equivalence test
 below: a setter that forgets to refit fails it.
 
+> **2026-11-10, Step 2:** the equivalence test runs 48 rounds, not 200, and a walk that would pass
+> the stack falls back to the scan (its Resolution).
+
 **The scan stays, for tests alone.** `World.scan_reference`, a test-only switch, runs the old
 loop. The equivalence test builds 2,048 random bodies, then moves, reshapes, rescales, removes
 and adds them over 200 rounds, and after each round asks 64 queries of every kind both ways. The
@@ -683,3 +686,80 @@ counting nothing, taking the counters, and that counting changes no answer.
 **Bar.** `zig build test` 2,923/2,933 (ten skips), 132/132 steps, five new tests. The format
 check, the four `check` variants, the four headless samples and `fdt-check` pass. No pin moved,
 no ABI change, no new grant yet: `author`'s is Step 7's and `debug`'s is Step 8's.
+
+## Resolution — Step 2: the broadphase (2026-11-10)
+
+**What the step added.**
+- `physics3d/broadphase.zig`: `Tree`, a bounding-volume tree with `reserve`, `insert`, `remove`,
+  `update`, `query` and a `consistent` check for tests. Insertion descends by least surface
+  growth, the left child on a tie, and rotations on the way back up keep it balanced.
+- `World.tree`, `World.leaf_of` (each body's leaf, by handle index) and `World.body_scratch`.
+- `World.place`, the one writer of a body's pose. `setPose`, `moveBodyAlone` and the
+  controller's two writes call it.
+- `World.near(area)`, which every query loop now walks in place of the bodies' iterator.
+- `World.scan_reference`, the test-only switch.
+- `core.HandlePool.entryAt(index)`, which turns a slot index back into an entry.
+- `Report.tree_nodes`, `tree_height` and `refits` are filled.
+
+**Where the code sharpened the design.**
+- **A walk that would pass its stack falls back to the scan.** §4 argued that a stack of 64
+  always suffices. It does for a balanced tree, but nothing should panic if that is ever wrong.
+  `Tree.query` returns null in that case, and the world scans every body for that one query. A
+  test builds a chain deeper than the stack by hand and gets the null.
+- **Everything the tree needs is reserved in `addBody`, before the body exists.** So nothing
+  after the pool's `add` can fail, and `place`, `removeBody` and the setters allocate nothing.
+  Moving a leaf frees one inner node and takes it back.
+- **`refit` decides by kind.** A kinematic body stays put while its bounds are inside its box. A
+  static body's box is exactly its bounds, so any real move refits it and a `setPose` to the same
+  pose does not.
+- **`setKind` refits too.** A body made static gives up its margin at once. One made kinematic
+  keeps its exact box until it moves out of it. Neither is needed for a right answer, since a
+  loose box is only slow, so the equivalence test cannot see it. A counter test holds it.
+- **`bodies_visited` now counts nodes walked,** as Step 1's Resolution said it would. Under
+  `scan_reference` it still counts bodies.
+- **The equivalence test runs 48 rounds, not §4's 200.** At 200 the scanning world took 86 s in a
+  Debug build, which every run of the bar would pay. At 48 the whole physics suite takes about 20 s, and the test asks 3,072
+  questions of each of the five kinds, plus 192 character moves, and every guard below that 200
+  rounds caught, 48 catch.
+- **The test is two worlds, not one world asked twice.** Each call is made of both, one through
+  the tree and one by scan, so the controller's own queries and `moveBody`'s pushes are compared
+  too, through the characters' moves.
+
+**The tree's height.** After 4,096 inserts in sorted order it is at most 19, the bound of §4.
+After the equivalence test's churn of about 2,400 bodies it is at most 18.
+
+**Measured,** with Step 1's harness on the Mac, ReleaseSafe, unpaced:
+
+| What | Scan (Step 1) | Tree |
+| --- | --- | --- |
+| A move with 2,114 bodies, median | 0.357 ms | **0.030 ms** |
+| The same, p95 | 0.371 ms | 0.042 ms |
+| Bodies or nodes visited in that move | 17,940 | 668 |
+| Bodies whose bounds were tested | 17,931 | 16 |
+| A move with 12 bodies, median | 0.0120 ms | 0.0118 ms |
+| The 64 movers' `moveBody`, median | 0.0026 ms | 0.0070 ms |
+
+The walk ends at the same place to the last digit printed, and counts the same 171.4 pairs a
+move. The movers cost more than before because each now refits its leaf when it leaves its
+margin, and are still a fourteenth of their 0.10 ms budget.
+
+**Every pin holds.** The player's `cb99ccfcf2b6d6c3`, the walker's `655e865f98779129`, the
+pacer's three, the corner's `832fe43a3a82db13`, and the court's four digests in `court-test`.
+
+**Guards verified by mutation,** each failing the equivalence test, and most failing others too:
+- `place` that does not refit;
+- `setScale` and `setShape` that do not refit;
+- a kinematic body that never leaves its box;
+- the sort of body indices removed, which also failed `ties go to the lower handle index`;
+- `removeBody` that leaves its leaf;
+- the tree's rotation disabled, which also failed the height bound.
+
+`setKind` without its refit failed only the counter test added for it.
+
+**Tests.** Eight new: five in `broadphase.zig` (an empty tree and one leaf, ascending output,
+balance under sorted inserts, churn against a pass over every box, and the stack's refusal) and
+three in `broadphase_tests.zig` (the equivalence test, the margin and the kind change, and
+emptying and refilling a world). Step 1's report tests now expect the tree's counts.
+
+**Bar.** `zig build test` 2,931/2,941 (ten skips), 132/132 steps. The format check, the four
+`check` variants, the four headless samples and `fdt-check` pass. No ABI change, no new grant.

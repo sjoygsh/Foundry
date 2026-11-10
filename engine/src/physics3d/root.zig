@@ -13,7 +13,7 @@
 //! radius, GJK measures the cores, conservative advancement turns distance into a cast, and EPA
 //! gives depth when the cores themselves meet. Every loop has a fixed budget.
 //!
-//! **Determinism is interface contract** (I9): bodies are scanned in handle-index order, ties
+//! **Determinism is interface contract** (I9): bodies are met in handle-index order, ties
 //! go to the lower handle, iteration counts are fixed, nothing reads a clock or an address, and
 //! there is no fast-math. The same calls give the same bytes on the same machine; across
 //! machines agreement to the last bit is not promised (ADR-0013).
@@ -26,6 +26,7 @@
 const std = @import("std");
 
 pub const body = @import("body.zig");
+pub const broadphase = @import("broadphase.zig");
 pub const gjk = @import("gjk.zig");
 pub const narrow = @import("narrow.zig");
 pub const shape = @import("shape.zig");
@@ -93,6 +94,7 @@ pub const maskAdmits = body.maskAdmits;
 
 test {
     _ = body;
+    _ = broadphase;
     _ = gjk;
     _ = narrow;
     _ = shape;
@@ -107,4 +109,5 @@ test {
     _ = @import("surface_tests.zig");
     _ = @import("platform_tests.zig");
     _ = @import("report_tests.zig");
+    _ = @import("broadphase_tests.zig");
 }

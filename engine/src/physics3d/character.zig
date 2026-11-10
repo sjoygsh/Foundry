@@ -127,11 +127,11 @@ pub fn remove(w: *World, gpa: Allocator, handle: CharacterHandle) bool {
     return w.characters.remove(handle);
 }
 pub fn setFeet(w: *World, gpa: Allocator, handle: CharacterHandle, feet: Vec3) error{InvalidPose}!bool {
-    _ = gpa; // No broadphase yet; kept for the same reason as World.setPose.
+    _ = gpa; // Unused, as World.setPose's is: the broadphase reserves when a body is added.
     const c = w.characters.get(handle) orelse return false;
     if (w.body(c.body) == null) return false;
     if (!validFeet(w, c.config, feet)) return error.InvalidPose;
-    w.bodies.get(c.body).?.pose = poseAt(w, c.config, feet);
+    w.place(c.body, poseAt(w, c.config, feet));
     c.ground = null;
     return true;
 }
@@ -367,7 +367,7 @@ pub fn moveWith(w: *World, handle: CharacterHandle, displacement: Vec3, hits: []
     if (!validFeet(w, c.config, r.feet)) return error.InvalidMove;
     r.ground = if (r.stuck) null else probed orelse ground(w, c, r.feet, also);
     r.grounded = r.ground != null;
-    w.bodies.get(c.body).?.pose = poseAt(w, c.config, r.feet);
+    w.place(c.body, poseAt(w, c.config, r.feet));
     // A carry taken, or new ground, is up to date with its body's serial. A pushed character
     // that stays on its ground keeps the carry it is owed for its own move.
     if (r.ground) |g| {
