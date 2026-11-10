@@ -1493,6 +1493,8 @@ pub fn build(b: *std.Build) void {
             b.step("sandbox3d-props-test", "Run M25's content-prop validation, collision, ordering and reload proofs").dependOn(&b.addRunArtifact(props_tests).step);
             const native_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"native3d:"} });
             b.step("sandbox3d-native-test", "Run M25's real-loader consent, movement, submission and cleanup proofs").dependOn(&b.addRunArtifact(native_tests).step);
+            const yard_tests = b.addTest(.{ .root_module = sample_mod, .filters = &.{"yard:"} });
+            b.step("sandbox3d-yard-test", "Run M38's yard: the baked hillside, the hull, the stage, its replay and the tilted stage").dependOn(&b.addRunArtifact(yard_tests).step);
         }
         check_step.dependOn(&sample_tests.step);
     }

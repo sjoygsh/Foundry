@@ -463,6 +463,14 @@ turned aside by a mover, steps onto the boulder's tilted face and stops. The sta
 **The overlay** hands the report to the panel. The sample logs the hillside's `addMesh` at load
 against 5 ms, and the same mesh built without its tree beside it, once.
 
+> **2026-11-11, Step 9.** The yard is at (70, 0, 0), not (40, 0, 0): M28's patch and M29's effects
+> reach x = 28, and a hillside wide enough for lanes a character walks would have met them. The
+> hillside spans 64 m. The yard adds it to the walk world itself, at the record's origin, instead of
+> through `walk.main`'s list, so moving the yard moves its ground; its pose carries the tilted
+> tour's turn and its triangles stay put, so the baked tree holds there too. The stage starts in
+> the middle lane among the stones and ends on the boulder at the lane's end. The tilted stage
+> matches within 15 mm a tick and 2 mm at its end, not 5 mm (its Resolution).
+
 ## 12. The court
 
 Nothing in its content changes, and nothing in its code but one line that hands a report to the
@@ -1322,3 +1330,121 @@ built-in count test is now eight.
 **The bar.** `zig build test` passed 2,981 of 2,991 tests (ten skips) in 132 of 132 steps. The
 four checks, the four headless samples, `fdt-check`, the 2,400-frame tour and `court-test` (87 of
 89, two skips) passed, and no pin moved. No content or asset kind changed, so staging was not run.
+
+## Resolution — Step 9: `sandbox3d`'s yard (2026-11-11)
+
+**What it pinned.**
+- **`scripts/m38/make_yard.py`** writes `models/yard.gltf` (0.59 MB with its `.bin`: positions,
+  normals and 16-bit indices, no UVs) and `models/boulder.gltf`. The hillside is 127 by 127 quads
+  over 64 m, 32,258 triangles, its height three sines and no clock or `random`; the script writes
+  the same bytes twice. The boulder is 17 points: a ramp of four on the plane 20° from level, two
+  metres wide and 2.5 long, a back, and one point inside, given a hidden sliver so a triangle uses it.
+- **`samples/sandbox3d/content/yard.fdt`:** the hillside's `foundry:model_import` with `collision
+  true` and a grass surface; the boulder as a model and as a `foundry:collision_import` with `shape
+  "hull"`, both from one glTF; `sandbox3d:materials.stone`; a grass surface; and
+  `sandbox3d:yard.main`, of the sample's `yard` schema, naming the models, the hull, the materials
+  and surfaces, the origin, and 64 columns, 32 rows and 64 movers. A mod may thin the yard (at most
+  64, 32, and three movers a lane) or move it; the layout inside it is the sample's.
+- **`samples/sandbox3d/yard.zig`** builds it in the walk world at each content refresh, after the
+  corner, so every older body keeps its handle:
+  - the hillside's collision, version 3, with its tree, as one static body at the origin;
+  - the hull from the `.fhul`, 16 corners, the inside point left out;
+  - 2,048 stones on a 64 by 32 grid, rows 2 m apart and stones 0.8 m apart along them. One in four
+    is the hull at a scale of 0.06 to 0.09; the rest are boxes of three sizes a side, from a hash
+    of their place. Each is sunk 5 cm into the hillside;
+  - 64 kinematic posts circling 0.35 m about their place, up to three to a lane between the rows;
+  - the boulder, at full size, at the end of the middle lane.
+  
+  The stones are drawn as one runtime mesh built once, each hull stone fanned from the faces
+  `physics3d` found. The hillside, the boulder and the posts are drawn as their models. `height` is
+  the script's, in `core`'s own trig.
+- **`walk.addCollisionMesh`** hands `physics3d` a baked tree when an `.fcol` has one and the
+  positions are not turned, converting the file's node to `physics3d.mesh.Node`: Step 6's loose end.
+- **`yard_tour.zig`**, the stage after M37's six:
+  - It starts in the middle lane, 2 m east of the origin. It walks east, is turned aside 0.658 m by
+    the post circling there, walks up the boulder's ramp 1.5 m and stands 30 ticks. That is 634
+    ticks.
+  - Every tick, the player's capsule overlaps no stone and no post.
+  - At the end, the player is grounded on the boulder. Its normal is 20.0000° from up in the upright
+    frame, so it is walkable.
+  - The world holds 2,126 bodies and one baked mesh, and one tick among the stones tested both a
+    closed-form pair and a GJK pair.
+- **New pin: the yard stage's digest `1052a9ae891b0d27`**, in `yard_tests.zig`. The player's
+  `b85b52c97d259db4`, the corner's `e2992f93e5323345`, the walker's and the pacer's three held.
+- **`main.zig`:**
+  - The sample registers the hull loader.
+  - The posts move before the player each tick, timed in `yard.movers`.
+  - The stage runs after the corner's, and is replayed and tilted like it, in `proveYard`.
+  - The run prints `yard:`, the player's moves and the posts' together, and `collision: addMesh of
+    the hillside` once at load.
+  - **Y** goes to the middle lane.
+  - The overlay's physics panel gets the walk world's report, with each frame's work as the
+    difference from its last frame, so nothing takes the counters the stage reads.
+- `zig build sandbox3d-yard-test` runs the yard's tests alone.
+
+**Where the implementation sharpened the design.**
+- **The place.** §11's (40, 0, 0) would have put a hillside wide enough for walkable lanes over
+  M28's patch and M29's effects, which reach x = 28. The yard is at (70, 0, 0), from 38 to 102.
+- **The hillside is the yard's, not the walk list's.** §11 put it in `walk.main`'s list, which places
+  geometry where its file says. A record that moves the yard would then have left its ground
+  behind. The yard adds the hillside itself, at its origin. Its pose also carries the tilted
+  tour's turn while its triangles stay as baked, so the tilted world keeps the tree. Turning the
+  triangles, as the walk list does, would have dropped it.
+- **The stage's path.** §11's player walks in at the gate and ends on a boulder by it. Here the
+  stage starts in the middle lane among the stones and ends on the boulder at the lane's far end.
+  That way it crosses stones and a mover before the ramp, and a mover is never across the gate.
+- **"Turned aside"** is measured: the post in the lane pushed the player (`BodyMove.pushed`), and
+  the player was 0.1 m or more off the lane's middle before the boulder. It was 0.658 m.
+- **"That tick".** §11 asks for a closed-form and a GJK pair in one tick. The stage asks it of one
+  walking tick among the stones, since on the ramp the player tests only the hull.
+- **The tilted band.** M37's tilted stages, on flat ground, hold 5 mm. Down the hillside, a tick
+  where one world snaps the feet to the ground is, in the other, a tick of falling. They differ by
+  a centimetre at most and meet again within a few ticks. The stage is held to 15 mm a tick and
+  2 mm at its end; it read 10.2 mm and 1.06 mm.
+
+**Guards verified by mutation,** ten, each failing a test:
+- the baked tree converted with the wrong left child, and dropped;
+- the box stones on a layer the player passes through;
+- the ramp checked against 21°;
+- posts that push nobody;
+- no hull stones;
+- the hillside turned by its triangles in place of its pose;
+- the player moved before the posts;
+- "aside" asked past what happened.
+
+**Tests.** Three new in `yard_tests.zig`, from the compiled package an install ships:
+- the stage, its pin and its byte-for-byte replay;
+- the tilted stage and its baked tree;
+- the hillside's 32,258 triangles taken with their tree, 2,048 stones and 64 posts, the hull's 16
+  corners, the ramp's 20° normal by a ray, grass under the lane, a stone where `stoneAt` says, a
+  post that moves, and every piece drawn.
+
+**From the relocated, read-only ReleaseSafe install on Metal,** windowed on the M5, the tour passed
+whole: M23's five, M37's six, the yard, and every replay. **Budgets, p95 in the paced 60 Hz loop:**
+
+| What | Read | Budget |
+| --- | --- | --- |
+| The player's move in the yard, 2,126 bodies | 0.215 ms | 0.25 ms |
+| The 64 posts' `moveBody`, together | **0.154 ms** | 0.10 ms |
+| `addMesh` of the hillside with its baked tree | 1.03 ms | 5 ms |
+| The court's whole tick (`win`) | 0.128 ms | 0.25 ms |
+
+Beside them, the readings they replaced:
+- the hillside built at load took 63.2 ms;
+- a move under the scan read 0.357 ms at 2,114 bodies (Step 1);
+- a move with GJK alone read 0.0118 ms in a small world (Step 5).
+
+The frame pacing was a median of 16.67 ms. The court's files under Application Support were
+unchanged by its run.
+
+**The posts' line.** `moveBody` asks every character in the world whether the moved body now
+overlaps it. It does not ask the broadphase which characters are near, so 64 posts cost 64 times
+the world's characters. That is the reading over its line. "M100 `moveBody` through the tree" is
+already Step 12's roadmap line, so the reading goes there, and nothing in `physics3d` changed for it
+here.
+
+**The bar.** `zig build test` passed 2,984 of 2,994 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples, `fdt-check`, the 2,400-frame tour, the tilted tour and
+`court-test` (87 of 89, two skips) passed. Because the sandbox's package gained a hull and a baked
+mesh, `zig build distribution-test` (33 of 33) ran too and passed. No release stages `sandbox3d`;
+the ReleaseSafe install above is the relocated run.

@@ -138,6 +138,9 @@ const strafer_mod = @import("strafer.zig");
 const extras_mod = @import("extras.zig");
 const corner_tour = @import("corner_tour.zig");
 const CornerTour = corner_tour.CornerTour;
+const yard_mod = @import("yard.zig");
+const physics = @import("physics3d");
+const YardTour = @import("yard_tour.zig").YardTour;
 const Native = native_mod.Native;
 
 const orrery_mod = @import("orrery.zig");
@@ -529,7 +532,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             sample.navigation.window.add(recorder, paced_ns);
         }
         if (sample.tour) |*tour| if (tour.done() and sample.walkers[0].tick >= Walker.proof_ticks and
-            (if (sample.corner_tour) |*ct| ct.done() or tour.failed != null else true)) break;
+            (if (sample.corner_tour) |*ct| ct.done() or tour.failed != null else true) and
+            (if (sample.yard_tour) |*yt| yt.done() or (sample.corner_tour != null and sample.corner_tour.?.failed != null) or tour.failed != null else true)) break;
 
         if (frame_limit) |limit| {
             if (engine.frame_index >= limit) break;
@@ -578,6 +582,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         log.info("tour: walker pass ({d} ticks, {d} waypoints, idle/walk/cross-fade, replay {x:0>16}); player hash {x:0>16}", .{ walker.tick, walker.reached, walker.hash, tour.hash });
         try sample.pacer_proof.prove(gpa, sample.orrery, &engine.store, engine.jobs(), &replay.world, &sample.content.?, &sample.rigs, engine.step_delta);
         try proveCorner(gpa, engine, &sample, &replay, &second);
+        try proveYard(gpa, engine, &sample, &replay);
     }
 
     sample.gallery.window.report();
@@ -639,9 +644,53 @@ fn proveCorner(gpa: std.mem.Allocator, engine: *app.Engine, sample: *Sample, rep
     log.info("tour: tilted pass ({d} and {d} ticks turned 0.7 rad, every stage passed; worst {d:.5} m and {d:.5} m from upright)", .{ five.len, six.len, a.worst, b.worst });
 }
 
+/// M38's stage (`collision-scale.md` §11): the frame loop's pass, replayed byte for byte in a
+/// fresh yard after M37's replay, and with `tilted`, again in a world turned by
+/// `corner_tour.tilt`, matched to the frame loop's within 15 mm a tick and 2 mm at its end.
+fn proveYard(gpa: std.mem.Allocator, engine: *app.Engine, sample: *Sample, replay: *walk_mod.Walk) !void {
+    const yt = &(sample.yard_tour orelse return);
+    if (sample.yard.settings == null) {
+        log.warn("tour: FAIL the M38 yard is not there", .{});
+        return error.YardTourFailed;
+    }
+    if (!yt.done() or yt.failed != null) return error.YardTourFailed;
+    const dt = engine.step_delta.toSecondsF32();
+    var replay_yard: yard_mod.Yard = .{};
+    defer replay_yard.deinit(gpa, &replay.world, &engine.assets, null);
+    replay_yard.refresh(gpa, &engine.store, &replay.world, &engine.assets, null, null);
+    const second = try gpa.create(YardTour);
+    defer gpa.destroy(second);
+    second.* = .{ .emit = false };
+    while (!second.done()) try second.advance(replay, &replay_yard, dt);
+    if (second.failed != null or second.hash != yt.hash) {
+        log.warn("tour: FAIL yard replay ({x:0>16} against {x:0>16})", .{ second.hash, yt.hash });
+        return error.YardTourFailed;
+    }
+    log.info("tour: yard replay pass ({d} ticks, {x:0>16})", .{ yt.len, yt.hash });
+    if (!sample.tilted) return;
+    var tilted = walk_mod.Walk.init(gpa);
+    defer tilted.deinit(&engine.assets);
+    tilted.frame = corner_tour.tilt();
+    tilted.refresh(&engine.store, &engine.assets, dt);
+    var tilted_yard: yard_mod.Yard = .{ .frame = tilted.frame };
+    defer tilted_yard.deinit(gpa, &tilted.world, &engine.assets, null);
+    tilted_yard.refresh(gpa, &engine.store, &tilted.world, &engine.assets, null, null);
+    const turned = try gpa.create(YardTour);
+    defer gpa.destroy(turned);
+    turned.* = .{ .emit = false };
+    while (!turned.done()) try turned.advance(&tilted, &tilted_yard, dt);
+    const match = corner_tour.compare(yt.trace[0..yt.len], turned.trace[0..turned.len], 15e-3);
+    const end = if (yt.len == turned.len and yt.len > 0) yt.trace[yt.len - 1].sub(turned.trace[yt.len - 1]).length() else std.math.inf(f32);
+    if (turned.failed != null or !match.matches or end > 2e-3) {
+        log.warn("tour: FAIL tilted yard ({s}; worst {d:.5} m, {d:.5} m at the end)", .{ turned.failed orelse "passed", match.worst, end });
+        return error.TiltedTourFailed;
+    }
+    log.info("tour: tilted yard pass ({d} ticks turned 0.7 rad; worst {d:.5} m, {d:.5} m at the end)", .{ turned.len, match.worst, end });
+}
+
 /// What a run has to say for itself: how many frames, the pacing of the last ones and what
 /// each stage of a frame cost.
-fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, skipped_frames: u64) void {
+fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *Sample, skipped_frames: u64) void {
     var move_scratch: [Tour.max_ticks + CornerTour.max_ticks]i64 = undefined;
     const moves = core.profile.summarise(sample.move_times[0..sample.move_count], &move_scratch);
     log.info("character: {d} moves, median {d:.4}ms p95 {d:.4}ms", .{ moves.count, ms(moves.median_ns), ms(moves.p95_ns) });
@@ -649,6 +698,14 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *const Sample, sk
         var sweep_scratch: [CornerTour.max_ticks]i64 = undefined;
         const sweeps = core.profile.summarise(sample.sweep_times[0..sample.sweep_count], &sweep_scratch);
         log.info("door: {d} sweeps, median {d:.4}ms p95 {d:.4}ms", .{ sweeps.count, ms(sweeps.median_ns), ms(sweeps.p95_ns) });
+    }
+    if (sample.yard_move_count > 0) {
+        var yard_scratch: [YardTour.max_ticks]i64 = undefined;
+        const yard_moves = core.profile.summarise(sample.yard_move_times[0..sample.yard_move_count], &yard_scratch);
+        const movers = core.profile.summarise(sample.mover_times[0..sample.mover_count], &yard_scratch);
+        const held = sample.walk.world.report();
+        const bodies = held.bodies_static + held.bodies_kinematic;
+        log.info("yard: {d} moves among {d} bodies, median {d:.4}ms p95 {d:.4}ms; movers' moveBody, {d} together, median {d:.4}ms p95 {d:.4}ms", .{ yard_moves.count, bodies, ms(yard_moves.median_ns), ms(yard_moves.p95_ns), sample.yard.movers.items.len, ms(movers.median_ns), ms(movers.p95_ns) });
     }
     const stats = sample.world.frameStats();
     log.info("skinning: {d} draws, {d} vertices, {d} budget drops", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
@@ -926,6 +983,20 @@ const Sample = struct {
     underfoot: core.ContentId = .none,
     sweep_times: [CornerTour.max_ticks]i64 = undefined,
     sweep_count: usize = 0,
+    /// M38's yard of stones, movers and a boulder on a baked hillside, and its stage after M37's.
+    yard: yard_mod.Yard = .{},
+    yard_tour: ?YardTour = null,
+    /// Whether the hillside's `addMesh` has been said, which it is once, at the first load.
+    yard_said: bool = false,
+    /// The player's moves in the yard's stage and the movers' together, a tick each.
+    yard_move_times: [YardTour.max_ticks]i64 = undefined,
+    yard_move_count: usize = 0,
+    mover_times: [YardTour.max_ticks]i64 = undefined,
+    mover_count: usize = 0,
+    /// What the walk world holds and was asked, for the overlay's physics panel, and the counters
+    /// as they stood at its last frame, so it shows a frame's work without taking them.
+    physics_report: physics.Report = .{},
+    physics_last: physics.Report = .{},
     native: ?*Native = null,
     walkers: []Walker,
     rigs: asset.Rigs,
@@ -1062,11 +1133,13 @@ const Sample = struct {
     fn load(self: *Sample, engine: *app.Engine) !void {
         try engine.assets.registerLoader(self.gpa, render2d.textureLoader(&self.overlay));
         try engine.assets.registerLoader(self.gpa, asset.collisionMeshLoader());
+        try engine.assets.registerLoader(self.gpa, asset.collisionHullLoader());
         if (engine.os.envVar("FOUNDRY_SANDBOX3D_WALK")) |mode| {
             const tilted = std.mem.eql(u8, mode, "tilted");
             if (std.mem.eql(u8, mode, "tour") or tilted) {
                 self.tour = .{};
                 self.corner_tour = .{};
+                self.yard_tour = .{};
                 self.tilted = tilted;
             } else log.warn("unknown walk mode '{s}'; using keys", .{mode});
         }
@@ -1108,7 +1181,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, m slide the crate, l go to the M37 corner, space jump, r reload content, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, m slide the crate, l go to the M37 corner, y go to the M38 yard, space jump, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -1187,6 +1260,12 @@ const Sample = struct {
         self.strafer.refresh(&engine.store, &self.rigs, if (self.content) |*content| content else null);
         // Last, so every body before it keeps the handle it had before M37.
         self.extras.refresh(self.gpa, &engine.store, &self.walk.world, &engine.assets, if (self.content) |*content| content else null);
+        // After the corner, for the same reason.
+        self.yard.refresh(self.gpa, &engine.store, &self.walk.world, &engine.assets, if (self.content) |*content| content else null, engine.os);
+        if (!self.yard_said) if (self.yard.baked_ns) |baked| {
+            log.info("collision: addMesh of the hillside, {d} triangles with its baked tree, {d:.3} ms against 5 ms; built at load it took {d:.3} ms", .{ self.yard.triangles, ms(baked), ms(self.yard.built_ns.?) });
+            self.yard_said = true;
+        };
 
         if (self.settings.font.eql(before.font) and !self.font_asset.isNone()) return;
         const fresh = if (self.settings.font.eql(.none))
@@ -1281,10 +1360,30 @@ const Sample = struct {
                 self.sweep_count += 1;
             };
         }
+        // M38's movers, likewise before any character moves.
+        {
+            const movers = engine.beginScope("yard.movers");
+            defer movers.end();
+            if (self.yard_tour) |*yt| {
+                if (self.yardTourReady()) try yt.prepare(&self.walk, &self.yard, engine.os);
+            } else if (self.tour == null) try self.yard.step(self.gpa, &self.walk.world, engine.os);
+            if (self.yard.movers_ns) |ns| if (self.yard_tour != null and self.mover_count < self.mover_times.len) {
+                self.mover_times[self.mover_count] = ns;
+                self.mover_count += 1;
+            };
+        }
         const scope = engine.beginScope("character");
         defer scope.end();
         const started = engine.os.monotonicNanos(); // Measurement only; never affects the move.
         if (self.tour) |*tour| {
+            if (self.yardTourReady()) {
+                const yard_started = engine.os.monotonicNanos(); // Measurement only.
+                try self.yard_tour.?.move(&self.walk, &self.yard, dt);
+                if (self.yard_move_count < self.yard_move_times.len) {
+                    self.yard_move_times[self.yard_move_count] = @intCast(engine.os.monotonicNanos() - yard_started);
+                    self.yard_move_count += 1;
+                }
+            }
             if (self.cornerTourReady(engine)) try self.corner_tour.?.move(&self.walk, &self.extras, dt);
             if (!tour.done()) try tour.advance(&self.walk, dt);
             if (tour.done() and tour.failed == null and !self.props_proved and Props.plinthSelected(&engine.store)) {
@@ -1355,6 +1454,7 @@ const Sample = struct {
             .world3d = &self.world,
             .navigation = self.reportNavigation(),
             .animation = if (self.pacer.entity != null) &self.pacer.report else null,
+            .physics = self.reportPhysics(),
         });
     }
 
@@ -1367,6 +1467,32 @@ const Sample = struct {
         if (Props.plinthSelected(&engine.store) and !self.props_proved) return false;
         if (self.native) |native| if (native.orbiter_owner != null and !native.blocked) return false;
         return true;
+    }
+
+    /// Whether M38's stage runs this tick: once M37's six have passed, and until it is done. It
+    /// runs before the corner's move in a tick, so it begins on the tick after the corner ends.
+    fn yardTourReady(self: *const Sample) bool {
+        const yt = self.yard_tour orelse return false;
+        const ct = self.corner_tour orelse return false;
+        return ct.done() and ct.failed == null and !yt.done();
+    }
+
+    /// The walk world's report, with the last tick's work and the yard's move timing.
+    fn reportPhysics(self: *Sample) *const physics.Report {
+        const now = self.walk.world.report();
+        self.physics_report = now;
+        // The work since the panel's last frame. The counters wrap, so the difference does too.
+        for (&self.physics_report.queries, now.queries, self.physics_last.queries) |*q, a, b| q.* = a -% b;
+        inline for (.{ "bodies_visited", "bodies_tested", "triangles_tested", "pairs_closed", "pairs_gjk", "refits" }) |name| {
+            @field(self.physics_report, name) = @field(now, name) -% @field(self.physics_last, name);
+        }
+        self.physics_last = now;
+        if (self.yard_move_count > 0) {
+            var scratch: [YardTour.max_ticks]i64 = undefined;
+            const moves = core.profile.summarise(self.yard_move_times[0..self.yard_move_count], &scratch);
+            self.physics_report.move_p95_ms = @floatCast(ms(moves.p95_ns));
+        }
+        return &self.physics_report;
     }
 
     fn crateObstacle(self: *const Sample) ?nav_mod.Obstacle {
@@ -1444,6 +1570,18 @@ const Sample = struct {
                 self.walk.pitch = 0;
                 log.info("l: in the M37 corner", .{});
             } else |err| log.warn("l: the player could not be moved ({t})", .{err});
+        }
+        if (in.wasPressed(.y) and !typing) {
+            if (self.yard.settings) |ys| {
+                const lane = yard_mod.laneZ(yard_mod.middleLane(ys.rows), ys.rows);
+                if (self.walk.teleport(self.yard.point(.init(YardTour.start_x, yard_mod.height(YardTour.start_x, lane) + 0.1, lane)))) |_| {
+                    self.walk.orbit = false;
+                    // Facing along the middle lane, toward the boulder, along +X.
+                    self.walk.yaw = -std.math.pi / 2.0;
+                    self.walk.pitch = 0;
+                    log.info("y: in the M38 yard's middle lane", .{});
+                } else |err| log.warn("y: the player could not be moved ({t})", .{err});
+            } else log.warn("y: the M38 yard is not there", .{});
         }
         if ((in.wasPressed(.m) and !typing) or scripted.m) {
             self.crowd.moveCrate();
@@ -1667,6 +1805,7 @@ const Sample = struct {
         self.drawModel(.{ .model = self.gallery.model, .world = Mat4.identity });
         if (self.content) |*content| try self.props.draw(content);
         if (self.content) |*content| self.extras.draw(&self.walk.world, content);
+        if (self.content) |*content| self.yard.draw(&self.walk.world, content);
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.effects) |effects| try effects.draw();
         if (self.content) |*content| try self.crowd.draw(content, self.crate);
@@ -1806,6 +1945,7 @@ const Sample = struct {
         }
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         self.extras.deinit(self.gpa, &self.walk.world, &engine.assets, if (self.content) |*c| c else null);
+        self.yard.deinit(self.gpa, &self.walk.world, &engine.assets, if (self.content) |*c| c else null);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
         self.pacer.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null, &self.rigs);
         self.pacer_block.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null);
@@ -1817,6 +1957,7 @@ const Sample = struct {
         self.rigs.deinit();
         self.walk.deinit(&engine.assets);
         _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_mesh.id);
+        _ = engine.assets.unregisterLoader(self.gpa, asset.schemas.collision_hull.id);
         if (!self.course.isNone()) if (self.content) |*content| content.releaseModel(self.course);
         if (self.content) |*content| self.gallery.release(content);
         if (!self.font_asset.isNone()) engine.assets.release(self.font_asset);
@@ -2043,6 +2184,7 @@ test {
     _ = walk_mod;
     _ = @import("walk_tests.zig");
     _ = @import("extras_tests.zig");
+    _ = @import("yard_tests.zig");
     _ = @import("walker_tests.zig");
     _ = @import("pacer_tests.zig");
     _ = @import("props_tests.zig");

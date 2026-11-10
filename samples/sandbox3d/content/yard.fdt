@@ -1,0 +1,56 @@
+# M38's yard (`docs/design/collision-scale.md` §11), east of everything around (70, 0, 0) and away
+# from every tour path: a hillside of 32,258 triangles, 2,048 stones, 64 movers and a boulder. The
+# models are written by scripts/m38/make_yard.py; the stones and movers are bodies the sample makes
+# (`samples/sandbox3d/yard.zig`), and none of it is a navigation source or a prop.
+
+surface sandbox3d:surface.grass { name "grass" }
+
+# The hillside, drawn and collided with. Its collision is past `author`'s threshold, so its
+# `.fcol` is version 3 and carries its tree. The yard adds it to the walk world at its own place.
+foundry:model_import sandbox3d:models.yard {
+    source "models/yard.gltf"
+    collision true
+    surfaces [ { material "Grass" surface sandbox3d:surface.grass } ]
+}
+
+# The boulder is drawn as its model and collides as its hull: the corners of its own triangles.
+foundry:model_import sandbox3d:models.boulder { source "models/boulder.gltf" }
+foundry:collision_import sandbox3d:models.boulder_hull {
+    source "models/boulder.gltf"
+    shape "hull"
+}
+
+foundry:material sandbox3d:materials.stone {
+    shading    foundry:shading.lit
+    roughness  0.85
+    base_color { r 0.5  g 0.49  b 0.46  a 1.0 }
+}
+
+# What the yard is made of and where it is. A mod thins it with fewer columns, rows or movers, or
+# moves it by its origin; the layout within it is the sample's, beside the generator's.
+@schema yard {
+    ground id
+    boulder id
+    hull id
+    mover_model id
+    stone_material id
+    stone_surface id
+    mover_surface id
+    origin { x f32 y f32 z f32 }
+    columns u32
+    rows u32
+    movers u32
+}
+yard sandbox3d:yard.main {
+    ground sandbox3d:models.yard
+    boulder sandbox3d:models.boulder
+    hull sandbox3d:models.boulder_hull
+    mover_model sandbox3d:models.crate
+    stone_material sandbox3d:materials.stone
+    stone_surface sandbox3d:surface.stone
+    mover_surface sandbox3d:surface.metal
+    origin { x 70 y 0 z 0 }
+    columns 64
+    rows 32
+    movers 64
+}

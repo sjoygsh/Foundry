@@ -1,0 +1,114 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Foundry scripts/m20/make_scene.py"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Hillside",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "hillside",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Grass",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.34,
+          0.45,
+          0.24,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7
+      }
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 16384,
+      "type": "VEC3",
+      "min": [
+        -32.0,
+        -0.8300258778447318,
+        -32.0
+      ],
+      "max": [
+        32.0,
+        0.8456882740234936,
+        32.0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 16384,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 96774,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 196608,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 196608,
+      "byteLength": 196608,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 393216,
+      "byteLength": 193548,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "yard.bin",
+      "byteLength": 586764
+    }
+  ]
+}

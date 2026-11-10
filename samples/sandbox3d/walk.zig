@@ -39,8 +39,27 @@ pub fn addCollisionMesh(gpa: std.mem.Allocator, world: *physics.World, geometry:
         surface.* = asset.collision_mesh.surfaceIndex(attribute) orelse physics.mesh.no_surface;
         side.* = asset.collision_mesh.oneSided(attribute);
     }
-    const attributes: physics.mesh.Attributes = .{ .surfaces = geometry.surfaces, .triangle_surfaces = surfaces, .one_sided = one_sided };
-    if (upright(frame)) return world.addMeshWith(gpa, geometry.positions, geometry.indices, attributes);
+    var attributes: physics.mesh.Attributes = .{ .surfaces = geometry.surfaces, .triangle_surfaces = surfaces, .one_sided = one_sided };
+    if (upright(frame)) {
+        // A baked tree (`.fcol` v3, `collision-scale.md` §7), in `physics3d`'s layout: the file
+        // keeps one link a node, and an inner node's left child is the node after it. Only
+        // upright, since turning the positions would leave its boxes behind.
+        const baked = geometry.tree() orelse return world.addMeshWith(gpa, geometry.positions, geometry.indices, attributes);
+        const nodes = try gpa.alloc(physics.mesh.Node, baked.nodes.len);
+        defer gpa.free(nodes);
+        for (baked.nodes, nodes, 0..) |node, *out, i| {
+            out.* = .{ .bounds = .{ .min = node.min, .max = node.max } };
+            if (node.leaf()) {
+                out.first = node.link;
+                out.count = node.count;
+            } else {
+                out.left = @intCast(i + 1);
+                out.right = node.link;
+            }
+        }
+        attributes.tree = .{ .nodes = nodes, .order = baked.order };
+        return world.addMeshWith(gpa, geometry.positions, geometry.indices, attributes);
+    }
     const turned = try gpa.alloc(Vec3, geometry.positions.len);
     defer gpa.free(turned);
     for (geometry.positions, turned) |p, *t| t.* = frame.rotate(p);

@@ -1,7 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-11
-**Current handoff: M38 Step 8 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 9, `sandbox3d`'s yard: no yard, hillside, boulder or stage exists, no package holds a baked tree or a `.fhul`, and no sample hands the overlay a physics report. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 9 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 10, the court: it hands the overlay no physics report yet, its tick has not been read from a relocated install for this step's sake, and the owner has not played it. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 9 is done (2026-11-11): `sandbox3d`'s yard.**
+- **The yard** is at (70, 0, 0) (`sandbox3d:yard.main`):
+  - a 32,258-triangle hillside whose `.fcol` carries its baked tree;
+  - 2,048 stones, one in four the boulder's hull at a scale, drawn as one runtime mesh;
+  - 64 kinematic posts moved by `moveBody` before the player;
+  - the boulder, a `shape "hull"` import, with a ramp 20° from level.
+
+  `scripts/m38/make_yard.py` writes the models. `walk.addCollisionMesh` now hands a baked tree to `physics3d`. **Y** goes to the yard, and the overlay's physics panel shows the walk world.
+- **The tour's new stage** walks the middle lane, is pushed aside 0.658 m by a post, climbs the boulder and stands on its 20.0000° face. It never overlaps a stone or a post, and it sees 2,126 bodies and one baked mesh. **New pin `1052a9ae891b0d27`.** It replays byte for byte. Tilted, it matches within 15 mm a tick and 2 mm at the end (10.2 mm and 1.06 mm), since snapping and falling on a slope can split by a tick. Every older pin held.
+- **Budgets from a relocated ReleaseSafe install on Metal (M5), p95 paced:**
+  - the player's yard move: 0.215 ms, against 0.25 ms;
+  - `addMesh` of the hillside: 1.03 ms with its tree, 63 ms built;
+  - the court's tick: 0.128 ms;
+  - **the 64 posts' `moveBody`: 0.154 ms, over its 0.10 ms line.** `moveBody` checks every character in the world, not the broadphase's near ones. That is M100's line, as Step 12's roadmap list already says.
+- Ten guards verified by mutation. Bar 2,984/2,994 (ten skips), 132/132 steps, three new tests. Every check, sample, `fdt-check`, both tours, `court-test` and `distribution-test` passed.
 
 **M38 Step 8 is done (2026-11-11): the physics panel.**
 - **`debug` is granted `physics3d`,** for `physics3d.Report` alone; `physics2d` stays out.

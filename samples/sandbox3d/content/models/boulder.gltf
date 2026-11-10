@@ -1,0 +1,114 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Foundry scripts/m20/make_scene.py"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Boulder",
+      "mesh": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "boulder",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Rock",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.45,
+          0.43,
+          0.4,
+          1
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.7
+      }
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 71,
+      "type": "VEC3",
+      "min": [
+        -0.25,
+        -0.5,
+        -1.3
+      ],
+      "max": [
+        3.5,
+        1.0099255856655058,
+        1.3
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 71,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 87,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 852,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 852,
+      "byteLength": 852,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1704,
+      "byteLength": 174,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "boulder.bin",
+      "byteLength": 1878
+    }
+  ]
+}
