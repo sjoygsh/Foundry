@@ -60,6 +60,7 @@ pub const Found = world.Found;
 pub const Hit = world.Hit;
 pub const HullHandle = shape.HullHandle;
 pub const MeshAttributes = mesh.Attributes;
+pub const MeshTree = mesh.Tree;
 pub const MeshHandle = shape.MeshHandle;
 pub const Overlap = world.Overlap;
 pub const Pose = shape.Pose;
@@ -110,4 +111,5 @@ test {
     _ = @import("platform_tests.zig");
     _ = @import("report_tests.zig");
     _ = @import("broadphase_tests.zig");
+    _ = @import("tree_tests.zig");
 }

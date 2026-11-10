@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38 Step 2 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 3, a tree from outside: `mesh.Attributes.tree`, `validateTree` and a public `buildTree` do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 3 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 4, hull faces: `physics3d/hull.zig` does not exist yet, and a hull is still points alone. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 3 is done (2026-11-10): a tree from outside.**
+- `mesh.Attributes.tree` hands a mesh its tree. `Mesh.initWith` checks it, copies it and builds nothing. A wrong tree refuses the mesh as `InvalidMesh` and is never rebuilt.
+- `mesh.validateTree` checks a tree in one pass and names why and where it fails, by one of twelve `TreeFault`s. `mesh.buildTree` returns the tree `Mesh.init` builds, for `author` at Step 7. `Report.meshes_baked` is filled.
+- A chain-shaped valid tree at the depth limit of 31 gives the built tree's answers byte for byte over 1,200 queries.
+- On the Mac, unpaced, the 32,768-triangle hillside loads with its tree in 0.28 ms, where building took 60 ms. Validation alone is 1.4 ms at 262,144 triangles, less than ADR-0077 guessed.
+- Sharpened: `validateTree` takes an allocator for a bit a triangle; a leaf of zero is refused as a node out of preorder; `Mesh.node_count` is gone.
+- Thirteen guards verified by mutation. Bar 2,940/2,950 (ten skips), 132/132 steps, nine new tests; every check, sample and `fdt-check` passed. No pin moved.
 
 **M38 Step 2 is done (2026-11-10): the broadphase.**
 - `physics3d/broadphase.zig` is a balanced bounding-volume tree over bodies. Every query takes its bodies from it, sorted by handle index, and tests each as the scan did. `World.place` is the one writer of a pose, and every setter that changes bounds refits.

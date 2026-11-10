@@ -176,7 +176,10 @@ pub const World = struct {
             .kinematic => out.bodies_kinematic += 1,
         };
         var meshes = self.meshes.iterator();
-        while (meshes.next()) |entry| out.triangles += entry.value.order.len;
+        while (meshes.next()) |entry| {
+            out.triangles += entry.value.order.len;
+            if (entry.value.baked) out.meshes_baked += 1;
+        }
         out.tree_nodes = self.tree.nodeCount();
         out.tree_height = self.tree.height();
         return out.withCounters(self.counters);

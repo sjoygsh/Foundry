@@ -242,6 +242,12 @@ shipped level, which the hillside is.
 
 **`mesh.buildTree`** is made public: it returns the tree `initWith` would build, for `author`.
 
+> **2026-11-10, Step 3.** `validateTree` takes an allocator for its bit a triangle, and frees it
+> before it returns. A leaf of no triangles cannot be told from an inner node, since a count of
+> zero is what marks one, so it is refused as a node out of preorder. Validation measured about
+> 5 ns a triangle, so a quarter-million triangles check in 1.4 ms, not ADR-0077's "nears 5 ms"
+> (its Resolution).
+
 ## 6. Hull faces (`physics3d`)
 
 **Now.** `addHull` finds the hull's faces from its points and keeps them beside the points:
@@ -763,3 +769,86 @@ emptying and refilling a world). Step 1's report tests now expect the tree's cou
 
 **Bar.** `zig build test` 2,931/2,941 (ten skips), 132/132 steps. The format check, the four
 `check` variants, the four headless samples and `fdt-check` pass. No ABI change, no new grant.
+
+## Resolution — Step 3: a tree from outside (2026-11-10)
+
+**What the step added,** all in `physics3d/mesh.zig`:
+- `Tree { nodes, order }`, a mesh's tree as a borrowed value, and `Tree.height`.
+- `Attributes.tree: ?Tree`. With one, `Mesh.initWith` checks it, copies it and builds nothing.
+  A tree that fails refuses the mesh as `InvalidMesh`. It is never rebuilt.
+- `validateTree(gpa, positions, indices, tree)`, which answers `TreeValidation { valid, fault,
+  node }`. `TreeFault` names twelve reasons: `mesh`, `node_count`, `order_length`, `child`,
+  `preorder`, `depth`, `leaf_size`, `run`, `triangle`, `repeated`, `leaf_bounds` and
+  `parent_bounds`.
+- `buildTree(gpa, positions, indices)`, which returns an owned `Built`. `Mesh.init` now builds
+  through the same routine, so the two cannot differ.
+- `max_depth`, 31: one less than `candidates`' stack.
+- `Mesh.baked` and `Mesh.tree()`. `Report.meshes_baked` is filled.
+- `physics3d.MeshTree` names `Tree` at the module's root.
+
+**How it checks.** One pass over the nodes in the order they are stored, which a valid tree
+makes the order of the walk. A stack of at most 31 entries holds each right child the walk still
+owes, with its parent and depth. At a leaf the next node must be the child owed. That one test
+refuses a node named twice, a node skipped and nodes left over. Each leaf's run must start where
+the last ended, so the leaves cover `order` once, and a bit a triangle refuses a repeat.
+
+**Where the code sharpened the design.**
+- **`validateTree` takes an allocator.** §5 said "a bit a triangle" and not where it lives. It
+  is 128 KB at the largest mesh, allocated and freed inside the call.
+- **A leaf of zero is refused as `preorder`, not `leaf_size`.** A count of zero is what marks an
+  inner node in `mesh.zig`'s layout, so such a node is an inner one whose left child is wrong.
+- **`parent_bounds` names the child.** Either box could be the wrong one. The child is where
+  the walk finds it.
+- **A NaN in a box refuses the tree,** because every comparison of containment must hold. An
+  infinite box is valid: it is only slow.
+- **`Mesh.node_count` is gone.** `nodes` is now exactly as long as the tree. A built mesh
+  gives back the unused half of its node array.
+- **Validation is cheaper than ADR-0077 guessed.** Its consequences say the check alone nears
+  5 ms past a quarter-million triangles. It measured 1.4 ms there. The ADR stands as written,
+  since code depends on it now. The number is corrected here and in §5.
+
+**Measured** on the Mac, ReleaseSafe, unpaced, the median of seven, on Step 1's bumpy grids:
+
+| Triangles | Nodes | Height | `validateTree` | `addMesh` with its tree | `addMesh` building |
+| --- | --- | --- | --- | --- | --- |
+| 1,024 | 511 | 8 | 0.007 ms | 0.008 ms | 0.77 ms |
+| 4,096 | 2,047 | 10 | 0.021 ms | 0.032 ms | 4.7 ms |
+| 32,768 | 16,383 | 13 | 0.173 ms | **0.275 ms** | 60.3 ms |
+| 262,144 | 131,071 | 16 | 1.40 ms | 2.20 ms | 731 ms |
+
+So the hillside, at 32,768 triangles, loads in 0.28 ms against ADR-0057's 5 ms, where building
+it took 60 ms. A mesh of a quarter-million triangles loads inside the budget too.
+
+The harness was run twice. The table is the second run. The first read the two small sizes
+slower: 0.020 ms to validate and 1.86 ms to build at 1,024 triangles, and 0.030 ms and 6.2 ms at
+4,096. The two large sizes agreed within one percent. Step 1's 1.9 ms at 1,024 matches the
+first run, so a small build varies between about 0.8 and 1.9 ms from run to run.
+
+**Any valid tree gives the same answers.** A chain of 32 leaves, each inner node's left child a
+leaf, over 112 shuffled triangles with boxes a quarter-metre loose, puts its deepest node at
+depth 31. A world holding it and a world holding the built tree answered 400 rays, 400 casts and
+400 contact queries equally, byte for byte, on a rotated and scaled body.
+
+**No pin moved.** The 2,400-frame tour printed the player's `cb99ccfcf2b6d6c3`, the walker's
+`655e865f98779129`, the pacer's three and the corner's `832fe43a3a82db13`, and `court-test`
+passed with the court's four digests.
+
+**Guards verified by mutation,** each failing a test in `tree_tests.zig`:
+- the depth bound, raised by one;
+- the repeat check removed, which is the permutation check;
+- a leaf's containment removed;
+- a parent's containment removed;
+- the run's start unchecked, and its length unchecked, which crashed;
+- the pop's check removed, and the left child's;
+- each half of the right child's range check;
+- the leaf's size unchecked;
+- the tree accepted without validation, which failed six tests.
+
+**Tests.** Nine new, in `physics3d/tree_tests.zig`: the built tree is valid, equal to a mesh's
+and accepted back; the lopsided tree's answers; a path of depth 32; wrong counts; children out
+of range, a node named twice and nodes left over; leaves of five and of none and runs out of
+place; a triangle repeated or not in the mesh; boxes that miss what is under them; and every
+allocation failure on the three paths.
+
+**The bar.** `zig build test` passed 2,940 of 2,950 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples and `fdt-check` passed.

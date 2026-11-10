@@ -200,9 +200,9 @@ test "mesh: BVH output matches individual triangle cores, sorted by original ind
     var repeat = try mesh_mod.Mesh.init(gpa, &positions, &indices);
     defer repeat.deinit(gpa);
     try testing.expectEqualSlices(u32, mesh.order, repeat.order);
-    try testing.expectEqual(mesh.node_count, repeat.node_count);
-    for (mesh.nodes[0..mesh.node_count], repeat.nodes[0..repeat.node_count]) |a, b| try testing.expectEqualDeep(a, b);
-    for (mesh.nodes[0..mesh.node_count]) |node| try testing.expect(node.count <= 4);
+    try testing.expectEqual(mesh.nodes.len, repeat.nodes.len);
+    for (mesh.nodes, repeat.nodes) |a, b| try testing.expectEqualDeep(a, b);
+    for (mesh.nodes) |node| try testing.expect(node.count <= 4);
     const s: physics.Shape = .{ .sphere = .{ .radius = 0.5 } };
     var contacts: [40]physics.Contact = undefined;
     const found = try w.contacts(s, .at(.init(0, 0.2, 0)), .{}, &contacts);

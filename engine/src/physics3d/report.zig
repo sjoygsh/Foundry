@@ -46,7 +46,7 @@ pub const Report = struct {
     meshes: u32 = 0,
     /// Over every mesh, whether a body names it or not.
     triangles: u64 = 0,
-    /// Meshes that arrived with their tree (§5). None until one can.
+    /// Meshes that arrived with their tree (§5).
     meshes_baked: u32 = 0,
     hulls: u32 = 0,
     /// Over every hull (§6). None until a hull has faces.
