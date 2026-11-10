@@ -49,7 +49,7 @@ pub const Report = struct {
     /// Meshes that arrived with their tree (§5).
     meshes_baked: u32 = 0,
     hulls: u32 = 0,
-    /// Over every hull (§6). None until a hull has faces.
+    /// Over every hull (§6).
     hull_faces: u32 = 0,
     /// The broadphase's nodes and height (§4). Zero until it exists.
     tree_nodes: u32 = 0,

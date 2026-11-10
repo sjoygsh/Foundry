@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const hull = @import("hull.zig");
 
 const Quat = core.math.Quat;
 const Vec3 = core.math.Vec3;
@@ -34,6 +35,9 @@ pub const max_hull_points: usize = 256;
 /// A hull's points must span at least this volume, m³, by the deterministic scan `hullVolume`
 /// performs. Coplanar or collinear sets have no inside to collide with.
 pub const min_hull_volume: f32 = 1e-9;
+/// A contact point within this of a hull face's plane is on the face, metres. It is the cast's
+/// own tolerance, `narrow.cast_tolerance`, as a box's edge rule uses.
+pub const face_tolerance: f32 = 1e-5;
 
 pub const Shape = union(enum) {
     sphere: struct { radius: f32 },
@@ -159,6 +163,10 @@ pub const Convex = struct {
     /// A hull's points' scale, applied before the pose. Triangles arrive already scaled, and the
     /// other cores never carry one (`collision-extras.md` §4).
     scale: Vec3 = .one,
+    /// A hull's faces, in its own unscaled space (`collision-scale.md` §6). Borrowed like the
+    /// points. Empty for every other core, for a hull that is the moving shape of a query, and
+    /// for a hull too flat to have faces. They never enter a distance, a cast or a depth.
+    faces: []const hull.Plane = &.{},
 
     /// The core's farthest point along `dir` (world space). Ties go to the positive side, and
     /// among a hull's points to the first, so the answer is a function of the input alone (I9).
@@ -235,11 +243,53 @@ pub const Convex = struct {
         return b.expand(self.radius);
     }
 
+    /// One of a hull's faces as the world sees it: its unit normal, and how far over it a world
+    /// point is, in metres. The body's scale is applied, so both are what a person would measure.
+    pub const Face = struct { normal: Vec3, height: f32 };
+
+    pub fn face(self: Convex, index: usize, point: Vec3) Face {
+        const plane = self.faces[index];
+        // A plane n·p = d over points scaled by s is (n/s)·p' = d over the scaled points.
+        const scaled = plane.normal.div(self.scale);
+        const length = scaled.length();
+        const local = self.pose.inverseDirection(point.sub(self.pose.position));
+        return .{
+            .normal = self.pose.applyDirection(scaled.scale(1 / length)),
+            .height = (scaled.dot(local) - plane.offset) / length,
+        };
+    }
+
+    /// The height of the face `point` is nearest to being on: the greatest over the faces. A
+    /// point on the hull's surface is on every face within `face_tolerance` of this.
+    pub fn highestFace(self: Convex, point: Vec3) f32 {
+        var highest = -std.math.inf(f32);
+        for (0..self.faces.len) |i| highest = @max(highest, self.face(i, point).height);
+        return highest;
+    }
+
     /// The normal of the face a contact lies on, for `collision3d.md` §5.3: a box's face most
     /// aligned with the contact normal (ties to the lowest axis), a two-sided triangle face,
-    /// and the contact normal itself for the shapes that have no faces in M23.
-    pub fn surfaceNormal(self: Convex, contact_normal: Vec3) Vec3 {
+    /// a hull's face that `point` lies on and that best agrees with the contact normal (ties to
+    /// the first), and the contact normal itself for a shape with no faces. `point` is the
+    /// contact's, on this shape's surface in the world. Only a hull reads it.
+    pub fn surfaceNormal(self: Convex, contact_normal: Vec3, point: Vec3) Vec3 {
         switch (self.core) {
+            .points => {
+                if (self.faces.len == 0) return contact_normal;
+                const highest = self.highestFace(point);
+                var best = contact_normal;
+                var agreement = -std.math.inf(f32);
+                for (0..self.faces.len) |i| {
+                    const f = self.face(i, point);
+                    if (f.height < highest - face_tolerance) continue;
+                    const agrees = f.normal.dot(contact_normal);
+                    if (agrees > agreement) {
+                        agreement = agrees;
+                        best = f.normal;
+                    }
+                }
+                return best;
+            },
             .triangle => |pts| {
                 const n = self.pose.applyDirection(Vec3.cross(pts[1].sub(pts[0]), pts[2].sub(pts[0])).normalize());
                 return if (n.dot(contact_normal) < 0) n.neg() else n;
@@ -361,9 +411,9 @@ test "a rotated box's bounds and support follow its pose" {
 test "a box's surface normal is its face most aligned with the contact, ties to the lowest axis" {
     const c: Convex = .{ .core = .{ .box = .init(1, 1, 1) }, .radius = 0, .pose = .identity };
     const edge = Vec3.init(1, 1, 0).normalize();
-    const n = c.surfaceNormal(edge);
+    const n = c.surfaceNormal(edge, .zero);
     try testing.expect(n.eql(.init(1, 0, 0)));
-    const up = c.surfaceNormal(Vec3.init(0.3, 0.9, 0.1).normalize());
+    const up = c.surfaceNormal(Vec3.init(0.3, 0.9, 0.1).normalize(), .zero);
     try testing.expect(up.eql(.init(0, 1, 0)));
 }
 

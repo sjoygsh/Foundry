@@ -65,7 +65,7 @@ pub fn separation(a: Convex, b: Convex) Separation {
     n = if (n.lengthSquared() > 0) n.normalize() else Vec3.up;
     if (b.core == .triangle) {
         const pts = b.core.triangle;
-        n = b.surfaceNormal(a.pose.position.sub(b.pose.apply(pts[0])));
+        n = b.surfaceNormal(a.pose.position.sub(b.pose.apply(pts[0])), b.pose.position);
     }
     return .{
         .distance = -radii,
@@ -110,7 +110,7 @@ pub fn cast(a: Convex, displacement: Vec3, b: Convex, target: f32) ?Cast {
         // A point exactly on a two-sided triangle has no side. Preserve the approach side
         // from the last separated iterate rather than choosing the triangle's winding.
         if (b.core == .triangle and next.distance <= cast_tolerance and target == 0 and a.radius == 0)
-            next.normal = b.surfaceNormal(s.normal);
+            next.normal = b.surfaceNormal(s.normal, b.pose.position);
         // A step aimed exactly at the surface (a raycast's target is 0) lands on it only to
         // rounding, sometimes a hair inside: that is the contact. Anything deeper is not a
         // step convexity allows, and the last safe answer stands.

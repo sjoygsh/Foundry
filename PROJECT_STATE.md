@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38 Step 3 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 4, hull faces: `physics3d/hull.zig` does not exist yet, and a hull is still points alone. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 4 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 5, closed-form pairs: `physics3d/pairs.zig` does not exist yet, and every pair is still GJK's. **Step 5 is where every walking pin and the court's four digests move, once.** M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 4 is done (2026-11-10): hull faces.**
+- `physics3d/hull.zig` finds a hull's faces from its points: `faces` returns each face's plane, and `reduce` returns the points that are corners, for `author` at Step 7. `addHull` keeps the faces beside the points, which stay as given, and `World.hullFaces` lends them.
+- A hit on a hull reports the face its contact lies on, and a character at a hull's rim stands on its top. A slab as a hull and as a box agree at fifteen places across the rim.
+- No distance, cast or depth changed, and **no pin moved, the corner's `832fe43a3a82db13` included.**
+- Sharpened: the hull is built exactly first and its triangles gathered into faces after, because one pass with a tolerance cut corners off hulls whose points sat at the tolerance; `surfaceNormal` takes the contact's point; a hull too flat for faces is still accepted and has none.
+- `addHull` costs 0.002 ms at 8 points and about 1 ms at 256 on a sphere.
+- Seventeen guards verified by mutation. Bar 2,953/2,963 (ten skips), 132/132 steps, thirteen new tests; every check, sample and `fdt-check` passed.
 
 **M38 Step 3 is done (2026-11-10): a tree from outside.**
 - `mesh.Attributes.tree` hands a mesh its tree. `Mesh.initWith` checks it, copies it and builds nothing. A wrong tree refuses the mesh as `InvalidMesh` and is never rebuilt.

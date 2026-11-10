@@ -23,6 +23,7 @@ const broadphase = @import("broadphase.zig");
 const narrow = @import("narrow.zig");
 const shape_mod = @import("shape.zig");
 const mesh_mod = @import("mesh.zig");
+const hull_mod = @import("hull.zig");
 const character_mod = @import("character.zig");
 const report_mod = @import("report.zig");
 
@@ -131,6 +132,8 @@ pub const Found = struct {
 
 const Hull = struct {
     points: []Vec3,
+    /// Each face's plane, found from the points when the hull was added (`collision-scale.md` §6).
+    faces: []hull_mod.Plane,
     /// Bodies naming this hull. It cannot be removed while any do.
     users: u32 = 0,
 };
@@ -176,6 +179,8 @@ pub const World = struct {
             .kinematic => out.bodies_kinematic += 1,
         };
         var meshes = self.meshes.iterator();
+        var hulls = self.hulls.iterator();
+        while (hulls.next()) |entry| out.hull_faces += @intCast(entry.value.faces.len);
         while (meshes.next()) |entry| {
             out.triangles += entry.value.order.len;
             if (entry.value.baked) out.meshes_baked += 1;
@@ -214,7 +219,10 @@ pub const World = struct {
     pub fn deinit(self: *World, gpa: Allocator) void {
         self.characters.deinit(gpa);
         var it = self.hulls.iterator();
-        while (it.next()) |entry| gpa.free(entry.value.points);
+        while (it.next()) |entry| {
+            gpa.free(entry.value.points);
+            gpa.free(entry.value.faces);
+        }
         self.hulls.deinit(gpa);
         var meshes = self.meshes.iterator();
         while (meshes.next()) |entry| entry.value.deinit(gpa);
@@ -239,7 +247,10 @@ pub const World = struct {
         if (!(shape_mod.hullVolume(points) >= shape_mod.min_hull_volume)) return error.InvalidShape;
         const owned = try gpa.dupe(Vec3, points);
         errdefer gpa.free(owned);
-        return self.hulls.add(gpa, .{ .points = owned });
+        // The faces are found from the points and kept beside them. The points stay as given.
+        const faces = try hull_mod.faces(gpa, points);
+        errdefer gpa.free(faces);
+        return self.hulls.add(gpa, .{ .points = owned, .faces = faces });
     }
 
     /// False for a stale handle. Refused as `InUse` while any body names the hull.
@@ -247,7 +258,14 @@ pub const World = struct {
         const hull = self.hulls.get(handle) orelse return false;
         if (hull.users > 0) return error.InUse;
         gpa.free(hull.points);
+        gpa.free(hull.faces);
         return self.hulls.remove(handle);
+    }
+
+    /// A hull's faces, in its own space, largest first: borrowed until the hull is removed.
+    /// Null for a stale handle, and empty for a hull too flat to have any.
+    pub fn hullFaces(self: *World, handle: HullHandle) ?[]const hull_mod.Plane {
+        return (self.hulls.get(handle) orelse return null).faces;
     }
 
     pub fn hullCount(self: *const World) u32 {
@@ -646,7 +664,7 @@ pub const World = struct {
                 .fraction = fraction,
                 .point = nearest.separation.point_b,
                 .normal = nearest.separation.normal,
-                .surface_normal = nearest.part.convex.surfaceNormal(nearest.separation.normal),
+                .surface_normal = nearest.part.convex.surfaceNormal(nearest.separation.normal, nearest.separation.point_b),
                 .body = nearest.body,
                 .user = nearest.user,
                 .triangle = nearest.part.triangle,
@@ -767,7 +785,7 @@ pub const World = struct {
                 self.tested(other);
                 const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
                 if (layer != null and !c.started_inside and c.fraction == 0 and displacement.dot(c.normal) >= -1e-7) continue;
-                var face = other.convex.surfaceNormal(c.normal);
+                var face = other.convex.surfaceNormal(c.normal, c.point);
                 if (ground_y) |up| {
                     // A box corner belongs to several faces too, but unlike mesh faces
                     // they are represented by one convex candidate. Select a walkable face
@@ -788,6 +806,19 @@ pub const World = struct {
                             const possible = other.convex.pose.applyDirection(local_face);
                             if (possible.dot(self.up) >= up and possible.dot(c.normal) >= -1e-6) {
                                 face = possible;
+                                break;
+                            }
+                        }
+                    }
+                    // A hull's rim belongs to several faces as a box's does, and the same rule
+                    // picks among them (`collision-scale.md` §6).
+                    if (other.convex.faces.len != 0 and (!sliding or c.normal.dot(self.up) >= up)) {
+                        const highest = other.convex.highestFace(c.point);
+                        for (0..other.convex.faces.len) |i| {
+                            const possible = other.convex.face(i, c.point);
+                            if (possible.height < highest - shape_mod.face_tolerance) continue;
+                            if (possible.normal.dot(self.up) >= up and possible.normal.dot(c.normal) >= -1e-6) {
+                                face = possible.normal;
                                 break;
                             }
                         }
@@ -966,7 +997,7 @@ pub const World = struct {
             .sphere => |s| .{ .core = .point, .radius = s.radius, .pose = pose },
             .capsule => |c| .{ .core = .{ .segment = c.half_height }, .radius = c.radius, .pose = pose },
             .box => |b| .{ .core = .{ .box = b.half_extents }, .radius = 0, .pose = pose },
-            .hull => |h| .{ .core = .{ .points = self.hulls.get(h).?.points }, .radius = 0, .pose = pose },
+            .hull => |h| .{ .core = .{ .points = self.hulls.get(h).?.points }, .radius = 0, .pose = pose, .faces = self.hulls.get(h).?.faces },
             .mesh => unreachable, // Only queryConvex or the convex branch of candidate calls this.
         };
     }

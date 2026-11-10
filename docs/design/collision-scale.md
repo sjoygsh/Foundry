@@ -277,6 +277,14 @@ hull.
 **`hull.reduce`** is public for `author`: given any points, it returns the hull's own vertices in
 their first-seen order, or says there are too many or that they are flat.
 
+> **2026-11-10, Step 4.** The hull is built in two parts, not one. First the exact hull, as
+> triangles, with no tolerance but f64's own. Then triangles whose corners share a plane within
+> the tolerance are gathered into faces. A single pass that used the tolerance while building
+> cut corners off hulls whose points sat at the tolerance. The first corner is the lowest x, and
+> the other three are each the farthest from what is already chosen. The face a contact lies on
+> is found from the contact's point, which `surfaceNormal` now takes. The corner's pin held
+> (its Resolution).
+
 ## 7. The records (`asset`)
 
 **`.fcol` version 3** is version 2's layout, with its surface table and u32 per triangle always
@@ -851,4 +859,99 @@ place; a triangle repeated or not in the mesh; boxes that miss what is under the
 allocation failure on the three paths.
 
 **The bar.** `zig build test` passed 2,940 of 2,950 tests (ten skips) in 132 of 132 steps. The four
+checks, the four headless samples and `fdt-check` passed.
+
+## Resolution — Step 4: hull faces (2026-11-10)
+
+**What the step added.**
+- `physics3d/hull.zig`: `Plane { normal, offset }`, `faces(gpa, points)`, which returns each
+  face's plane with the largest face first, and `reduce(gpa, points)`, which returns the points
+  that are corners of the hull in the order they were given. `max_faces` is 508.
+- `World.addHull` finds the faces and keeps them beside the points. `World.hullFaces(handle)`
+  lends them. `removeHull` and `deinit` free them. `Report.hull_faces` is filled.
+- `shape.Convex.faces`, borrowed like a hull's points, and `Convex.face(index, point)`, which
+  gives one face's world normal and how far over it a world point is, the body's scale applied.
+- `Convex.surfaceNormal` takes the contact's point as well as its normal. For a hull it answers
+  the face the point lies on that best agrees with the contact normal. Only a hull reads the
+  point, so a box and a triangle answer as before.
+- `earliestPair`'s rule at a box's edge is repeated for a hull's faces.
+- `physics3d.HullPlane` names `Plane` at the module's root.
+
+**The points are untouched.** GJK reads them and nothing else. A test asks 300 distances and
+300 casts of a hull with its faces and of the same points without, and compares the bytes.
+
+**Where the code sharpened the design.**
+- **The hull is built in two parts.** §6 described one pass with a tolerance. Built that way, a
+  hull whose points sat at about the tolerance from a plane lost corners: a point taken as on a
+  face removed that face, and with it a vertex that was really outside the new one. The random
+  test found it in its first run. Now the hull is built exactly, in f64, measured from the
+  points' low corner so that distance from the origin costs nothing. A point is on a plane only
+  within 1e-10 of the hull's diagonal, which is f64's rounding and not a judgement. Then
+  triangles are gathered into faces: the largest triangle not yet in a face starts one, and
+  takes each triangle reached across an edge whose three corners are within the tolerance of
+  its plane. Gathering only labels triangles. It cannot open the surface.
+- **The tolerance** is 1e-5 of the hull's diagonal, and never less than 8 f32 roundings at the
+  hull's farthest coordinate. The second term is what makes a turned box 8 km from its origin
+  six faces, where its corners were rounded by half a millimetre.
+- **A new triangle exactly on its neighbour's plane takes that plane.** A point in line with an
+  edge makes a triangle of no area, which has no plane of its own.
+- **A hull too flat for faces has none, and is still a hull.** `addHull` accepts what it did
+  before. A sheet 100 m wide and 0.1 mm thick collides by its points and reports the contact
+  normal, as every hull did until now. `reduce` says `Flat` for it.
+- **`reduce` has a fourth answer, `Tangled`,** for a hull whose surface does not close after
+  building. No input is known to produce it: 1,500 random hulls, a third of them on a lattice
+  and two sevenths shaken at the tolerance, never did. `faces` treats it as flat.
+- **A corner is where three faces meet.** A point two faces share is along an edge, and a point
+  one face holds is inside it. Neither is returned by `reduce`.
+- **`surfaceNormal` needs the contact's point.** A contact normal alone can agree best with a
+  face the contact is nowhere near. A face is "on" when it is within 1e-5 m of the highest face
+  at that point, so a point a little off the surface is still told its nearest face.
+
+**The corner's pin held.** §6 said it might move. The 2,400-frame tour printed
+`832fe43a3a82db13` for the corner, which stands on the turntable's hull, and the player's
+`cb99ccfcf2b6d6c3`, the walker's `655e865f98779129` and the pacer's three beside it.
+`court-test` passed with the court's four digests. No pin moved.
+
+**A hull against a box.** A slab as a box, and the same slab as a cube's corners scaled to it,
+were given a character at fifteen places from just inside the rim to 0.26 m past it, upright and
+turned. The two agreed at every place on whether it was grounded, on its feet within 0.1 mm and
+on the face normal within 2e-6. Past 0.21 m the contact's own normal is steeper than the slope
+limit, and both say the character stands on the top.
+
+**Measured** on the Mac, ReleaseSafe, the median of seven:
+
+| Points | Faces | `addHull` |
+| --- | --- | --- |
+| 8, on a sphere | 12 | 0.002 ms |
+| 32, on a sphere | 60 | 0.02 ms |
+| 64, on a sphere | 124 | 0.07 ms |
+| 256, on a sphere | 506 | 0.75 to 1.0 ms |
+| 256, in a ball | 78 | 0.06 to 0.10 ms |
+
+A hit on a hull now walks its faces twice. That was not measured on its own: no sample holds a
+hull of more than a few dozen faces until Step 9's boulder, whose budget reading will include it.
+
+**Guards verified by mutation,** each failing a test:
+- the gathering measured against the neighbour's plane and not the first triangle's;
+- a new triangle on its neighbour's plane given its own plane;
+- the building done with the gathering's tolerance, which is §6's single pass;
+- the first tetrahedron's winding;
+- the largest triangle starting a face;
+- a corner counted at one face and not three;
+- the plane's offset left measured from the low corner;
+- the tolerance at 1e-9 and at 1e-2, and without its f32 term;
+- `surfaceNormal` choosing among every face, and breaking a tie to the last;
+- the scale left out of a face's normal;
+- the edge rule removed, taking a face the contact is not on, and taking one that is not
+  walkable;
+- `addHull` keeping no faces.
+
+**Tests.** Thirteen new. Six in `hull.zig`: a box in any order with points inside it; a turned
+box, far away and with coarse corners; a tetrahedron, an octahedron and a drum; 1,500 random
+hulls; flat points and too many corners; and allocation failures. Seven in `hull_tests.zig`: the
+ramp; the rim against a box; a scaled hull and a flat one; the face the contact lies on; the
+witness on the walkable face; the unchanged distances and casts; and a hull's faces living and
+dying with it.
+
+**The bar.** `zig build test` passed 2,953 of 2,963 tests (ten skips) in 132 of 132 steps. The four
 checks, the four headless samples and `fdt-check` passed.

@@ -47,8 +47,10 @@ test "report: the counts are what the world holds" {
     // Five bodies are five leaves and four nodes above them.
     try t.expectEqual(@as(u32, 9), r.tree_nodes);
     try t.expect(r.tree_height >= 3 and r.tree_height <= 4);
+    // The one hull is a tetrahedron.
+    try t.expectEqual(@as(u32, 4), r.hull_faces);
     // What later steps fill, and nothing fills yet.
-    try t.expectEqual(@as(u32, 0), r.meshes_baked + r.hull_faces + r.pairs_closed);
+    try t.expectEqual(@as(u32, 0), r.meshes_baked + r.pairs_closed);
 }
 
 test "report: each query is counted by its kind, with the bodies and triangles it tested" {

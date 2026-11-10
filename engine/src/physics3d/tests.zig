@@ -216,7 +216,7 @@ test "shapeCast: an edge contact tilts the normal but the surface normal stays t
     try testing.expect(hit.surface_normal.eql(.init(0, 1, 0)) or hit.surface_normal.eql(.init(1, 0, 0)));
     // Exactly diagonal: the tie goes to the lowest axis.
     const box_convex = box(.at(.init(20, 0, 0)), .init(1, 1, 1));
-    try testing.expect(box_convex.surfaceNormal(Vec3.init(1, 1, 0).normalize()).eql(.init(1, 0, 0)));
+    try testing.expect(box_convex.surfaceNormal(Vec3.init(1, 1, 0).normalize(), .zero).eql(.init(1, 0, 0)));
 }
 
 test "shapeCast: capsules, boxes and hulls cast too, and nothing passes a thin plate" {

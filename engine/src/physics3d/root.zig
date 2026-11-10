@@ -28,6 +28,7 @@ const std = @import("std");
 pub const body = @import("body.zig");
 pub const broadphase = @import("broadphase.zig");
 pub const gjk = @import("gjk.zig");
+pub const hull = @import("hull.zig");
 pub const narrow = @import("narrow.zig");
 pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
@@ -59,6 +60,7 @@ pub const Filter = body.Filter;
 pub const Found = world.Found;
 pub const Hit = world.Hit;
 pub const HullHandle = shape.HullHandle;
+pub const HullPlane = hull.Plane;
 pub const MeshAttributes = mesh.Attributes;
 pub const MeshTree = mesh.Tree;
 pub const MeshHandle = shape.MeshHandle;
@@ -97,6 +99,7 @@ test {
     _ = body;
     _ = broadphase;
     _ = gjk;
+    _ = hull;
     _ = narrow;
     _ = shape;
     _ = world;
@@ -112,4 +115,5 @@ test {
     _ = @import("report_tests.zig");
     _ = @import("broadphase_tests.zig");
     _ = @import("tree_tests.zig");
+    _ = @import("hull_tests.zig");
 }
