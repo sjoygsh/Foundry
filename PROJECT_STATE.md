@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-11
-**Current handoff: M38 Step 11 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 12, M38's close: the documents §15's Step 12 lists are not yet updated, ADR-0077 and ADR-0078 are not yet implemented in `CLAUDE.md` §4.1, there is no tag `m38`, and the PC still holds `%USERPROFILE%\src\Foundry-m38` and `%USERPROFILE%\m38`. M37 is complete and pushed (tag `m37`).
+**Current handoff: M38 is complete** (2026-11-11, tag `m38`; [`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078). Stop before M39's design: M39, Shadows II (cascaded shadow maps), has no design yet. The PC holds no Foundry clone.
+
+**M38 Step 12 is done (2026-11-11): M38 closed.**
+- Every document names M38 complete: `CLAUDE.md` §4.1, §4.3 (`physics3d`, `asset`, `author` and `debug`, the last two granted `physics3d`) and §9, ADR-0077/0078, the roadmap, the design index and the README.
+- Dated notes in `collision3d.md` (§4, §5.1, §6 and §15's five rows), ADR-0051, ADR-0057, `debug-overlay.md` and `collision-extras.md` §18.
+- The roadmap takes §16's items: M48 hulls by ID and the report, M51 pair finding and compounds, M60 collision in pieces, M100 `moveBody` through the broadphase.
+- `AGENTS.md` gains M38's costs, pins and `scripts/m38/`. The PC's clone and scratch were removed by exact name. Only documents changed after Step 11, so its bar stands (2,984/2,994, ten skips).
 
 **M38 Step 11 is done (2026-11-11): Windows/Vulkan.**
 - `scripts/m38/windows.ps1`, `m38-setup.ps1` and `m38-launch.ps1`, from M37's, ran on the owner's i3/Arc PC from a fresh clone at `0a8a164` (commits by bundle), `-j2`, below normal, 17% CPU before.

@@ -102,6 +102,12 @@ mesh by a generational handle (I1).
   a hand-written `foundry:mesh`. That would be a new producer of the same record, not a new
   record.
 - `addMesh` is measured above 5 ms for a shipped level. Bake the tree into `.fcol` version 2.
+
+  > **2026-11-11, M38:** done as `.fcol` version 3, since M37's version 2 took surfaces
+  > ([ADR-0077](0077-collision-structures-never-decide-an-answer.md)). `author` bakes it at 1,024
+  > triangles and above, and `physics3d` validates it in linear time and refuses it when wrong,
+  > never rebuilding it. Hulls became compiled content beside it, `foundry:collision_hull`
+  > ([ADR-0078](0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md)).
 - A game scales collidable models at runtime.
 - A game needs per-triangle surface data, such as footstep sounds or friction. That would be an
   additive field in a new format version.

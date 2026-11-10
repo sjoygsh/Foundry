@@ -1,6 +1,6 @@
 # ADR-0077: Collision structures find candidates and never decide an answer
 
-**Status:** Accepted 2026-11-10, when the owner requested M38 Step 1
+**Status:** Accepted 2026-11-10, when the owner requested M38 Step 1; implemented in M38 (2026-11-11, tag `m38`)
 **Date:** 2026-11-10
 **Informed by:** ADR-0013, ADR-0051, ADR-0055, ADR-0057, ADR-0076, `docs/design/collision3d.md`, `docs/design/collision-scale.md`
 

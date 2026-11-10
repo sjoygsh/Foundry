@@ -194,6 +194,10 @@ the hull is refused as `InvalidShape`. The support function is the maximum dot p
 points, which is all GJK needs, so **M23 computes no hull faces**. The consequence is recorded in
 §5.3: a hull's `surface_normal` is its contact normal. Hull assets are postponed (§15).
 
+> **2026-11-11, M38:** a hull now has faces, found by `physics3d` from its points, which are kept
+> as given, and its surface normal is its face's. Hulls are content, `foundry:collision_hull` from
+> `.fhul`, compiled by a `shape "hull"` import ([`collision-scale.md`](collision-scale.md) §6, §7, ADR-0078).
+
 **Validation, never assertion.** Every shape reaches here from a game, and from M25 from a mod.
 A radius, half-height or half-extent that is not finite, a negative half-height, or a radius or
 half-extent of 0 or less, is refused as `InvalidShape`. A capsule whose `half_height` is 0 is
@@ -202,6 +206,10 @@ permitted, and it is a sphere.
 ## 5. Narrowphase: distance, casts and depth
 
 ### 5.1 One algorithm, on cores
+
+> **2026-11-11, M38:** no longer one. A ray, a sphere and a capsule against a triangle are measured
+> by closed-form routines ([`collision-scale.md`](collision-scale.md) §8, ADR-0078), with the cast and the depth unchanged. Every
+> other pair, and cores that meet, stay on GJK and EPA below. The walking pins moved once for it.
 
 - **Distance** between two convex cores is GJK on their support functions, with a fixed budget
   of `max_gjk_iterations = 32` and termination when the simplex stops improving by more than
@@ -316,6 +324,11 @@ then descends the BVH of any mesh body whose bounds pass. The sandbox's world ha
 the room, the course and a character. A hash or a tree over bodies is added when a measured query
 over a body count a game actually has exceeds budget (§15). It will not change an answer, because
 order already comes from handles and not from the structure (§5.4).
+
+> **2026-11-11, M38:** bodies now have one: a balanced bounding-volume tree over every body. It
+> finds candidates and never decides an answer; they are sorted by handle and tested as the scan
+> tested them. A mesh's tree may also be baked into `.fcol` version 3 and is validated, never
+> trusted ([`collision-scale.md`](collision-scale.md) §4, §5, ADR-0077).
 
 **The queries** (all take a `Filter { mask: u32 = ~0, ignore: ?BodyHandle = null }`):
 
@@ -1319,7 +1332,8 @@ overlay grant, no new dependency. Linux is compile-only.
 > the need and the budget that milestone's design must meet.
 
 > **2026-11-10:** M38's rows (the baked tree, the broadphase, specialised pairs, hull faces and
-> assets, the physics panel) are designed in [`collision-scale.md`](collision-scale.md).
+> assets, the physics panel) are designed in [`collision-scale.md`](collision-scale.md), and at its
+> close on 2026-11-11 each is struck through with what was built.
 
 > **2026-11-09:** M37's rows are designed in [`collision-extras.md`](collision-extras.md), and at
 > its close the same day each is struck through with what was built.
@@ -1332,16 +1346,16 @@ overlay grant, no new dependency. Linux is compile-only.
 | ~~Collision authored separately from the visual model (a proxy import, or deriving from a `foundry:mesh`)~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §9, §10, ADR-0076): `foundry:collision_import` compiles a proxy, which `model_import`'s `collision_mesh` names |
 | ~~A model record that names its collision~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §9, ADR-0076): `foundry:model` v3's `collision` |
 | ~~Runtime scale of collision geometry~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §4, ADR-0076): a body scales its mesh or hull; poses stay rigid |
-| The BVH baked into `.fcol` | `addMesh` measured above 5 ms on a shipped level |
-| A broadphase over bodies | A query measured over budget at a body count a game has |
-| Specialised pair routines (analytic capsule–triangle) | A profile shows GJK as the cost of a move above §11.4's budget |
-| Hull faces, hull assets | A game stands characters on hulls, or content needs hulls |
+| ~~The BVH baked into `.fcol`~~ | **Done in M38** (2026-11-11; [`collision-scale.md`](collision-scale.md) §5, §7, ADR-0077): `.fcol` version 3 carries the tree `author` bakes at 1,024 triangles and above; the 32,258-triangle hillside loads in 1.03 ms on the M5 and 2.1–2.6 ms on the i3 |
+| ~~A broadphase over bodies~~ | **Done in M38** (2026-11-11; [`collision-scale.md`](collision-scale.md) §4, ADR-0077): one balanced bounding-volume tree; a move among 2,126 bodies reads 0.215 ms on the M5. `moveBody` finding characters through it is M100's |
+| ~~Specialised pair routines (analytic capsule–triangle)~~ | **Done in M38** (2026-11-11; [`collision-scale.md`](collision-scale.md) §8, ADR-0078): a ray, a sphere and a capsule against a triangle, in closed form |
+| ~~Hull faces, hull assets~~ | **Done in M38** (2026-11-11; [`collision-scale.md`](collision-scale.md) §6, §7, ADR-0078): faces found from the points; `foundry:collision_hull` and `.fhul`, compiled by `shape "hull"` |
 | ~~One-sided triangles~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §6): a flag per triangle in `.fcol` v2, met from its front alone |
 | ~~Per-triangle surface ids (footsteps, friction)~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §6, §9): a content ID per triangle, reported by every query; the court's footsteps use them. A friction the controller applies is M50's |
 | ~~Rotational sweeps~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §5): `shapeSweep`, by conservative advancement |
 | ~~Configurable up axis~~ | **Done in M37** (2026-11-09; [`collision-extras.md`](collision-extras.md) §3): one up a world, `setUp`; an up that changes each step is M50's |
 | Heightfield terrain | A game with terrain a mesh is measured too large for |
-| A physics panel in the overlay | Debugging a game's collision needs one, and `debug` is granted `physics3d` by the owner's decision |
+| ~~A physics panel in the overlay~~ | **Done in M38** (2026-11-11; [`collision-scale.md`](collision-scale.md) §10, §12): `debug` is granted `physics3d` for its `Report` alone, and the `physics` panel shows both samples' worlds |
 | ~~Jump in the sample~~ | **Done in M26**: the court's jump is sample policy over the unchanged controller (`playable3d.md` §5.3); the controller's walk off an edge was finished in M26 Step 8 |
 
 ## 16. Decisions acceptance fixes

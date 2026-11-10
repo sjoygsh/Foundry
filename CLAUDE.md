@@ -210,8 +210,8 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Blend spaces | A blend is named like a clip and played by a channel in laps, re-anchored each tick, mixing up to four loops on a line or a full grid; its events are its heaviest clip's; set v3 defines it and `foundry:animation_machine` v2's `axes` place it from parameters; nothing saved changes; accepted 2026-11-07, implemented in M36 (2026-11-09) | [0074](docs/adr/0074-a-blend-space-is-played-like-a-clip.md) |
 | Platforms and pushing | A kinematic body moved by `moveBody` records its motion, and a character standing on it is carried by that motion, swept, turned only about the world's up; a body moved into a character pushes it through its controller and reports `crushed`; pushing is a ratio on a body or a character, one level deep, in slide order; no dynamics; accepted 2026-11-09, implemented in M37 (2026-11-09) | [0075](docs/adr/0075-platforms-and-pushing-without-dynamics.md) |
 | Collision geometry II | `.fcol` v2 carries a surface (a content ID `physics3d` reports and never interprets) and a one-sided flag per triangle; a body scales its mesh or hull, poses staying rigid; `foundry:collision_import` produces a proxy and `foundry:model` v3 names its collision; accepted 2026-11-09, implemented in M37 (2026-11-09) | [0076](docs/adr/0076-collision-geometry-gains-surfaces-scale-and-proxies.md) |
-| Collision structures | A balanced bounding-volume tree over bodies and a mesh tree baked into `.fcol` v3 find candidates and never decide an answer: bodies found are sorted by handle and tested as a scan would; a tree from outside is validated in linear time and refused when wrong; `author` is granted `physics3d` and bakes at 1,024 triangles and above; accepted 2026-11-10 | [0077](docs/adr/0077-collision-structures-never-decide-an-answer.md) |
-| Hulls and triangle pairs | A hull has faces, found by `physics3d` from its points, and is compiled content, `foundry:collision_hull`; a ray, a sphere and a capsule meet a triangle by closed-form routines in place of GJK, the cast and depth unchanged, and the walking pins move once; accepted 2026-11-10 | [0078](docs/adr/0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md) |
+| Collision structures | A balanced bounding-volume tree over bodies and a mesh tree baked into `.fcol` v3 find candidates and never decide an answer: bodies found are sorted by handle and tested as a scan would; a tree from outside is validated in linear time and refused when wrong; `author` is granted `physics3d` and bakes at 1,024 triangles and above; accepted 2026-11-10, implemented in M38 (2026-11-11) | [0077](docs/adr/0077-collision-structures-never-decide-an-answer.md) |
+| Hulls and triangle pairs | A hull has faces, found by `physics3d` from its points, and is compiled content, `foundry:collision_hull`; a ray, a sphere and a capsule meet a triangle by closed-form routines in place of GJK, the cast and depth unchanged, and the walking pins move once; accepted 2026-11-10, implemented in M38 (2026-11-11) | [0078](docs/adr/0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md) |
 | Metal bridge | Thin Objective-C shim exposing a C API | [0012](docs/adr/0012-metal-objc-shim.md) |
 | Shaders | MSL now; shaders are assets with per-backend variants | [0015](docs/adr/0015-shader-strategy.md) |
 | Shader ownership | Engine-owned shaders embedded; content-owned shaders are assets | [0019](docs/adr/0019-builtin-versus-content-shaders.md) |
@@ -311,7 +311,13 @@ L1  physics3d   -> core.        3D shapes, rigid poses, bodies, queries and the
                                 its mesh or hull, `shapeSweep`, surfaces and
                                 one-sided triangles (ADR-0076), and platforms
                                 that carry and bodies that push, by `moveBody`
-                                (ADR-0075, M37). No entities, no content, no I/O.
+                                (ADR-0075, M37). A broadphase over bodies and
+                                mesh trees from outside, validated, that find
+                                candidates and never decide an answer
+                                (ADR-0077); hull faces, closed-form ray,
+                                sphere and capsule against a triangle, and a
+                                `Report` (ADR-0078, M38). No entities, no
+                                content, no I/O.
 L1  anim        -> core.        Skeletons, clips and poses as borrowed values:
                                 sampling at a caller's time, blending and
                                 linear-blend skinning on the CPU (ADR-0058, M24);
@@ -357,7 +363,10 @@ L2  asset       -> core, data, platform, anim.  Asset registry, loading in two
                                 is built (M36); `.fcol` v2's surfaces and
                                 one-sided faces, `foundry:model` v3's
                                 `collision` and `foundry:collision_import`
-                                (ADR-0076, M37).
+                                (ADR-0076, M37); `.fcol` v3's baked tree,
+                                `foundry:collision_hull` from `.fhul`, and
+                                `collision_import` v2's `shape` (ADR-0077,
+                                ADR-0078, M38).
 L2  mod         -> core, data, platform.  Mod discovery, manifests, dependency
                                 resolution, deterministic load order. Produces the
                                 order `data` consumes; opens no library and loads no
@@ -391,23 +400,26 @@ L3  audio       -> core, platform, asset. Mixer, voices, playback by content ID;
                                           ADR-0068, M31).
 
 L4  app         -> all of the above.      Engine loop, subsystem lifecycle, config.
-L4  author      -> core, data, platform, asset, mod, scene.
+L4  author      -> core, data, platform, asset, mod, scene, physics3d.
                 The one content-package compiler, the dependency packages a host grants,
                 and bounded source workspaces (ADR-0042). Since M37 it derives surfaces and
-                one-sided faces from glTF materials and compiles collision proxies (ADR-0076). Beside `app`, not inside it: a
+                one-sided faces from glTF materials and compiles collision proxies (ADR-0076). Since M38
+                it is granted `physics3d`, to bake a mesh's tree at 1,024 triangles and above and
+                to compile a hull import (ADR-0077, ADR-0078). Beside `app`, not inside it: a
                 tool that authors content is not the engine that runs it, and a game that
                 never opens a source file never builds it. No `rhi`, no `render2d`, no
                 `ui`, no `audio` — it reads text and writes packages, so a workspace
                 unit-tests with no device, no window and no frame.
 
-L5  debug       -> core, data, ui, asset, anim, render2d, render3d, nav, scene, audio, app.
+L5  debug       -> core, data, ui, asset, anim, render2d, render3d, nav, physics3d, scene, audio, app.
                 The in-process debug overlay: profiler, memory, log console, entity
                 inspector, content browser. Nothing in the engine depends on it; a game
                 opts in by importing it. No `platform`, no `rhi`, no `physics2d` — it
                 reads the engine's answers, not the devices under them. `render3d`
                 joined at M21 for its frame counts (hierarchy.md §7), `nav` at M33 for
                 the navigation panel's report (agents.md §10), `anim` at M34 for the
-                animation panel's (animation-logic.md §8).
+                animation panel's (animation-logic.md §8), `physics3d` at M38 for the
+                physics panel's `Report` alone (collision-scale.md §10).
 L5  abi         -> core, data, physics2d, physics3d, platform, ui, asset, render2d,
                 render3d, scene, audio, app, author, mod, net.  The public C ABI, and
                 the native mod loader. A peer of `debug`, not a layer over `app` (ADR-0026). No `rhi`,
@@ -790,7 +802,7 @@ milestone named below is where `docs/ROADMAP.md` now places it.
 | Networking | **Done in M16** (2026-09-23) | Owner requires internet multiplayer. [networking.md](docs/design/networking.md) and accepted ADR-0044/0045 fix the initial architecture. Mbed TLS and FNET wire v1 are qualified/frozen, authenticated streams exist, sessions admit peers, and active peers exchange tick-admitted commands and complete state, published as `FoundryApi_v5`; the sandbox connects through it alone (Step 6) and holds against hostile peers and the controlled envelope (Step 7); desktops, the public internet and the external consumer are proven (Step 8, [networking guide](docs/modding/networking.md)). What it deliberately left out — relays, NAT traversal, accounts, prediction, lockstep, IPv6 — is networking.md §11's, and each is its own decision. |
 | Certified releases (Developer ID, notarization, Windows code signing) | **M150, the last milestone** (ADR-0060, re-dating ADR-0047) | M17 publishes unsigned, labelled GitHub pre-releases instead. When due, use the implemented Developer ID/notary path and verify the exact quarantined download on a genuinely clean recipient Mac; add Windows signing. No membership is bought before then. |
 | Linux runtime support | **Done in M18** (2026-09-27) | Removed from M13 by ADR-0039; headless servers proven in M16.5 (ADR-0046). The desktop is a runtime claim on one Intel Arc/Mesa machine, under Xorg, sway and GNOME, with its limits in [linux-desktop.md](docs/design/linux-desktop.md). In M26 a person played the 3D court there under GNOME, on an Ubuntu 26.04 rebuilt from the kit. No Linux release artifact exists; that is M137's. |
-| Everything the design documents deferred | **Scheduled** (2026-10-02, ADR-0060); **owned** (2026-10-17, rule 17); **M27 done** (2026-10-18, tag `m27`); **M28 done** (2026-10-23, tag `m28`); **M29 done** (2026-10-24, tag `m29`); **M30 done** (2026-10-27, tag `m30`); **M31 done** (2026-10-27, tag `m31`); **M32 done** (2026-10-29, tag `m32`); **M33 done** (2026-10-31, tag `m33`); **M34 done** (2026-11-06, tag `m34`); **M35 done** (2026-11-06, tag `m35`); **M36 done** (2026-11-09, tag `m36`); **M37 done** (2026-11-09, tag `m37`) | M27–M149 in `docs/ROADMAP.md`: the game toolkit, dynamics and worlds, the renderer's upper tier, tools, and reach. Each item names its milestone in the roadmap's intent column; what belonged to M0–M25's own work was finished in M26 (Steps 8–11). Each item's recorded trigger no longer decides whether it is built; it still decides its shape and budget. A milestone is designed only when its turn comes. |
+| Everything the design documents deferred | **Scheduled** (2026-10-02, ADR-0060); **owned** (2026-10-17, rule 17); **M27 done** (2026-10-18, tag `m27`); **M28 done** (2026-10-23, tag `m28`); **M29 done** (2026-10-24, tag `m29`); **M30 done** (2026-10-27, tag `m30`); **M31 done** (2026-10-27, tag `m31`); **M32 done** (2026-10-29, tag `m32`); **M33 done** (2026-10-31, tag `m33`); **M34 done** (2026-11-06, tag `m34`); **M35 done** (2026-11-06, tag `m35`); **M36 done** (2026-11-09, tag `m36`); **M37 done** (2026-11-09, tag `m37`); **M38 done** (2026-11-11, tag `m38`) | M27–M149 in `docs/ROADMAP.md`: the game toolkit, dynamics and worlds, the renderer's upper tier, tools, and reach. Each item names its milestone in the roadmap's intent column; what belonged to M0–M25's own work was finished in M26 (Steps 8–11). Each item's recorded trigger no longer decides whether it is built; it still decides its shape and budget. A milestone is designed only when its turn comes. |
 | 3D | **Decided** (2026-09-27); **M19 done** (2026-09-27, tag `m19`); **M20 done** (2026-09-29, tag `m20`); **M21 done** (2026-09-29, tag `m21`); **M22 done** (2026-09-30, tag `m22`); **M23 done** (2026-10-01, tag `m23`); **M24 done** (2026-10-01, tag `m24`); **M25 done** (2026-10-02, tag `m25`); **M26 done** (2026-10-18, tag `m26`) | [3d.md](docs/design/3d.md) and ADR-0048 to ADR-0059: conventions, fixed vertex slots, engine shading models per backend, the engine-declared hierarchy, collision without dynamics, forward rendering, assets kept apart from the renderer, photometric lighting with pre-exposure and Neutral, compiled collision geometry copied into physics, and skeletal animation sampled in `anim` and skinned on the CPU. M22's lit room is changed by a content-only mod. M23's [collision design](docs/design/collision3d.md) is implemented: a character walks that room and a course on Metal and Windows/Vulkan. M24's [animation design](docs/design/animation3d.md) is implemented (ADR-0058): a glTF character, skinned on the CPU with no shader variant, patrols the room on both. M25's [public 3D design](docs/design/public3d.md) is implemented (ADR-0059): `FoundryApi_v6` is frozen, a content mod and a consented C99 mod add lit, solid objects to that room on both, and [the 3D modding guide](docs/modding/3d.md) is written from a mod built outside the repository. M26's [playable sample](docs/design/playable3d.md), `samples/court`, was played from a relocated install by a person on macOS/Metal, Windows/Vulkan and Linux/Vulkan (a freshly provisioned Ubuntu), adding only pointer capture to the engine for it; by rule 17 it also finished M19–M25's own leftovers. M27–M149 follow (ADR-0060). Linux is a reproducible target, not a kept machine: it runs when a milestone changes something Linux-specific (3d.md §10.2). What 3d.md §11, light.md §14, collision3d.md §15, animation3d.md §14, public3d.md §14 and playable3d.md §13 set aside each names its milestone. |
 
 **Out of scope indefinitely, not constraining the initial architecture:** consoles, iOS,

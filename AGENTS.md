@@ -477,7 +477,7 @@ court and a whole chase tick. The tests assert the M5's budgets, 50 µs for a pa
 crowd step, and the i3's are three times those (3.4–5.2 µs and 0.026 ms there at M33). `nav-test`
 also asserts the crowd pin in every mode.
 
-M34's, M35's, M36's and M37's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
+M34's to M38's costs are read inside the paced frame loop of a ReleaseSafe install, not in a test.
 Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sample's figures change:
 - `FOUNDRY_SANDBOX3D_ANIMATORS=32 FOUNDRY_SANDBOX3D_FRAMES=900 bin/sandbox3d` prints the pacer's
   `animation`, its `render.skin`, and `animation.animators`, 32 animators each on the pacer's
@@ -514,6 +514,22 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
   - The court also prints `footsteps:`, its footsteps by surface and by the sound set. Its tick read
     0.153–0.176 ms on the M5, 0.125–0.215 ms on the i3, and 0.250–0.273 ms for the i3's short
     `caught`. That last reading is M100's.
+- **M38's collision at scale.** Run them when the broadphase, a mesh's tree, hulls, the
+  closed-form pairs or `.fcol`/`.fhul` change.
+  - The tour ends with the yard's stage at (70, 0, 0) and its replay, `1052a9ae891b0d27`. Since
+    M38 Step 5 the player's pin is `b85b52c97d259db4` (`cb99ccfcf2b6d6c3` before it). The run
+    prints `yard:`, the player's move among 2,126 bodies and the 64 posts' `moveBody` together,
+    against 0.25 and 0.10 ms, and `collision: addMesh of the hillside`, its 32,258 triangles with
+    the baked tree, against 5 ms. On the M5 they read 0.215, 0.154 (over, M100's) and 1.03 ms
+    (63 ms built); on the i3 0.111–0.150, 0.070–0.082 and 2.1–2.6 ms (172–183 ms built).
+  - `tilted` also turns the yard, and holds it to 15 mm a tick and 2 mm at the end, since a
+    snap or fall on a slope can split by a tick. Both machines read 0.01017 and 0.00106 m.
+  - `zig build sandbox3d-yard-test` runs the yard's three tests alone. `physics3d-test` takes
+    about 20 s in Debug, for the broadphase's equivalence rounds.
+  - `scripts/m38/make_yard.py` writes the hillside and the boulder; it writes the same bytes on
+    every run. The court's four digests since Step 5 are `win` `4cea12a2d26686ba`, `caught`
+    `448a83a95a46f1af`, `fell` `489ec244f5946487` and the soundtrack `38ee55e6ad5b65da`; its tick
+    read 0.127–0.168 ms on the M5 and 0.080–0.189 ms on the i3.
 
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
@@ -521,8 +537,10 @@ On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31'
 `scripts/m34/windows.ps1` runs M34's, with the tour, `pacer_quick`, the cost runs and the endings,
 `scripts/m35/windows.ps1` runs M35's, adding the three saves, `pacer_back`'s mirrored square
 and the warden's machine, `scripts/m36/windows.ps1` runs M36's, adding the crate, the strafer's
-cost and the walks' pins, and `scripts/m37/windows.ps1` runs M37's: the corner, the tilted tour
-and the court's footsteps and `addMesh`. Each milestone's `-setup.ps1` clones and checks out
+cost and the walks' pins, `scripts/m37/windows.ps1` runs M37's: the corner, the tilted tour
+and the court's footsteps and `addMesh`, and `scripts/m38/windows.ps1` runs M38's: the yard, its
+replay and tilted stage, the moved pins and `sandbox3d-yard-test`. The Mac compares the install's
+content hashes with its own. Each milestone's `-setup.ps1` clones and checks out
 unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from the scheduled
 task.
 Run it from a scheduled task, not over SSH alone: a dropped session ends what it started.

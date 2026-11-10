@@ -57,3 +57,8 @@ carrying platforms wait for a game that needs them.
 - ~~A game needs moving platforms, or characters that push each other.~~ Answered by ADR-0075
   in M37 (2026-11-09).
 - Triangle-mesh queries are measured too slow for a shipped level.
+
+  > **2026-11-11, M38:** answered before a shipped level needed it, by
+  > [ADR-0077](0077-collision-structures-never-decide-an-answer.md)'s broadphase and baked trees and
+  > [ADR-0078](0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md)'s closed-form triangle
+  > pairs. No structure decides an answer, and no dynamics arrived with them.

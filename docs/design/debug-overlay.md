@@ -1373,3 +1373,14 @@ panels are open as a small versioned text, which `sandbox3d` and the court store
 `Engine.writeUserFile` in a person's session and never in a bounded, scripted or headless one.
 GPU timing, per-system timing, pause and single-step, and a crash dump of the log ring are on the
 roadmap (M73, M100, M107, M147).
+
+## Note — 2026-11-11, M38: the physics panel, and `debug` granted `physics3d`
+
+`debug` is granted `physics3d`, by the owner's decision in M38 (`collision-scale.md` §10, §17),
+for one value: `physics3d.Report`, which the world fills and the game hands on. `physics2d` stays
+out, as §9 left it. `Sources.physics` is a `?*const physics3d.Report`, and the eighth built-in
+panel, `physics`, prints what the world holds (bodies, characters, meshes and their triangles,
+baked meshes, hulls and their faces, the broadphase's nodes and height), each query kind by its
+own name, the work the queries did, the closed-form and GJK split, refits and the game's move p95.
+With no report it says so. It is numbers only and has no write path, as §7.4 asks of the
+inspector. `sandbox3d` and the court both hand it their walk world's report each frame.

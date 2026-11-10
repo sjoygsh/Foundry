@@ -1,6 +1,7 @@
 # Design: M38 — Collision at scale: a broadphase over bodies, the tree baked into `.fcol`, hull faces and hull assets, closed-form pairs and a physics panel
 
-**Status:** Accepted 2026-11-10, when the owner asked for Step 1, with §17 as written. Each step's
+**Status:** Accepted 2026-11-10, when the owner asked for Step 1, with §17 as written. Complete
+2026-11-11, tag `m38`. Each step's
 Resolution follows §17, and the dated notes below say where the code sharpened this text.
 **Date:** 2026-11-10
 **Baseline:** `f066f63`, tag `m37`. M0–M37 are complete.
@@ -1548,3 +1549,36 @@ ending, over its line on this i3 in M35, M36 and M37, sits under it this time, a
 
 **The PC** keeps `%USERPROFILE%\src\Foundry-m38` and `%USERPROFILE%\m38` until Step 12, which
 deletes those two exact paths and nothing else.
+
+## Resolution — Step 12: Close M38 (2026-11-11)
+
+Every document now names M38 complete:
+- `CLAUDE.md`'s two rows say implemented; its `physics3d`, `asset`, `author` and `debug` layer
+  lines name what M38 added, the `author` and `debug` lines gain the `physics3d` grant, and §9's
+  row says M38 done;
+- ADR-0077 and ADR-0078 say implemented;
+- the roadmap marks M38 complete and gives §16's items to their milestones: M48 hulls by content
+  ID and `physics3d.Report`, M51 pair finding over the broadphase and compounds, M60 collision
+  loaded in pieces, M100 `moveBody` finding characters through the broadphase. Heightfields were
+  already M63's, and collision in Lua M49's;
+- the design index and the README agree, and the README points to M39, Shadows II.
+
+Dated notes resolve the contracts M38 changed:
+- `collision3d.md` §15's five rows (the baked tree, the broadphase, specialised pairs, hull faces
+  and assets, the physics panel) are struck through with what was built; §4's "no hull faces",
+  §5.1's "one algorithm" and §6's "no broadphase yet" each gain a note;
+- ADR-0051's third revisit, triangle-mesh queries too slow, and ADR-0057's second, baking the tree,
+  name ADR-0077 and ADR-0078;
+- `debug-overlay.md` gains the physics panel and the grant;
+- `collision-extras.md` §18's M38 row is marked done.
+
+`docs/modding/content-mods.md` already gained baked trees and hull imports at Step 7, with what
+`fpack` refuses. `AGENTS.md`'s costs gain M38's readings on the M5 and the i3, the moved pins, the
+court's digests, `sandbox3d-yard-test` and `scripts/m38/`. The bar itself is unchanged.
+
+**Nothing M38 took on is open.** §16's five items each name their milestone, and the one reading
+over its line, the posts' `moveBody` on the M5, is M100's line, already in the roadmap.
+
+The PC's `%USERPROFILE%\src\Foundry-m38` and `%USERPROFILE%\m38` were removed by exact name, and
+no scheduled task is left. Only documents changed after Step 11, so its bar stands: 2,984 of
+2,994 (ten skips), 132/132 steps, on the Mac.
