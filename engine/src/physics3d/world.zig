@@ -20,6 +20,7 @@ const narrow = @import("narrow.zig");
 const shape_mod = @import("shape.zig");
 const mesh_mod = @import("mesh.zig");
 const character_mod = @import("character.zig");
+const report_mod = @import("report.zig");
 
 const Aabb = shape_mod.Aabb;
 const Allocator = std.mem.Allocator;
@@ -35,6 +36,9 @@ const Meshes = shape_mod.Meshes;
 const Pose = shape_mod.Pose;
 const Shape = shape_mod.Shape;
 const Vec3 = core.math.Vec3;
+const Counters = report_mod.Counters;
+const QueryKind = report_mod.QueryKind;
+const Report = report_mod.Report;
 
 /// A hit's triangle when what it hit is not a mesh.
 pub const none_triangle: u32 = std.math.maxInt(u32);
@@ -139,8 +143,46 @@ pub const World = struct {
     up: Vec3 = Vec3.up,
     /// The rotation from +Y to `up`, which stands a capsule along it.
     up_rotation: core.math.Quat = core.math.Quat.identity,
+    /// Work done since they were last taken (`collision-scale.md` §3). Never simulation state.
+    counters: Counters = .{},
 
     pub const empty: World = .{};
+
+    // -- the report ------------------------------------------------------------------
+
+    /// What the world holds, and its counters as they stand. It takes nothing.
+    pub fn report(self: *World) Report {
+        var out: Report = .{
+            .characters = self.characters.count(),
+            .meshes = self.meshes.count(),
+            .hulls = self.hulls.count(),
+        };
+        var bodies = self.bodies.iterator();
+        while (bodies.next()) |entry| switch (entry.value.kind) {
+            .static => out.bodies_static += 1,
+            .kinematic => out.bodies_kinematic += 1,
+        };
+        var meshes = self.meshes.iterator();
+        while (meshes.next()) |entry| out.triangles += entry.value.order.len;
+        return out.withCounters(self.counters);
+    }
+
+    /// The counters, which are then zero: a game takes them once a tick or once a frame.
+    pub fn takeCounters(self: *World) Counters {
+        const taken = self.counters;
+        self.counters = .{};
+        return taken;
+    }
+
+    pub fn counted(self: *World, kind: QueryKind) void {
+        self.counters.queries[@intFromEnum(kind)] +%= 1;
+    }
+
+    /// One narrowphase test against `part`. Every pair is GJK's until §8.
+    fn tested(self: *World, part: Part) void {
+        self.counters.pairs_gjk +%= 1;
+        if (part.triangle != none_triangle) self.counters.triangles_tested +%= 1;
+    }
 
     /// Sets the controller's up. Only while the world holds no character, since a capsule is
     /// stood along the up it was made with. `up` must be unit, to `Quat`'s tolerance.
@@ -328,6 +370,7 @@ pub const World = struct {
         var candidates = self.candidate(handle, b.*, query.bounds(), .{}) orelse return false;
         while (candidates.next()) |part| {
             if (!part.admits(query.pose.position, .zero)) continue;
+            self.tested(part);
             if (part.separation(query).distance < 0) return true;
         }
         return false;
@@ -444,11 +487,13 @@ pub const World = struct {
         var best: ?Contact = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            self.counters.bodies_visited +%= 1;
             if (entry.value.mask & actor.layer == 0) continue;
             if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, query.bounds(), .{ .mask = actor.mask, .ignore = source }) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
+                self.tested(other);
                 const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (best) |b| if (-s.distance <= b.depth) continue;
@@ -472,6 +517,7 @@ pub const World = struct {
         if (!direction.isFinite() or @abs(direction.length() - 1) > core.math.Quat.unit_tolerance) return error.InvalidQuery;
         if (!std.math.isFinite(max_distance) or max_distance < 0) return error.InvalidQuery;
         const dir = direction.normalize();
+        self.counted(.ray);
         const ray: Convex = .{ .core = .point, .radius = 0, .pose = .at(origin) };
         const reach = dir.scale(max_distance);
         const hit = self.earliest(ray, reach, 0, filter) orelse return null;
@@ -499,6 +545,7 @@ pub const World = struct {
     ) QueryError!?Hit {
         const moving = try self.queryConvex(shape, pose);
         if (!displacement.isFinite()) return error.InvalidQuery;
+        self.counted(.cast);
         return self.earliest(moving, displacement, narrow.contact_skin, filter);
     }
 
@@ -513,6 +560,7 @@ pub const World = struct {
     pub fn shapeSweep(self: *World, shape: Shape, from: Pose, to: Pose, filter: Filter) QueryError!?Hit {
         const start = try self.queryConvex(shape, from);
         const end_pose = try shape_mod.validatePose(to);
+        self.counted(.sweep);
         const begin = start.pose;
         const d = @abs(begin.rotation.dot(end_pose.rotation));
         if (d >= 1) return self.earliest(start, end_pose.position.sub(begin.position), narrow.contact_skin, filter);
@@ -559,9 +607,11 @@ pub const World = struct {
         var best: ?Nearest = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, motion)) continue;
+                self.tested(other);
                 const s = narrow.separation(moving, other.convex);
                 if (best) |b| if (!(s.distance < b.separation.distance)) continue;
                 best = .{ .separation = s, .part = other, .body = entry.id, .user = entry.value.user };
@@ -573,13 +623,16 @@ pub const World = struct {
     /// Every body `shape` at `pose` overlaps — penetrates, not merely touches — in handle order.
     pub fn overlap(self: *World, shape: Shape, pose: Pose, filter: Filter, out: []Overlap) QueryError!Found {
         const query = try self.queryConvex(shape, pose);
+        self.counted(.overlap);
         const area = query.bounds();
         var found: Found = .{ .count = 0, .total = 0 };
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
+                self.tested(other);
                 if (narrow.separation(query, other.convex).distance >= 0) continue;
                 if (found.count < out.len) {
                     out[found.count] = .{ .body = entry.id, .user = entry.value.user, .triangle = other.triangle, .surface = other.surface };
@@ -595,13 +648,16 @@ pub const World = struct {
     /// `overlap`, with each overlap's depth and the way out. What depenetration uses.
     pub fn contacts(self: *World, shape: Shape, pose: Pose, filter: Filter, out: []Contact) QueryError!Found {
         const query = try self.queryConvex(shape, pose);
+        self.counted(.contacts);
         const area = query.bounds();
         var found: Found = .{ .count = 0, .total = 0 };
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            self.counters.bodies_visited +%= 1;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(query.pose.position, .zero)) continue;
+                self.tested(other);
                 const s = other.separation(query);
                 if (s.distance >= 0) continue;
                 if (found.count < out.len) {
@@ -644,11 +700,13 @@ pub const World = struct {
         var best: ?Hit = null;
         var it = self.bodies.iterator();
         while (it.next()) |entry| {
+            self.counters.bodies_visited +%= 1;
             if (layer) |l| if (entry.value.mask & l == 0) continue;
             if (entry.id.eql(also)) continue;
             var candidates = self.candidate(entry.id, entry.value.*, area, filter) orelse continue;
             while (candidates.next()) |other| {
                 if (!other.admits(moving.pose.position, displacement)) continue;
+                self.tested(other);
                 const c = narrow.cast(moving, displacement, other.convex, target) orelse continue;
                 if (layer != null and !c.started_inside and c.fraction == 0 and displacement.dot(c.normal) >= -1e-7) continue;
                 var face = other.convex.surfaceNormal(c.normal);
@@ -777,6 +835,7 @@ pub const World = struct {
     fn candidate(self: *World, id: BodyHandle, b: Body, area: Aabb, filter: Filter) ?Candidates {
         if (filter.ignore) |ignored| if (ignored.eql(id)) return null;
         if (!body_mod.maskAdmits(filter.mask, b)) return null;
+        self.counters.bodies_tested +%= 1;
         if (!self.bodyBounds(b).expand(0.002).overlaps(area)) return null;
         if (b.shape == .mesh) {
             const m = self.meshes.get(b.shape.mesh).?;

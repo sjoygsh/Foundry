@@ -1,6 +1,7 @@
 # Design: M38 — Collision at scale: a broadphase over bodies, the tree baked into `.fcol`, hull faces and hull assets, closed-form pairs and a physics panel
 
-**Status:** Proposed 2026-11-10; awaiting the owner's acceptance of §17. No step has begun.
+**Status:** Accepted 2026-11-10, when the owner asked for Step 1, with §17 as written. Each step's
+Resolution follows §17, and the dated notes below say where the code sharpened this text.
 **Date:** 2026-11-10
 **Baseline:** `f066f63`, tag `m37`. M0–M37 are complete.
 **Decisions:**
@@ -9,11 +10,11 @@
   contracts this milestone extends. ADR-0013 (deterministic-friendly), ADR-0025 (the overlay
   reads answers and has no private path) and ADR-0059 (the public 3D table, frozen at v6)
   constrain it.
-- Proposed [ADR-0077](../adr/0077-collision-structures-never-decide-an-answer.md): a broadphase
+- [ADR-0077](../adr/0077-collision-structures-never-decide-an-answer.md): a broadphase
   over bodies and a tree baked into `.fcol` are structures that find candidates and never decide
   an answer. A baked tree is untrusted and validated in linear time. `author` is granted
   `physics3d`, so the compiler builds a tree with the code that would have built it at load.
-- Proposed [ADR-0078](../adr/0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md): a hull
+- [ADR-0078](../adr/0078-hulls-have-faces-and-triangle-pairs-are-closed-form.md): a hull
   has faces, found by `physics3d` from its points, and is compiled content,
   `foundry:collision_hull`. A ray, a sphere and a capsule meet a triangle by closed-form
   routines in place of GJK, and every pin that walks on triangles moves once.
@@ -134,6 +135,9 @@ changes. Three numbers size the rest of the design:
 
 If the hillside's tree builds in under 5 ms at 32,768 triangles, Step 1 enlarges the hillside
 until it does not, and records the size. The design's other numbers do not depend on it.
+
+> **2026-11-10, Step 1:** the hillside's size stands, since 32,768 triangles build in 60 ms. The
+> bake threshold moved from 4,096 triangles to 1,024 (§9's note).
 
 **`physics3d.Report`** is a plain value, as `nav.Report` is:
 
@@ -355,6 +359,11 @@ the court's collision keep their bytes. Below that size a tree builds in well un
 millisecond, and a file without one is smaller. The threshold is a constant in `author`,
 `collision_tree_threshold`, and Step 1's measurements may move it once, before any file is
 written with it.
+
+> **2026-11-10, Step 1: the threshold is 1,024 triangles, not 4,096.** A tree of 4,096 triangles
+> takes 4.7 ms to build on the Mac, which is ADR-0057's whole budget, and not "well under a
+> millisecond". At 1,024 it takes 1.9 ms. That is this note's one move. The largest
+> existing collision mesh is the court's, at 132 triangles, so every file still keeps its bytes.
 
 **A hull import.** `foundry:collision_import` with `shape hull` compiles into the
 `foundry:collision_hull` of its own ID. It takes every vertex of the file's triangles, after the
@@ -583,7 +592,7 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
 | 8 | Three closed-form pairs, ray, sphere and capsule against a triangle, replace GJK for those pairs; the cast and depth are unchanged, correcting `collision3d.md` §5.1's "one algorithm" | §8, ADR-0078 |
 | 9 | **Every walking pin and the court's four body digests move once,** at Step 5, after each tour stays within 1 mm of its GJK run at every tick | §8, ADR-0078 |
 | 10 | `author` is granted `physics3d`, so one builder makes every tree | §9, ADR-0077 |
-| 11 | A tree is baked at 4,096 triangles and above, so every existing collision file keeps its bytes | §9 |
+| 11 | A tree is baked at 4,096 triangles and above, so every existing collision file keeps its bytes. (1,024 since Step 1, by choice 1) | §9 |
 | 12 | `debug` is granted `physics3d`, for `Report` alone; the panel is numbers, with no view of shapes | §10 |
 | 13 | The yard is new, off every tour path and not a navigation source; its hillside's glTF, about 0.4 MB, is committed | §11 |
 | 14 | The court changes one line; the owner plays it at Step 10 | §12 |
@@ -594,3 +603,83 @@ Choice 9 is the one with the widest reach. Its alternative, in §8, keeps every 
 the cost where it is.
 
 Nothing blocks Step 1 once these are accepted.
+
+## Resolution — Step 1: the `Report`, and the measurements (2026-11-10)
+
+**Acceptance.** The owner asked for Step 1 on 2026-11-10, which accepts §17 as written. ADR-0077
+and ADR-0078 are Accepted, and both are in `CLAUDE.md` §4.1.
+
+**What the step added.**
+- `physics3d/report.zig`: `QueryKind`, `Counters` and `Report`, exported from the module's root.
+- `World.counters`, `World.report()`, `World.takeCounters()` and `World.counted()`.
+- Every query counts itself by kind once it has passed validation, so a refused query counts
+  nothing. Every body loop counts a visit, `candidate` counts an exact bounds test after the
+  filter, and every narrowphase call counts a pair, and a triangle when the part is one.
+- `Report.withCounters` puts counters a game took itself back into a report. The design had
+  `report()` fill the counts and `takeCounters()` return the rest, and did not say how the two
+  meet. `report()` copies the counters as they stand and takes nothing.
+
+**Where the code sharpened the design.**
+- **`bodies_visited` is bodies under the scan and will be nodes under the tree.** §3 called it
+  "broadphase nodes walked". Until Step 2 there are no nodes, so it counts every live body a
+  query passes. Step 2 changes what it counts, and its drop is the broadphase's proof.
+- **`tree_nodes`, `tree_height`, `meshes_baked`, `hull_faces`, `pairs_closed` and `refits` are in
+  the value now and stay zero** until Steps 2 to 5 fill them, so the report's shape does not
+  change under the panel.
+- **`triangles` is a u64,** since a world may hold many meshes of up to 1,048,576 triangles.
+- **`moveBody`'s own overlap test** counts bodies tested and pairs, and no visit, since it
+  walks no bodies.
+
+**The measurements.** Mac, ReleaseSafe, unpaced, from a harness in scratch that was not
+committed. The world is the yard's shape: a 96 m hillside of 32,258 triangles, 2,048 static
+boxes 1.5 m apart, 64 kinematic boxes circling, and one character walking a 32 m circle through
+them for 6,000 ticks.
+
+| What | Reading |
+| --- | --- |
+| A move with 12 bodies | median 0.012 ms, p95 0.020 ms |
+| A move with 2,114 bodies, under the scan | median **0.357 ms**, p95 0.371 ms |
+| Bodies visited in that move | 17,940, of which 17,931 had their bounds tested |
+| Narrowphase in that move | 0.026 ms, 171 pairs, 164 of them triangles |
+| GJK on triangles, of a move with 12 bodies | 0.009 of 0.013 ms, about **70%** |
+| The 64 movers' `moveBody`, together | median 0.0026 ms |
+| `addMesh`, 1,024 triangles | 1.9 ms |
+| `addMesh`, 4,096 triangles | 4.7 ms |
+| `addMesh`, 32,768 triangles | 60.5 ms |
+| `addMesh`, 262,144 triangles | 737 ms |
+| Copying 262,144 triangles, with no tree | 0.27 ms |
+
+**What they say.**
+- **The scan is the cost at scale.** At 2,114 bodies a move is over M23's 0.25 ms before any
+  pacing, and 93% of it is walking bodies and computing their bounds: about 18 ns a body, nearly
+  nine passes a move. The narrowphase is 7%. This is the broadphase's trigger, fired.
+- **GJK on triangles is the cost of a move in a small world,** about 70% of it. This is
+  `collision3d.md` §15's trigger for specialised pairs, read directly.
+- **The tree's build is far slower than this design assumed.** It is about 1.9 µs a triangle, and
+  `validate` is under 1% of it. So ADR-0057's 5 ms is crossed near 4,300 triangles on the Mac,
+  and the hillside's 32,258 would take 60 ms at load. The hillside's size stands.
+- **The bake threshold moves to 1,024 triangles** (§9's note), the one move choice 1 allows.
+  The samples' collision meshes hold 24 to 132 triangles, so none gains a tree.
+- **The 64 movers cost almost nothing,** 0.003 ms against a budget of 0.10, because `moveBody`
+  walks characters and not bodies.
+- **Paced readings will be higher.** M23 found the paced p95 about three times the unpaced one,
+  and the budgets of §14 are read paced, at Step 9.
+
+**The harness's timing of GJK** wrapped `narrow.separation` and `narrow.cast` in a scratch copy
+of the module, with a clock read at about 14 ns a pair, which the 70% allows for.
+
+**One observation, acted on by nothing here.** The builder's sort computes two centroids at
+every comparison. A builder that computed them once would make the same tree faster. Baking
+moves the build to compile time, where 60 ms is nothing, so this design does not need it.
+
+**Guards verified by mutation,** each failing a test in `report_tests.zig`: `takeCounters` that
+does not zero, a bounds test counted before the filter, every pair counted as a triangle, and a
+move not counted.
+
+**Tests.** Five new, in `report.zig` and `report_tests.zig`: the counts against a world built by
+hand, each query counted by kind with the bodies and triangles it tested, a refused query
+counting nothing, taking the counters, and that counting changes no answer.
+
+**Bar.** `zig build test` 2,923/2,933 (ten skips), 132/132 steps, five new tests. The format
+check, the four `check` variants, the four headless samples and `fdt-check` pass. No pin moved,
+no ABI change, no new grant yet: `author`'s is Step 7's and `debug`'s is Step 8's.

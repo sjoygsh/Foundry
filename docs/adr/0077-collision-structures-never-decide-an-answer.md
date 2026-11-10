@@ -1,8 +1,12 @@
 # ADR-0077: Collision structures find candidates and never decide an answer
 
-**Status:** Proposed
+**Status:** Accepted 2026-11-10, when the owner requested M38 Step 1
 **Date:** 2026-11-10
 **Informed by:** ADR-0013, ADR-0051, ADR-0055, ADR-0057, ADR-0076, `docs/design/collision3d.md`, `docs/design/collision-scale.md`
+
+> **Revised 2026-11-10, at M38 Step 1, before any code depended on it:** the bake threshold is
+> 1,024 triangles, not 4,096. A tree of 4,096 triangles measured 4.7 ms to build, ADR-0057's whole
+> budget.
 
 ## Context
 
@@ -32,7 +36,7 @@ depth against the query's fixed stack, that its leaves hold each triangle exactl
 every box contains what is under it. A tree that fails is refused, not rebuilt. Any valid tree
 gives the same answers, because a mesh's candidates are sorted by triangle index.
 
-**`.fcol` version 3 carries the tree.** `author` writes one for a mesh of 4,096 triangles or
+**`.fcol` version 3 carries the tree.** `author` writes one for a mesh of 1,024 triangles or
 more, and writes smaller meshes as before, so every existing file keeps its bytes.
 
 **`author` is granted `physics3d`,** and bakes a tree with the builder that would have built it
@@ -65,7 +69,7 @@ at load.
 - **Granting `asset` `physics3d`.** ADR-0057 kept them apart on purpose: the asset is geometry,
   and physics copies it.
 - **Baking a tree into every mesh.** Every existing collision file would change bytes for a
-  tree that builds in microseconds.
+  tree that builds in under two milliseconds.
 
 ## Revisit if
 

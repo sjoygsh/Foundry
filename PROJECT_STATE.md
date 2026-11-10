@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-10
-**Current handoff: M38's design is proposed** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078); awaiting acceptance of §17. Stop before Step 1. M37 is complete and pushed (2026-11-09, tag `m37`). The PC holds no Foundry clone.
+**Current handoff: M38 Step 1 is complete** ([`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078, accepted 2026-11-10). Stop before Step 2, the broadphase: `broadphase.zig`, `World.place`, the body scratch and the test-only scan do not exist yet. M37 is complete and pushed (tag `m37`). The PC holds no Foundry clone.
+
+**M38 Step 1 is done (2026-11-10): the `Report`, and the measurements.**
+- The owner's request for Step 1 accepted §17. ADR-0077 and ADR-0078 are Accepted and in `CLAUDE.md` §4.1.
+- `physics3d.Report`, `Counters` and `QueryKind`; `World.report()` and `World.takeCounters()`. Queries count themselves by kind, with bodies visited and tested, triangles and pairs. The fields later steps fill are present and zero.
+- Measured on the Mac, ReleaseSafe, unpaced, in a yard-shaped world from a scratch harness:
+  - a move with 2,114 bodies under the scan: median 0.357 ms, over M23's 0.25 ms, 93% of it the scan;
+  - a move with 12 bodies: 0.012 ms, about 70% of it GJK on triangles;
+  - `addMesh`: 1.9 ms at 1,024 triangles, 4.7 ms at 4,096, 60.5 ms at 32,768, 737 ms at 262,144.
+- **The bake threshold moved from 4,096 to 1,024 triangles,** the one move §17's choice 1 allows. The samples' collision meshes hold 24 to 132 triangles, so none gains a tree. The hillside's size stands.
+- Four guards verified by mutation. Bar 2,923/2,933 (ten skips), 132/132 steps, five new tests; every check, sample and `fdt-check` passed. No pin moved.
 
 **M38's design (2026-11-10):**
 - `physics3d` gains a balanced bounding-volume tree over bodies whose candidates are sorted by handle, so no answer changes; a mesh tree accepted from outside and validated in linear time; and a `Report` (ADR-0077).

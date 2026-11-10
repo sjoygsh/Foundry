@@ -32,6 +32,7 @@ pub const shape = @import("shape.zig");
 pub const world = @import("world.zig");
 pub const mesh = @import("mesh.zig");
 pub const character = @import("character.zig");
+pub const report = @import("report.zig");
 pub const Character = character.Character;
 pub const CharacterConfig = character.CharacterConfig;
 pub const CharacterHandle = character.CharacterHandle;
@@ -62,6 +63,9 @@ pub const MeshHandle = shape.MeshHandle;
 pub const Overlap = world.Overlap;
 pub const Pose = shape.Pose;
 pub const RayHit = world.RayHit;
+pub const Report = report.Report;
+pub const Counters = report.Counters;
+pub const QueryKind = report.QueryKind;
 pub const Shape = shape.Shape;
 pub const World = world.World;
 
@@ -94,6 +98,7 @@ test {
     _ = shape;
     _ = world;
     _ = mesh;
+    _ = report;
     _ = @import("tests.zig");
     _ = @import("mesh_tests.zig");
     _ = @import("character_tests.zig");
@@ -101,4 +106,5 @@ test {
     _ = @import("scale_tests.zig");
     _ = @import("surface_tests.zig");
     _ = @import("platform_tests.zig");
+    _ = @import("report_tests.zig");
 }

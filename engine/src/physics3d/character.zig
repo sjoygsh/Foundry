@@ -245,6 +245,7 @@ pub fn moveWith(w: *World, handle: CharacterHandle, displacement: Vec3, hits: []
     if (!displacement.isFinite() or dx * dx + dy * dy + dz * dz > limit * limit) return error.InvalidMove;
     const original = feetOf(w, c);
     if (!validFeet(w, c.config, original.add(displacement))) return error.InvalidMove;
+    w.counted(.move);
     var r: CharacterMove = .{ .feet = original };
     var iteration: u32 = 0;
     // The carry (§7): through the ground body's motion, if it has moved since this character
