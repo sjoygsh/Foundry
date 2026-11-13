@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 Step 3 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 4: the yard in cascades on Metal (`sandbox3d`'s flags, tint key, exit report, tour at each count and budgets). The samples now draw four cascades by default, at their old shadow distances. The PC holds no Foundry clone.
+**Current handoff: M39 Step 4 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 5: the court shadowed to 40 m with cascades, `court-test`'s digests, a relocated run of each ending, and the owner's play. The court still shadows to 20 m. The PC holds no Foundry clone.
+
+**M39 Step 4 is done (2026-11-14): the yard in cascades, on Metal.**
+- `sandbox3d:config.main` gains `shadow_distance` (80 m). The sample gains `--shadow-cascades=1|2|3|4` and `--shadow-tint`, and **H** toggles the tint, since T was taken. Its exit report prints each cascade's range, texel and draws, `render.world`, and the frame's work. `Renderer.shadowCascades()` returns the last fit.
+- The texels match Step 1's oracle to the digit: 0.58, 1.29, 2.80 and 8.52 cm against one map's 8.52 cm.
+- The tour passed at one to four cascades with every pin unchanged.
+- **Budget, relocated ReleaseSafe on the M5, in the yard:** frame work p95 2.169 ms at four cascades against 2.069 ms with one map (budget 16.67 ms), no skipped frames. `render.world` p95 0.482 ms against 0.388 ms.
+- Bar: null 2,998/3,008 (ten skips), Metal 3,008/3,029 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M39 Step 3 is done (2026-11-14): four cascades, the lookup and the overlay.**
 - Each caster carries a mask of the cascades whose light box holds it, and the caster pass draws it into those tiles only. `Stats` gains `shadow_cascades` and `shadow_cascade_draws`, and the overlay reads `3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17 shadow culled`.

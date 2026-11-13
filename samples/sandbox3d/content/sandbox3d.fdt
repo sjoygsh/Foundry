@@ -428,6 +428,10 @@ foundry:particle_emitter sandbox3d:effects.trail {
     # From `foundry:core`: a cross-package reference is an ordinary id.
     font id
 
+    # How far the directional light's shadow reaches, in metres: the camera's far plane, so the
+    # M38 yard is shadowed across its length in four cascades (`shadows-cascaded.md` §8).
+    shadow_distance f32 (default 80)
+
     # Photometric units (ADR-0056): EV100, cd/m² ambient; lux for directional,
     # candela for point/spot. Direction is the light's local −Z, not Euler angles.
     exposure_ev100 f32 (default 6)
@@ -459,6 +463,7 @@ config sandbox3d:config.main {
     crate_grid 9
     crate_spacing 2.4
     font foundry:fonts.debug
+    shadow_distance 80
     exposure_ev100 6
     ambient { r 8 g 10 b 14 }
     lights [

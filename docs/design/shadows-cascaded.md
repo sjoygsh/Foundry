@@ -785,3 +785,70 @@ the Vulkan checks, and it runs on the PC at Step 6.
 Step 4 is next: the yard in cascades, with `sandbox3d`'s flags, its tint key, the exit report
 and its budgets. The samples still use their own `shadow_distance` values, and they now draw
 four cascades by default.
+
+## Resolution — Step 4: the yard in cascades, on Metal (2026-11-14)
+
+**What `sandbox3d` gained:**
+- **The config.** `sandbox3d:config.main` gains `shadow_distance`, default 80 in the schema and
+  80 in the record. The frame view takes it, clamped to 1–1,000 m, with a fallback of 80. M22's
+  `--shadow-proof` keeps its own 20 m. A mod overriding the record, such as `dusk`, inherits the
+  schema's 80 unless it says otherwise.
+- **The flags.** `--shadow-cascades=1|2|3|4` (default 4) and `--shadow-tint`. Anything else,
+  including `=0`, `=5` and `=12`, is the usage error, and a test pins both.
+- **The tint key is H, not T** as §8 had it. T has put the player on M28's generated corner
+  since M28.
+- **Scripted keys.** H and Y join the scripted keys, so an evidence run can enter the yard and
+  toggle the tint.
+- **The exit report** prints each cascade's range, texel in centimetres and draws. It also
+  prints `render.world`'s median and p95, and the frame's work without the pacing sleep,
+  acquire or present over the last 240 frames, the measure the gallery's lines already use.
+- **The accessor.** `Renderer.shadowCascades()` returns the last frame's fit, so a host can report
+  splits and texels without reaching into the renderer.
+
+**The measurement.** The headless run at the default prints the trigger's numbers, matching Step
+1's oracle to the digit, since the window is 16:9 as that test assumed:
+
+| Cascades | Ranges and texels | Shadow draws |
+| --- | --- | --- |
+| 1 | 0.1–80 m, 8.52 cm | 167 |
+| 2 | to 12.13 m, 1.29 cm; to 80 m, 8.52 cm | 268 |
+| 3 | to 7.38 m, 0.79 cm; to 19.80 m, 2.11 cm; to 80 m, 8.52 cm | 368 |
+| 4 | to 5.42 m, 0.58 cm; to 12.13 m, 1.29 cm; to 26.29 m, 2.80 cm; to 80 m, 8.52 cm | 459 |
+
+**The pins.** The 2,400-frame tour passed at each of the four counts, with every pin unchanged:
+- the player `b85b52c97d259db4`;
+- the walker `655e865f98779129`;
+- the pacer's three replays and M34's save;
+- the corner `e2992f93e5323345`;
+- the yard `1052a9ae891b0d27`.
+
+No shadow reaches the simulation. The thirty-frame run passed at each count and with
+`--shadow-tint`.
+
+**The budget, from a relocated, read-only ReleaseSafe install, windowed on the M5.** Each run was
+900 frames with Y pressed at frame 120, standing in the yard's middle lane facing the boulder,
+with saves redirected to scratch. Nothing under Application Support changed.
+
+| | Four cascades | One map |
+| --- | --- | --- |
+| Shadow draws (culled) | 123 (705) | 67 (140) |
+| Frame work, p95 (max) | **2.169 ms** (2.271) | 2.069 ms (2.217) |
+| `render.world`, median / p95 | 0.411 / 0.482 ms | 0.334 / 0.388 ms |
+| Paced interval, median / p95 | 16.662 / 17.422 ms | 16.662 / 17.208 ms |
+| Skipped frames | 0 | 0 |
+
+The cascades cost the yard about 0.1 ms of CPU a frame, and the frame works for 2.2 ms of its
+16.67. The paced interval's p95 above 16.67 ms is the display's jitter around its 60 Hz sleep. It
+is the same at one map, with no frame skipped, so §11's "whole frame within 16.67 ms" is read as
+the frame's work, which is the budget the sample has always reported.
+
+**Guard broken on purpose:** a parser accepting `--shadow-cascades=5` failed the options test.
+
+**Bar:** passed, exit 0 throughout.
+- `zig build test` (null): 2,998/3,008 (ten skips), 132/132 steps.
+- `-Drhi=metal`: 3,008/3,029 (21 skips), 146/146 steps.
+- `fmt`, the four checks, the four thirty-frame samples, `fdt-check`, the tour, `court-test`
+  87/89 (two skips), and the five Vulkan checks.
+
+Step 5 is next: the court at 40 m with cascades, `court-test`'s digests, a relocated run of each
+ending, and the owner's play.

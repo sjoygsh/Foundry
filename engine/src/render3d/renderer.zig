@@ -2252,6 +2252,12 @@ pub const Renderer = struct {
         return self.last_stats;
     }
 
+    /// The cascades the last prepared frame fitted, cascade 0 nearest, or null when nothing
+    /// cast: their splits and texels are what a host reports (`shadows-cascaded.md` §8).
+    pub fn shadowCascades(self: *const Self) ?lighting.CascadeFit {
+        return self.shadow_fit;
+    }
+
     fn bindStream(self: *const Self, pass: *rhi.RenderPass, mesh: *const MeshState, item: DrawItem, slot: u32) void {
         if (item.skin_offset) |offset| {
             const count: u64 = self.stats.skinned_vertices;
