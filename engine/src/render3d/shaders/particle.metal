@@ -14,11 +14,15 @@ struct Frame {
     float4 camera_exposure;
     float4 ambient;
     uint4 counts;
-    float4x4 shadow_matrix;
+    float4 camera_forward;
+    float4 shadow_splits;
+    float4 shadow_offsets;
     float4 shadow_parameters;
+    float4 shadow_tiles[4];
+    float4x4 shadow_matrices[4];
     PackedLight lights[16];
 };
-static_assert(sizeof(Frame) == 1216, "Frame must match lighting.zig");
+static_assert(sizeof(Frame) == 1520, "Frame must match lighting.zig");
 struct Material { float4 base_color; float alpha_cutoff; float p0,p1,p2; float4 surface; float4 emissive_strength; };
 static_assert(sizeof(Material) == 64, "Material must match renderer.zig");
 

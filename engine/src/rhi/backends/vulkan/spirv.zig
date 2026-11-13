@@ -331,12 +331,23 @@ fn requireFrameMatrix(bytes: []const u8) Error!void {
 }
 
 fn requireUnlitVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
+    try requireMeshVertex(bytes, uv, color);
+    try requireLightFrame(bytes);
+}
+
+/// A caster's light matrix arrives folded into its constants, so it reads no frame uniform
+/// (`shadows-cascaded.md` §4).
+fn requireShadowVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
+    try requireMeshVertex(bytes, uv, color);
+    try require(try bindingVariable(bytes, 0, 0, Storage.uniform) == null);
+}
+
+fn requireMeshVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
     try require(try hasLocatedVariable(bytes, 0, Storage.input));
     if (uv) try require(try hasLocatedVariable(bytes, 3, Storage.input));
     if (color) try require(try hasLocatedVariable(bytes, 5, Storage.input));
     inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
     try requireConstants(bytes, false);
-    try requireLightFrame(bytes);
     const constants = try namedId(bytes, "Constants") orelse return error.DecorationMismatch;
     try require(try hasMemberDecoration(bytes, constants, 1, Decoration.offset, 64));
     try require(try hasMemberDecoration(bytes, constants, 1, Decoration.matrix_stride, 16));
@@ -345,7 +356,8 @@ fn requireUnlitVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
 fn requireLightFrame(bytes: []const u8) Error!void {
     try requireFrameMatrix(bytes);
     const frame = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
-    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 176 }, .{ 6, 192 } }) |field|
+    // `lighting.FrameUniform`'s second layout (`shadows-cascaded.md` §6).
+    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 128 }, .{ 6, 144 }, .{ 7, 160 }, .{ 8, 176 }, .{ 9, 240 }, .{ 10, 496 } }) |field|
         try require(try hasMemberDecoration(bytes, frame, field[0], Decoration.offset, field[1]));
     const light = try namedId(bytes, "PackedLight") orelse return error.DecorationMismatch;
     inline for (0..4) |member|
@@ -407,10 +419,10 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             try require(try variablePointsTo(bytes, frame_variable, Storage.uniform, frame));
         },
         .unlit_vertex => try requireUnlitVertex(bytes, false, false),
-        .shadow_vertex_0 => try requireUnlitVertex(bytes, false, false),
-        .shadow_vertex_1 => try requireUnlitVertex(bytes, false, true),
-        .shadow_vertex_2 => try requireUnlitVertex(bytes, true, false),
-        .shadow_vertex_3 => try requireUnlitVertex(bytes, true, true),
+        .shadow_vertex_0 => try requireShadowVertex(bytes, false, false),
+        .shadow_vertex_1 => try requireShadowVertex(bytes, false, true),
+        .shadow_vertex_2 => try requireShadowVertex(bytes, true, false),
+        .shadow_vertex_3 => try requireShadowVertex(bytes, true, true),
         .shadow_fragment_0 => {},
         .shadow_fragment_1 => {
             inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));

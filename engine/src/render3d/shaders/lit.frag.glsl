@@ -12,9 +12,13 @@ layout(set=0,binding=0,std140) uniform Frame {
     layout(offset=64) vec4 camera_exposure;
     layout(offset=80) vec4 ambient;
     layout(offset=96) uvec4 counts;
-    layout(offset=112) mat4 shadow_matrix;
-    layout(offset=176) vec4 shadow_parameters;
-    layout(offset=192) PackedLight lights[16];
+    layout(offset=112) vec4 camera_forward;
+    layout(offset=128) vec4 shadow_splits;
+    layout(offset=144) vec4 shadow_offsets;
+    layout(offset=160) vec4 shadow_parameters;
+    layout(offset=176) vec4 shadow_tiles[4];
+    layout(offset=240) mat4 shadow_matrices[4];
+    layout(offset=496) PackedLight lights[16];
 } frame;
 layout(set=0,binding=1) uniform texture2D shadow_image;
 layout(set=0,binding=2) uniform samplerShadow shadow_sampler;
@@ -100,12 +104,13 @@ void main() {
             }
         }
         if (frame.counts.y != 0 && light.cone_shadow.z != 0) {
-            vec3 q=(frame.shadow_matrix*vec4(world_position+geometric_normal*frame.shadow_parameters.y,1)).xyz;
-            if (all(lessThanEqual(abs(q.xy),vec2(1))) && q.z >= 0 && q.z <= 1) {
-                vec2 coord=vec2(q.x*.5+.5,.5-q.y*.5);
+            // Cascade 0 only until M39 Step 3; its matrix maps straight to atlas UV.
+            vec3 q=(frame.shadow_matrices[0]*vec4(world_position+geometric_normal*frame.shadow_offsets.x,1)).xyz;
+            vec4 tile=frame.shadow_tiles[0];
+            if (all(greaterThanEqual(q.xy,tile.xy)) && all(lessThanEqual(q.xy,tile.zw)) && q.z >= 0 && q.z <= 1) {
                 float visibility=0;
                 for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
-                    visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(coord+vec2(x,y)*frame.shadow_parameters.x,q.z));
+                    visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(q.xy+vec2(x,y)*frame.shadow_parameters.xy,q.z));
                 falloff*=visibility/9;
             }
         }

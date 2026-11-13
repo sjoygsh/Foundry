@@ -4,14 +4,15 @@ using namespace metal;
 struct PackedLight { float4 position_kind, direction_range, color_intensity, cone_shadow; };
 struct Frame {
     float4x4 view_projection; float4 camera_exposure; float4 ambient; uint4 counts;
-    float4x4 shadow_matrix; float4 shadow_parameters; PackedLight lights[16];
+    float4 camera_forward; float4 shadow_splits; float4 shadow_offsets; float4 shadow_parameters;
+    float4 shadow_tiles[4]; float4x4 shadow_matrices[4]; PackedLight lights[16];
 };
 struct Constants { float4x4 world; float3x3 cofactor; };
 struct Material {
     float4 base_color; float alpha_cutoff; float p0,p1,p2;
     float4 surface; float4 emissive_strength;
 };
-static_assert(sizeof(Frame)==1216, "Frame matches lighting.zig");
+static_assert(sizeof(Frame)==1520, "Frame matches lighting.zig");
 static_assert(sizeof(Constants)==112, "Constants matches renderer.zig");
 static_assert(sizeof(Material)==64, "Material matches renderer.zig");
 struct VertexOut {
@@ -134,12 +135,13 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
             }
         }
         if (frame.counts.y != 0 && light.cone_shadow.z != 0) {
-            float3 q=(frame.shadow_matrix*float4(in.world+geometric_normal*frame.shadow_parameters.y,1)).xyz;
-            if (all(abs(q.xy)<=float2(1)) && q.z>=0 && q.z<=1) {
-                float2 coord=float2(q.x*.5+.5,.5-q.y*.5);
+            // Cascade 0 only until M39 Step 3; its matrix maps straight to atlas UV.
+            float3 q=(frame.shadow_matrices[0]*float4(in.world+geometric_normal*frame.shadow_offsets.x,1)).xyz;
+            float4 tile=frame.shadow_tiles[0];
+            if (all(q.xy>=tile.xy) && all(q.xy<=tile.zw) && q.z>=0 && q.z<=1) {
                 float visibility=0;
                 for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
-                    visibility+=shadow_image.sample_compare(shadow_sampler,coord+float2(x,y)*frame.shadow_parameters.x,q.z);
+                    visibility+=shadow_image.sample_compare(shadow_sampler,q.xy+float2(x,y)*frame.shadow_parameters.xy,q.z);
                 falloff*=visibility/9;
             }
         }

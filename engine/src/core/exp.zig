@@ -116,6 +116,13 @@ fn expectClose(expected: f64, actual: f32) !void {
     }
 }
 
+/// 2^n for n in [-149, 127], from its bits. `std.math.exp2` lowers to a call to `ldexp` in an
+/// optimized Windows test build, which links no C library to supply it.
+fn powerOfTwo(n: i32) f32 {
+    const bits: u32 = if (n >= -126) @as(u32, @intCast(n + 127)) << 23 else @as(u32, 1) << @intCast(n + 149);
+    return @bitCast(bits);
+}
+
 test "exp2 agrees with std across the range the mixer uses, and is exact at integers" {
     // A fine sweep of −40 to 10: every gain a record or a compressor can ask for.
     var i: i32 = -40_000;
@@ -129,7 +136,7 @@ test "exp2 agrees with std across the range the mixer uses, and is exact at inte
     var n: i32 = -149;
     while (n <= 127) : (n += 1) {
         const x: f32 = @floatFromInt(n);
-        try testing.expectEqual(std.math.exp2(x), exp2(x));
+        try testing.expectEqual(powerOfTwo(n), exp2(x));
     }
     try testing.expectEqual(@as(f32, 0), exp2(-151));
     try testing.expect(std.math.isPositiveInf(exp2(128)));
@@ -145,7 +152,7 @@ test "log2 agrees with std from 2^-30 to 2^8, and is exact at powers of two" {
     }
     var n: i32 = -149;
     while (n <= 127) : (n += 1) {
-        try testing.expectEqual(@as(f32, @floatFromInt(n)), log2(std.math.exp2(@as(f32, @floatFromInt(n)))));
+        try testing.expectEqual(@as(f32, @floatFromInt(n)), log2(powerOfTwo(n)));
     }
     try testing.expect(std.math.isNegativeInf(log2(0)));
     try testing.expect(std.math.isNan(log2(-1)));

@@ -1,7 +1,16 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-13
-**Current handoff: M39 Step 1 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079, accepted 2026-11-13). Stop before Step 2: the frame uniform's second layout (1,520 bytes) in Zig, MSL and GLSL, and the atlas at one cascade. No shader, uniform or atlas has changed yet. The PC holds no Foundry clone.
+**Last updated:** 2026-11-14
+**Current handoff: M39 Step 2 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 3: four cascades, per-cascade casters, the lookup's selection, blend, clamp and tint, the statistics and the overlay's line. Preparation still fits one cascade. The PC holds no Foundry clone.
+
+**M39 Step 2 is done (2026-11-14): the uniform's second layout and the atlas, at one cascade.**
+- `FrameUniform` is 1,520 bytes in Zig, and in every GLSL and MSL shader that declares it, with Vulkan's agreement check updated. Its reciprocal atlas size has two components, since two cascades make a non-square atlas.
+- The shadow vertex shaders no longer read the frame: each draw's constants carry the cascade's matrix times its world. The agreement check now requires that.
+- One `depth32_float` atlas, sized one tile, 2 × 1 or 2 × 2. One pass draws each tile through its viewport. `tileMatrix` folds the tile into the lookup's matrix, and the lit shaders test against the tile's rectangle.
+- M22's shadow readback passes on Metal at one and at four cascades, and so does M24's bent strip: `-Drhi=metal` 3,003/3,024 (21 skips). **Correction:** Step 1's Resolution claimed Metal readbacks that had not run, since the bar's `zig build test` is null. Fixed in the record, and Metal runs from now on.
+- Mutations: the unfolded matrix fails both readbacks on Metal. A flipped v is caught only by its unit test, so Step 3's readbacks must put a shadow off the tile's middle row.
+- `exp.zig`'s M31 tests no longer use `std.math.exp2`, which needed an `ldexp` that the optimized Windows test build couldn't link.
+- Bar: null 2,993/3,003 (ten skips), 132/132 steps; every check, sample, `fdt-check`, the tour and `court-test` passed, and all five Vulkan checks too.
 
 **M39 Step 1 is done (2026-11-13): splits and fits, as maths.**
 - `lighting.zig` gains `fitShadowSlice`, which `fitShadow` now calls; `cascadeSplits`, the practical scheme on `core`'s log; and `CascadeFit` and `fitCascades`. One cascade equals `fitShadow` bit for bit.

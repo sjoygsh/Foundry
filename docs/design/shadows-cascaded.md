@@ -561,8 +561,10 @@ ADR-0079 and `CLAUDE.md` §4.1's new "Cascaded shadows" row record it.
 
 **The one-cascade identity holds bit for bit.** For a turned, moved camera, distances of 6, 25,
 80 and 500 m, and maps of 1,024, 2,048 and 4,096, `fitCascades(…, 1, …)` equals `fitShadow` in
-every field and in its matrix. Every M22 and M24 shadow readback passed through the new path on
-Metal.
+every field and in its matrix. *(Corrected at Step 2: this Resolution said that every M22 and M24
+shadow readback passed through the new path on Metal. They did not run. The bar's
+`zig build test` uses the null backend, where they return early, and Step 1 did not run
+`-Drhi=metal`. Step 2's Metal run is the first to pass them through the cascade code.)*
 
 **The trigger's measurement.** This is the yard's view: 0.1–80 m, the samples' field of view of
 π/3.2, 16:9, and 2048 texels. A test pins:
@@ -600,3 +602,93 @@ cascade's centre lies on a whole multiple of its own texel, and the texel does n
 
 No shader, uniform or texture changed. Step 2, the uniform's second layout and the atlas at one
 cascade, is next.
+
+## Resolution — Step 2: the uniform's second layout and the atlas, one tile at a time (2026-11-14)
+
+**The uniform.** `lighting.FrameUniform` is §6's 1,520 bytes, and the offset test pins all eleven
+members. Every shader that declares `Frame` declares all of them, and every Metal one asserts the
+size:
+- in GLSL: `lit` vertex and fragment, `particle`, and the four `unlit` vertex variants;
+- in MSL: `lit`, `particle` and `unlit`.
+
+Vulkan's shader-ABI agreement (`rhi/backends/vulkan/spirv.zig`, run by `fshadercheck` at build
+time) checks the new member offsets.
+
+**One correction to §6:** `shadow_parameters.xy` is the reciprocal atlas width *and height*,
+because two cascades make an atlas twice as wide as it is tall. A single "reciprocal atlas size"
+would space the taps wrongly in v. `zw` is reserved for Step 3's clamp inset.
+
+**The shadow vertex shaders no longer declare `Frame`.** `shadow.metal` and `shadow.vert.glsl`
+take the cascade's light matrix multiplied into `constants.world` (§4). The renderer computes
+`fit.matrix().mul(item.world)` once per draw per cascade, with the cofactor zeroed. Two places
+now encode that the shadow pass reads no uniform:
+- the agreement check has a shadow profile that requires the absence of set 0's binding 0;
+- the Metal entry points lost their `buffer(9)` parameter.
+
+The caster pass still binds group 0, because the pipeline layout is shared with the lit pass.
+
+**The atlas:**
+- `shadowAtlasExtent`, `shadowTileOrigin` and `shadowTileRect` implement §4's table: cascade `i`
+  at column `i mod 2`, row `i / 2`.
+- The texture is created at that extent, labelled "render3d shadow atlas", and cleared once per
+  frame by the one pass.
+- `recordShadow` loops over the fitted cascades. It sets each tile's viewport and scissor with
+  its origin, and draws that cascade's casters. Preparation still fits one cascade, so the loop
+  runs once. With the default four cascades, cascade 0 now sits in the top-left quarter of a
+  2 × 2 atlas.
+
+**The lookup reads cascade 0 through its tile.**
+- `lighting.tileMatrix` folds a tile's rectangle into the light matrix. Clip x and y map to the
+  tile's U and V, with V downward as M22's `.5 - y*.5` had it, and depth is unchanged.
+- The lit shaders test `q.xy` against the tile's rectangle instead of `|q.xy| ≤ 1`, and space the
+  taps by `shadow_parameters.xy`.
+- `shadow_splits`, `shadow_offsets` and `camera_forward` are written now, for one cascade. Only
+  the offset is read before Step 3.
+
+**Readbacks on Metal:**
+- M22's directional shadow readback now runs at one cascade *and* at four. At four, cascade 0 is
+  a quarter of a 2,048-texel atlas, so the tile matrix and the atlas spacing are what the pixels
+  prove.
+- M24's bent strip runs at the default of four.
+- Both pass within M22's tolerances.
+- `zig build test -Drhi=metal`: **3,003/3,024, 21 skips**, 146/146 steps.
+
+**New tests:**
+- the tile matrix maps clip corners to the rectangle's, v downward;
+- the atlas extent and every tile rectangle, for one to four cascades;
+- the uploaded uniform at four cascades: count, forward, the reciprocal atlas, tile 0's rectangle,
+  the split, the offset and the folded matrix, with the unused matrices left at identity. The
+  atlas texture is 2,048 a side on the null device.
+
+**Guards broken on purpose:**
+
+| Mistake | Backend | What failed |
+| --- | --- | --- |
+| V not flipped | null and Metal | the tile-matrix test only |
+| Tile column and row swapped | null | the atlas test |
+| Taps spaced by tile, not atlas | null | the uniform test |
+| The unfolded clip matrix uploaded | null | the uniform test only |
+| The unfolded clip matrix uploaded | Metal | both shadow readbacks and the uniform test |
+
+The flipped v escapes the readbacks: their shadows straddle the middle row, which a vertical flip
+leaves in place. **Step 3's readbacks must put a shadow away from the tile's horizontal
+centre**, so that a wrong v shows in pixels as well.
+
+**A fix outside the step.** `zig build check -Drhi=vulkan -Dtarget=x86_64-windows-gnu
+-Doptimize=ReleaseSafe` failed to link `core`'s tests: `ldexp` was undefined. `exp.zig`'s tests
+used `std.math.exp2` for exact powers of two, which lowers to `ldexp` in an optimized Windows
+test build, and that build links no C library. This predates M39: those tests are M31's, and no
+step since has run that check with shaders changed. The tests now build the powers from their
+bits (`powerOfTwo`). The functions under test did not change.
+
+**Bar:** passed, exit 0 throughout.
+- `zig build test` (null): 2,993/3,003 (ten skips, three new tests), 132/132 steps.
+- `fmt`, the four checks, the four thirty-frame samples, `fdt-check`, the tour with every pin,
+  and `court-test` 87/89 (two skips).
+- The five Vulkan checks, with the SDK's tools on `PATH`: `vulkan-check` for Windows and Linux,
+  and `check` for Windows, Linux and Windows ReleaseSafe.
+- `-Drhi=metal`, as above. From here on, every step that changes the renderer also runs
+  `zig build test -Drhi=metal`, since that is where the readbacks run.
+
+Step 3 is next: four cascades, per-cascade casters, selection, the blend, the clamp, the tint,
+the statistics and the overlay's line.

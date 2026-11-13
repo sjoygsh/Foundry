@@ -24,13 +24,27 @@ pub const PackedLight = extern struct {
     cone_shadow: [4]f32,
 };
 
+/// The second layout (`shadows-cascaded.md` §6), 1,520 bytes. Every shader that declares
+/// `Frame` declares all of it and asserts the size.
 pub const FrameUniform = extern struct {
     view_projection: Mat4,
     camera_exposure: [4]f32,
     ambient: [4]f32,
+    /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: unused.
     counts: [4]u32,
-    shadow_matrix: Mat4,
+    /// xyz: the camera's forward axis, for view depth; w: the blend band's fraction.
+    camera_forward: [4]f32,
+    /// Each cascade's far split, in view depth (metres).
+    shadow_splits: [4]f32,
+    /// Each cascade's receiver offset along its normal, in metres.
+    shadow_offsets: [4]f32,
+    /// xy: the reciprocal atlas width and height (the atlas of two cascades is not square);
+    /// zw: unused until the lookup clamps taps to their tile.
     shadow_parameters: [4]f32,
+    /// Each cascade's tile in atlas UV: origin xy, far corner zw.
+    shadow_tiles: [max_cascades][4]f32,
+    /// Each cascade's light matrix with its tile folded in: world to atlas UV and depth.
+    shadow_matrices: [max_cascades]Mat4,
     lights: [max_lights]PackedLight,
 };
 
@@ -71,7 +85,7 @@ pub fn packFrame(view_projection: Mat4, camera: Vec3, exposure: ?f32, ambient_ra
     uniform.ambient = .{ ambient_radiance[0], ambient_radiance[1], ambient_radiance[2], 0 };
     uniform.counts[0] = @intCast(lights.len);
     // The recorder enables lookup only after fitting and recording a caster pass.
-    uniform.shadow_matrix = .identity;
+    uniform.shadow_matrices = @splat(.identity);
     for (lights, 0..) |light, i| uniform.lights[i] = packLight(light);
     return uniform;
 }
@@ -183,6 +197,21 @@ pub const CascadeFit = struct {
         for (self.fits[0..self.count]) |*fit| fit.includeCaster(bounds);
     }
 };
+
+/// A light matrix, which maps to clip space for the caster pass's tile viewport, refolded to
+/// map straight to the tile's rectangle in atlas UV, `rect` being origin xy and far corner zw.
+/// Clip y is up and UV v is down, as the M22 lookup's `.5 - y*.5` had it; depth is unchanged.
+pub fn tileMatrix(light: Mat4, rect: [4]f32) Mat4 {
+    const half_w = (rect[2] - rect[0]) * 0.5;
+    const half_h = (rect[3] - rect[1]) * 0.5;
+    const to_tile: Mat4 = .{ .cols = .{
+        .{ half_w, 0, 0, 0 },
+        .{ 0, -half_h, 0, 0 },
+        .{ 0, 0, 1, 0 },
+        .{ rect[0] + half_w, rect[1] + half_h, 0, 1 },
+    } };
+    return to_tile.mul(light);
+}
 
 pub fn fitCascades(camera: @import("camera.zig").Camera, aspect: f32, distance: f32, light_world: Mat4, size: u32, count: u32, lambda: f32) CascadeFit {
     const splits = cascadeSplits(camera.near, shadowFar(camera, distance), count, lambda);
@@ -468,8 +497,8 @@ pub fn toneMap(input: [3]f32) [3]f32 {
 test "frame packing pins every uniform offset and light stride" {
     const t = std.testing;
     try t.expectEqual(@as(usize, 64), @sizeOf(PackedLight));
-    try t.expectEqual(@as(usize, 1216), @sizeOf(FrameUniform));
-    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "shadow_matrix", 112 }, .{ "shadow_parameters", 176 }, .{ "lights", 192 } }) |field|
+    try t.expectEqual(@as(usize, 1520), @sizeOf(FrameUniform));
+    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "camera_forward", 112 }, .{ "shadow_splits", 128 }, .{ "shadow_offsets", 144 }, .{ "shadow_parameters", 160 }, .{ "shadow_tiles", 176 }, .{ "shadow_matrices", 240 }, .{ "lights", 496 } }) |field|
         try t.expectEqual(@as(usize, field[1]), @offsetOf(FrameUniform, field[0]));
     const light: Light = .{ .kind = .spot, .intensity = 70, .range = 9, .world = Mat4.translation(.init(3, 4, 5)) };
     const frame = packFrame(.identity, .init(1, 2, 3), null, .{ 4, 5, 6 }, &.{light});
@@ -479,6 +508,24 @@ test "frame packing pins every uniform offset and light stride" {
     try t.expectEqual([4]f32{ 3, 4, 5, 2 }, frame.lights[0].position_kind);
     try t.expectEqual([4]f32{ 0, 0, -1, 9 }, frame.lights[0].direction_range);
     try t.expectEqual(std.mem.zeroes(PackedLight), frame.lights[1]);
+}
+
+test "a tile matrix maps the light's clip square onto its tile's UV rectangle, v down" {
+    const t = std.testing;
+    const light = Mat4.fromQuat(core.math.Quat.fromAxisAngle(.init(0.6, 0.8, 0), 0.7)).mul(Mat4.translation(.init(1, 2, 3)));
+    const rect = [4]f32{ 0.5, 0, 1, 0.5 };
+    const folded = tileMatrix(light, rect);
+    for ([_]Vec3{ .init(0.3, -1.2, 4), .init(-2, 0.5, -1), .zero }) |p| {
+        const clip = light.mulPoint(p);
+        const uv = folded.mulPoint(p);
+        try t.expectApproxEqAbs(0.5 + (clip.x * 0.5 + 0.5) * 0.5, uv.x, 1e-6);
+        try t.expectApproxEqAbs((0.5 - clip.y * 0.5) * 0.5, uv.y, 1e-6);
+        try t.expectEqual(clip.z, uv.z);
+    }
+    // Clip's corners land on the rectangle's: (-1, 1) top-left, (1, -1) bottom-right.
+    const whole = tileMatrix(.identity, rect);
+    try t.expectEqual(Vec3.init(0.5, 0, 0), whole.mulPoint(.init(-1, 1, 0)));
+    try t.expectEqual(Vec3.init(1, 0.5, 0), whole.mulPoint(.init(1, -1, 0)));
 }
 
 test "photometric exposure attenuation and cone have pinned endpoints" {

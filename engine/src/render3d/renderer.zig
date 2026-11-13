@@ -604,6 +604,31 @@ fn shadowAtlasSide(config: Config) u64 {
     return @as(u64, config.shadow_size) * @as(u64, if (config.shadow_cascades == 1) 1 else 2);
 }
 
+/// The atlas: one tile, two side by side, or a 2 x 2 grid with one unused at three.
+fn shadowAtlasExtent(config: Config) Extent2D {
+    return .{
+        .width = config.shadow_size * @as(u32, if (config.shadow_cascades == 1) 1 else 2),
+        .height = config.shadow_size * @as(u32, if (config.shadow_cascades <= 2) 1 else 2),
+    };
+}
+
+/// Cascade `i`'s tile at column `i mod 2`, row `i / 2`, in texels from the top-left.
+fn shadowTileOrigin(config: Config, i: u32) [2]u32 {
+    return .{ (i % 2) * config.shadow_size, (i / 2) * config.shadow_size };
+}
+
+/// Cascade `i`'s tile in atlas UV: origin xy, far corner zw.
+fn shadowTileRect(config: Config, i: u32) [4]f32 {
+    const atlas = shadowAtlasExtent(config);
+    const origin = shadowTileOrigin(config, i);
+    const w: f32 = @floatFromInt(atlas.width);
+    const h: f32 = @floatFromInt(atlas.height);
+    const size: f32 = @floatFromInt(config.shadow_size);
+    const x: f32 = @floatFromInt(origin[0]);
+    const y: f32 = @floatFromInt(origin[1]);
+    return .{ x / w, y / h, (x + size) / w, (y + size) / h };
+}
+
 /// The cascade fields are in range, and the atlas they imply fits the device.
 fn validCascades(config: Config, max_texture_dimension: u32) bool {
     if (config.shadow_cascades < 1 or config.shadow_cascades > lighting.max_cascades) return false;
@@ -656,7 +681,8 @@ pub const Renderer = struct {
     shadow_target: rhi.TextureHandle = .none,
     shadow_vertex: [4]rhi.ShaderModuleHandle = @splat(.none),
     shadow_fragment: [2]rhi.ShaderModuleHandle = @splat(.none),
-    shadow_fit: ?lighting.ShadowFit = null,
+    /// This frame's cascades, cascade 0 nearest; null when nothing casts.
+    shadow_fit: ?lighting.CascadeFit = null,
     shadow_order: std.ArrayList(u32) = .empty,
     tone_layout: rhi.BindGroupLayoutHandle,
     tone_pipeline_layout: rhi.PipelineLayoutHandle,
@@ -1849,6 +1875,7 @@ pub const Renderer = struct {
                 if (item.alpha != .blend and self.castsShadow(material)) cascades.includeCaster(item.bounds);
             }
             const fit = cascades.fits[0];
+            // Step 3 culls casters per cascade; with one cascade, this is cascade 0's list.
             if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
             if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
             const light_frustum = frustum_mod.Frustum.fromViewProjection(fit.matrix());
@@ -1862,7 +1889,7 @@ pub const Renderer = struct {
                 }
                 self.shadow_order.appendAssumeCapacity(@intCast(i));
             }
-            self.shadow_fit = fit;
+            self.shadow_fit = cascades;
         };
         for (self.order.items) |i| self.draws.items[i].kept = true;
         for (self.shadow_order.items) |i| self.draws.items[i].kept = true;
@@ -1979,10 +2006,19 @@ pub const Renderer = struct {
         const slot = self.slots[frame.slot];
         const bytes = try self.device.mapBuffer(slot.uniform);
         var uniform = lighting.packFrame(self.view_projection, self.view.camera.position, self.view.exposure_ev100, self.view.ambient, self.lights[0..self.light_count]);
-        if (self.shadow_fit) |fit| {
-            uniform.counts[1] = 1;
-            uniform.shadow_matrix = fit.matrix();
-            uniform.shadow_parameters = .{ 1 / @as(f32, @floatFromInt(self.config.shadow_size)), self.config.shadow_normal_offset * fit.texel, 0, 0 };
+        if (self.shadow_fit) |cascades| {
+            const atlas = shadowAtlasExtent(self.config);
+            const forward = Mat4.fromQuat(self.view.camera.rotation).mulPoint(Vec3.forward);
+            uniform.counts[1] = cascades.count;
+            uniform.camera_forward = .{ forward.x, forward.y, forward.z, self.config.shadow_cascade_blend };
+            uniform.shadow_parameters = .{ 1 / @as(f32, @floatFromInt(atlas.width)), 1 / @as(f32, @floatFromInt(atlas.height)), 0, 0 };
+            for (cascades.fits[0..cascades.count], 0..) |fit, c| {
+                const rect = shadowTileRect(self.config, @intCast(c));
+                uniform.shadow_splits[c] = cascades.splits[c + 1];
+                uniform.shadow_offsets[c] = self.config.shadow_normal_offset * fit.texel;
+                uniform.shadow_tiles[c] = rect;
+                uniform.shadow_matrices[c] = lighting.tileMatrix(fit.matrix(), rect);
+            }
         }
         @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
         self.device.unmapBuffer(slot.uniform);
@@ -2124,7 +2160,8 @@ pub const Renderer = struct {
         // Build a complete candidate before replacing any live group. The caster
         // group samples the fallback, avoiding attachment/sampling feedback even
         // on the strict null backend; the world group samples the real map.
-        const target = try self.device.createTexture(.{ .label = "render3d directional shadow", .size = .{ .width = self.config.shadow_size, .height = self.config.shadow_size }, .format = .depth32_float, .usage = .{ .depth_stencil = true, .sampled = true } });
+        const atlas = shadowAtlasExtent(self.config);
+        const target = try self.device.createTexture(.{ .label = "render3d shadow atlas", .size = .{ .width = atlas.width, .height = atlas.height }, .format = .depth32_float, .usage = .{ .depth_stencil = true, .sampled = true } });
         errdefer self.device.destroyTexture(target);
         const groups = try self.gpa.alloc(rhi.BindGroupHandle, self.slots.len);
         defer self.gpa.free(groups);
@@ -2158,28 +2195,36 @@ pub const Renderer = struct {
         self.shadow_target = target;
     }
 
+    /// One pass over the whole atlas, cleared once: each cascade's casters into its own tile,
+    /// its light matrix folded into each draw's constants, so no shadow shader reads the frame
+    /// uniform (`shadows-cascaded.md` §4).
     fn recordShadow(self: *Self, pass: *rhi.RenderPass) Error!void {
         const frame = self.frame orelse return error.NotRecording;
+        const cascades = self.shadow_fit orelse return;
         const size = self.config.shadow_size;
-        pass.setViewport(.{ .width = @floatFromInt(size), .height = @floatFromInt(size) });
-        pass.setScissor(.{ .width = size, .height = size });
-        for (self.shadow_order.items) |i| {
-            const item = self.draws.items[i];
-            const mesh = self.meshes.getConst(item.mesh) orelse continue;
-            const material = self.materials.getConst(item.material) orelse continue;
-            const key = self.shadowKey(item);
-            pass.setPipeline(self.pipelineFor(key).?);
-            pass.setBindGroup(0, self.slots[frame.slot].shadow_group);
-            pass.setBindGroup(2, material.group);
-            const constants = drawConstants(item.world);
-            pass.setInlineConstants(std.mem.asBytes(&constants));
-            self.bindStream(pass, mesh, item, 0);
-            if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
-            if (key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
-            pass.setIndexBuffer(mesh.index_buffer, if (mesh.index_format == .uint16) .uint16 else .uint32, 0);
-            const submesh = mesh.submeshes[item.submesh];
-            pass.drawIndexed(.{ .index_count = submesh.index_count, .first_index = submesh.first_index });
-            self.stats.shadow_draws += 1;
+        for (cascades.fits[0..cascades.count], 0..) |fit, c| {
+            const origin = shadowTileOrigin(self.config, @intCast(c));
+            pass.setViewport(.{ .x = @floatFromInt(origin[0]), .y = @floatFromInt(origin[1]), .width = @floatFromInt(size), .height = @floatFromInt(size) });
+            pass.setScissor(.{ .x = origin[0], .y = origin[1], .width = size, .height = size });
+            const light = fit.matrix();
+            for (self.shadow_order.items) |i| {
+                const item = self.draws.items[i];
+                const mesh = self.meshes.getConst(item.mesh) orelse continue;
+                const material = self.materials.getConst(item.material) orelse continue;
+                const key = self.shadowKey(item);
+                pass.setPipeline(self.pipelineFor(key).?);
+                pass.setBindGroup(0, self.slots[frame.slot].shadow_group);
+                pass.setBindGroup(2, material.group);
+                const constants: DrawConstants = .{ .world = light.mul(item.world), .cofactor = std.mem.zeroes([3][4]f32) };
+                pass.setInlineConstants(std.mem.asBytes(&constants));
+                self.bindStream(pass, mesh, item, 0);
+                if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
+                if (key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
+                pass.setIndexBuffer(mesh.index_buffer, if (mesh.index_format == .uint16) .uint16 else .uint32, 0);
+                const submesh = mesh.submeshes[item.submesh];
+                pass.drawIndexed(.{ .index_count = submesh.index_count, .first_index = submesh.first_index });
+                self.stats.shadow_draws += 1;
+            }
         }
     }
 
@@ -3062,6 +3107,56 @@ test "light direction packing survives finite extreme scales" {
     }
 }
 
+test "the shadow atlas holds one tile, two side by side, or a 2 x 2 grid, and each tile's UV rectangle" {
+    const Case = struct { cascades: u32, width: u32, height: u32, rects: []const [4]f32 };
+    for ([_]Case{
+        .{ .cascades = 1, .width = 1024, .height = 1024, .rects = &.{.{ 0, 0, 1, 1 }} },
+        .{ .cascades = 2, .width = 2048, .height = 1024, .rects = &.{ .{ 0, 0, 0.5, 1 }, .{ 0.5, 0, 1, 1 } } },
+        .{ .cascades = 3, .width = 2048, .height = 2048, .rects = &.{ .{ 0, 0, 0.5, 0.5 }, .{ 0.5, 0, 1, 0.5 }, .{ 0, 0.5, 0.5, 1 } } },
+        .{ .cascades = 4, .width = 2048, .height = 2048, .rects = &.{ .{ 0, 0, 0.5, 0.5 }, .{ 0.5, 0, 1, 0.5 }, .{ 0, 0.5, 0.5, 1 }, .{ 0.5, 0.5, 1, 1 } } },
+    }) |case| {
+        const config: Config = .{ .shadow_size = 1024, .shadow_cascades = case.cascades };
+        try testing.expectEqual(Extent2D{ .width = case.width, .height = case.height }, shadowAtlasExtent(config));
+        try testing.expectEqual(@as(u64, @max(case.width, case.height)), shadowAtlasSide(config));
+        for (case.rects, 0..) |rect, i| try testing.expectEqual(rect, shadowTileRect(config, @intCast(i)));
+    }
+}
+
+test "a shadowed frame uploads cascade 0's tile, folded matrix, offset and split into the atlas's uniform" {
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024, .shadow_cascades = 4 }, 32);
+    defer fx.deinit();
+    const mesh = try litQuad(&fx.renderer, 0);
+    var view = testView(32);
+    view.shadow_distance = 6;
+    try fx.renderer.begin(view);
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?) });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = .identity });
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+    var uniform: lighting.FrameUniform = undefined;
+    @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+    fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+    cmd.discard();
+    try fx.device.endFrame();
+    const cascades = fx.renderer.shadow_fit.?;
+    try testing.expectEqual(@as(u32, 1), uniform.counts[1]);
+    try testing.expectEqual([4]f32{ 0, 0, -1, 0.1 }, uniform.camera_forward);
+    try testing.expectEqual([4]f32{ 1.0 / 2048.0, 1.0 / 2048.0, 0, 0 }, uniform.shadow_parameters);
+    try testing.expectEqual([4]f32{ 0, 0, 0.5, 0.5 }, uniform.shadow_tiles[0]);
+    try testing.expectEqual(cascades.splits[1], uniform.shadow_splits[0]);
+    try testing.expectEqual(@as(f32, 6), uniform.shadow_splits[0]);
+    try testing.expectEqual(1.5 * cascades.fits[0].texel, uniform.shadow_offsets[0]);
+    try testing.expectEqual(lighting.tileMatrix(cascades.fits[0].matrix(), .{ 0, 0, 0.5, 0.5 }), uniform.shadow_matrices[0]);
+    try testing.expectEqual(Mat4.identity, uniform.shadow_matrices[1]);
+    if (rhi.backend == .null) {
+        const atlas = fx.device.textures.getConst(fx.renderer.shadow_target).?.desc.size;
+        try testing.expectEqual(@as(u32, 2048), atlas.width);
+        try testing.expectEqual(@as(u32, 2048), atlas.height);
+    }
+}
+
 test "frame preparation uploads the pinned lighting uniform" {
     var fx = try TestFixture.init(1, 32);
     defer fx.deinit();
@@ -3449,8 +3544,10 @@ test "shadow selects off-camera opaque and masked casters but never blend or dis
 
 test "directional shadow readbacks track off-camera masked mirrored moving occluders at 1x and 4x" {
     if (rhi.backend == .null) return;
-    for ([_]u32{ 1, 4 }) |samples| {
-        var fx = try TestFixture.init(samples, 32);
+    // One cascade is M22's map; four put cascade 0 in the corner of a 2 x 2 atlas, so the
+    // folded tile matrix and the atlas-sized tap spacing are what the pixels prove.
+    for ([_]u32{ 1, 4 }) |cascades| for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = samples, .shadow_cascades = cascades }, 32);
         defer fx.deinit();
         const mesh = try litQuad(&fx.renderer, 3);
         const vertex_hole = try litQuadAlpha(&fx.renderer, 3, 0.2);
@@ -3498,7 +3595,7 @@ test "directional shadow readbacks track off-camera masked mirrored moving occlu
                 try expectDisplayTexel(displayTexel(fx.device.capabilities().surface_format, expected), bytes[(16 * 32 + x) * 4 ..][0..4].*);
             }
         }
-    }
+    };
 }
 
 fn litBox(renderer: *Renderer) !MeshHandle {
