@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 Step 4 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 5: the court shadowed to 40 m with cascades, `court-test`'s digests, a relocated run of each ending, and the owner's play. The court still shadows to 20 m. The PC holds no Foundry clone.
+**Current handoff: M39 Step 5 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 6: Windows/Vulkan on the owner's PC, with the Vulkan suites, the readbacks, both samples windowed and the budgets. Nothing has run on the PC yet for M39, and it holds no Foundry clone.
+
+**M39 Step 5 is done (2026-11-14): the court in cascades.**
+- The court shadows to 40 m, up from 20 m, with the default four cascades. No content, rule or simulation changed.
+- `court-test` 87/89 in Debug and 89/89 at ReleaseSafe; all four digests are unchanged.
+- From relocated ReleaseSafe installs, M39 against a one-map, 20 m baseline: every scripted ending matched, every tick replayed, frame work about the same (`win` p95 0.965 against 0.950 ms), no skipped frames. Application Support was unchanged.
+- **The owner played it** and won at tick 5035: frame work p95 0.322 ms, whole tick p95 0.029 ms, every music start on its frame. Their verdict: "All good shadows are there."
+- Bar: null 2,998/3,008 (ten skips), Metal 3,008/3,029 (21 skips), every check, sample, the tour, `court-test` and the five Vulkan checks.
 
 **M39 Step 4 is done (2026-11-14): the yard in cascades, on Metal.**
 - `sandbox3d:config.main` gains `shadow_distance` (80 m). The sample gains `--shadow-cascades=1|2|3|4` and `--shadow-tint`, and **H** toggles the tint, since T was taken. Its exit report prints each cascade's range, texel and draws, `render.world`, and the frame's work. `Renderer.shadowCascades()` returns the last fit.

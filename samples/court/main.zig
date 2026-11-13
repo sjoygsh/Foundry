@@ -722,7 +722,8 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         .clear_color = settings.clear,
         .ambient = settings.lighting.ambient,
         .exposure_ev100 = settings.lighting.exposure_ev100,
-        .shadow_distance = 20,
+        // M39 (`shadows-cascaded.md` §8): four cascades reach twice M22's 20 m across the court.
+        .shadow_distance = 40,
     });
     for (settings.lighting.lights[0..settings.lighting.len]) |light| try renderer.addLight(light);
     for (game.beacons[0..game.beacon_count]) |*b| {

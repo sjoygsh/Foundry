@@ -852,3 +852,51 @@ the frame's work, which is the budget the sample has always reported.
 
 Step 5 is next: the court at 40 m with cascades, `court-test`'s digests, a relocated run of each
 ending, and the owner's play.
+
+## Resolution — Step 5: the court (2026-11-14)
+
+**The change.** The court's frame view shadows to 40 m instead of 20 m. The court takes the
+renderer's default of four cascades. Nothing else changed: no content, no rule and no simulation.
+The 40 m stays a constant in `samples/court/main.zig`, where the 20 m was, since §8 made it no
+content field.
+
+**The digests hold.** `court-test` passed 87 of 89 in Debug (two skips) and 89 of 89 at
+ReleaseSafe, where the ten-minute soundtrack runs. The four digests are unchanged: `win`
+`4cea12a2d26686ba`, `caught` `448a83a95a46f1af`, `fell` `489ec244f5946487` and `soundtrack`
+`38ee55e6ad5b65da`.
+
+**Frame pacing is unchanged.** Two relocated, read-only ReleaseSafe installs were built on the
+Mac:
+- **M39:** four cascades to 40 m.
+- **Baseline:** the same tree with the court set back to one cascade at 20 m. It draws M38's
+  picture through today's shaders. Building the `m38` tag from a bare archive needed a network
+  fetch this machine could not make.
+
+Each scripted play ran windowed from both, with preferences redirected to scratch:
+
+| Play | Ending, both installs | Ticks matched | Frame work p95, one map → four | Whole tick p95, one map → four |
+| --- | --- | --- | --- | --- |
+| `win` | won at 1219 and 2436 | 2,443 | 0.950 → 0.965 ms | 0.144 → 0.148 ms |
+| `caught` | caught at 90 | 92 | 1.978 → 2.024 ms | 0.141 → 0.143 ms |
+| `fell` | fell at 186 | 188 | 1.034 → 1.180 ms | 0.178 → 0.195 ms |
+
+No frame was skipped in either install. The court's files under Application Support were
+fingerprinted before and after the scripted plays and were unchanged.
+
+**The owner's play.** The owner played the M39 install by hand and won at tick 5035, after a
+pause:
+- frame work p95 0.322 ms;
+- whole tick p95 0.029 ms;
+- the warden's skinning p95 0.022 ms;
+- audio p95 0.003 ms;
+- all 11 music starts on their frame, no underrun, and no frame skipped in 5,177.
+
+**Their verdict: "All good shadows are there."**
+
+**Bar:** passed, exit 0 throughout.
+- `zig build test` (null): 2,998/3,008 (ten skips), 132/132 steps.
+- `-Drhi=metal`: 3,008/3,029 (21 skips), 146/146 steps.
+- `fmt`, the four checks, the four thirty-frame samples, `fdt-check`, the tour, `court-test`
+  87/89 (two skips), and the five Vulkan checks.
+
+Step 6 is next: Windows/Vulkan on the owner's PC.
