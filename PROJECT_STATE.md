@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 Step 5 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 6: Windows/Vulkan on the owner's PC, with the Vulkan suites, the readbacks, both samples windowed and the budgets. Nothing has run on the PC yet for M39, and it holds no Foundry clone.
+**Current handoff: M39 Step 6 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 7, the close: every document names M39 complete, the ADR and design index updated, the PC's clone and scratch removed by exact name, and the tag. The PC still holds the `Foundry-m39` clone and the `m39` scratch.
+
+**M39 Step 6 is done (2026-11-14): Windows/Vulkan.**
+- `scripts/m39/` (from M38's) ran on the owner's i3/Arc PC from a fresh clone at `d678c14`, `-j2`, below normal, at 13% CPU before it began.
+- **Suites:** null 2,977/2,996 (19 skips), Vulkan 3,258/3,288 (30 skips) with every cascade readback, ReleaseSafe pins 767/767.
+- **Bytes:** all 210 installed content files match the Mac's; only the native mod's library differs.
+- **Windowed, relocated, read-only:** five tours (one at a single cascade, one tilted) with every pin the Mac's, five yard runs, and seven court endings. Validation was clean, the install unchanged, and no preferences were written.
+- **The yard on the Arc:** frame work p95 1.119 ms at four cascades against 1.025 ms with one map (budget 16.67 ms), no skipped frames, texels and draws the Mac's. The four-cascade paced interval varied from 15.9 to 17.5 ms around vsync; this is recorded, and explaining it is M73's.
 
 **M39 Step 5 is done (2026-11-14): the court in cascades.**
 - The court shadows to 40 m, up from 20 m, with the default four cascades. No content, rule or simulation changed.

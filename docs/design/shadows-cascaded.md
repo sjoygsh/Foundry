@@ -900,3 +900,79 @@ pause:
   87/89 (two skips), and the five Vulkan checks.
 
 Step 6 is next: Windows/Vulkan on the owner's PC.
+
+## Resolution — Step 6: Windows/Vulkan (2026-11-14)
+
+**The scripts.** `scripts/m39/windows.ps1` comes from M38's, with `m39-setup.ps1` and
+`m39-launch.ps1` beside it. The setup clones the repository into its own directory on the PC and
+checks out M39's unpushed commits from a git bundle, which needs a `HEAD` ref (`origin/main..HEAD`).
+The launcher runs the desktop half from a scheduled task in the owner's session.
+
+Against M38's script, the desktop half:
+- runs the tour at four cascades and at one;
+- adds the yard runs, five of them, as 900 frames each, entering the yard by a scripted Y at
+  frame 120;
+- expects the trigger's four texel lines and the frame-work and `render.world` lines;
+- adds frame work to the court's expected lines.
+
+It ran on the owner's Arc A750 PC, an i3-10105F, from a fresh clone at `d678c14`, at `-j2` and
+below-normal priority, with the 50% CPU cutoff on. The PC read 13% before it began.
+
+**The native suites:**
+- null: 2,977/2,996 (19 Windows skips), 128/128 steps;
+- Vulkan: 3,258/3,288 (30 skips), 232/232 steps. Step 3's cascade readbacks pass at Vulkan's
+  ±3/255, as do M22's and M24's at four cascades;
+- the ReleaseSafe pins (`physics3d`, `nav`, `anim`, rigs, `scene`, `sandbox3d`, the yard and the
+  court): 767/767.
+
+**The bytes.** All 210 installed content files have the Mac's SHA-256. Only the native mod's
+library differs by platform.
+
+**Windowed, relocated, read-only ReleaseSafe.** Every one of these passed:
+- **The tour**, five runs: at four cascades, under synchronization validation, at one cascade,
+  tilted, and again. Every pin is the Mac's: the player `b85b52c97d259db4`, the walker
+  `655e865f98779129`, the pacer's three, the corner `e2992f93e5323345` and the yard
+  `1052a9ae891b0d27`.
+- **The yard**, five runs: at four cascades twice and under validation, and at one cascade twice.
+- **The court's three endings**, seven runs, under validation and off, every tick matching a
+  fresh simulation.
+
+Validation was clean, and its logs carry the info line that shows they were live. The install
+did not change, and no preferences were written.
+
+**The yard on the Arc:**
+
+| | Four cascades | One map |
+| --- | --- | --- |
+| Shadow draws (culled), each cascade's | 123 (705): 10, 15, 31, 67 | 67 (140) |
+| Texels | 0.58, 1.29, 2.80, 8.52 cm, the Mac's | 8.52 cm |
+| Frame work, p95 (max) | **1.119 ms** (1.156), 1.118 ms again | 1.025 ms (1.116), 1.133 ms again |
+| `render.world` p95 | 0.206 ms, 0.201 ms | 0.149 ms, 0.195 ms |
+| Under validation, four cascades | frame work 3.162 ms, `render.world` 1.912 ms | |
+| Skipped frames | 0 | 0 |
+
+The exit's budget holds with a wide margin. One reading is recorded rather than explained:
+- **The reading.** The paced interval with four cascades, unvalidated, varied from 15.9 to
+  17.5 ms (median 16.57, p95 17.08 and 17.10), while one map's held 16.665 ms and four under
+  validation 16.666 ms.
+- **What is known.** Every frame waits about 15 ms in `render.present`, FIFO's vsync, so the
+  display sets the pace, and no frame was skipped. The Mac showed the same spread at both counts
+  (Step 4).
+- **Why it stays open.** Explaining it needs GPU timestamps, which are M73's. Until then, the
+  budget is the frame's work, as Step 4 decided.
+
+**The court on the Arc**, at 40 m in four cascades:
+- `win` frame work p95 1.096 ms and 0.540 ms, and whole tick p95 0.193 and 0.090 ms;
+- `caught` frame work 1.746 ms, tick 0.206 ms;
+- `fell` frame work 0.601 ms, tick 0.091 ms.
+
+All are under their lines. A windowed run is not one tick a frame, so the endings fall at
+slightly different ticks than the Mac's (`win` at 1224 and 2441). The per-tick replay is what
+the windowed runs prove, and `court-test`'s digests, 89/89 at ReleaseSafe in the pins above, are
+the Mac's.
+
+**Not done here:** no Mac bar was needed. Only `scripts/m39/` and documents changed after Step 5,
+whose bar stands: null 2,998/3,008 and Metal 3,008/3,029. The clone and its scratch stay on the PC
+until the close removes them by exact name.
+
+Step 7 is next: close M39.
