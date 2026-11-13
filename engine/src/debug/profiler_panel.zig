@@ -146,7 +146,18 @@ fn describeRenderer3d(view: *View) Allocator.Error!void {
 fn describeStats3d(view: *View, stats: render3d.Stats) Allocator.Error!void {
     try view.line("3D: {d} draws  {d} culled  {d} blended", .{ stats.draws, stats.culled, stats.blended });
     try view.line("3D: {d} triangles  {d} pipeline binds", .{ stats.triangles, stats.pipeline_binds });
-    try view.line("3D: {d} lights  {d} shadow draws  {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
+    // `shadows-cascaded.md` §7: each fitted cascade's draws in parentheses, nearest first.
+    var per_cascade: [64]u8 = undefined;
+    var used: usize = 0;
+    for (stats.shadow_cascade_draws[0..@min(stats.shadow_cascades, stats.shadow_cascade_draws.len)], 0..) |draws, i| {
+        const part = std.fmt.bufPrint(per_cascade[used..], "{s}{d}", .{ if (i == 0) " (" else " ", draws }) catch break;
+        used += part.len;
+    }
+    if (used != 0) {
+        per_cascade[used] = ')';
+        used += 1;
+    }
+    try view.line("3D: {d} lights  {d} cascades  {d} shadow draws{s}  {d} shadow culled", .{ stats.lights, stats.shadow_cascades, stats.shadow_draws, per_cascade[0..used], stats.shadow_culled });
     try view.line("3D: {d} skinned draws  {d} skinned vertices  {d} skin budget dropped", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
     try view.line("3D: {d} models pending", .{stats.pending_models});
     try view.line("3D: {d} mesh updates  {d} texture writes  {d} KiB uploaded", .{ stats.mesh_updates, stats.texture_writes, stats.uploaded_bytes / 1024 });
@@ -205,12 +216,14 @@ test "render3d's frame counts are a line beside render2d's" {
     ctx.begin(.{}, .init(0, 0, 400, 300));
     var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
     // A renderer needs a device, which `debug` has no way to make; the line is its stats.
-    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 7, .shadow_culled = 9, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024, .particles = 900, .particle_emitters = 4, .particle_emitters_culled = 1, .particles_dropped = 6, .particle_emitters_refused = 2 });
+    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 41, .shadow_culled = 17, .shadow_cascades = 4, .shadow_cascade_draws = .{ 12, 9, 11, 9 }, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024, .particles = 900, .particle_emitters = 4, .particle_emitters_culled = 1, .particles_dropped = 6, .particle_emitters_refused = 2 });
+    try describeStats3d(&view, .{ .lights = 1 });
     ctx.end();
 
+    try testing.expect(overlay.findText(&ctx, "3D: 1 lights  0 cascades  0 shadow draws  0 shadow culled"));
     try testing.expect(overlay.findText(&ctx, "3D: 12 draws  3 culled  2 blended"));
     try testing.expect(overlay.findText(&ctx, "3D: 4096 triangles  5 pipeline binds"));
-    try testing.expect(overlay.findText(&ctx, "3D: 3 lights  7 shadow draws  9 shadow culled"));
+    try testing.expect(overlay.findText(&ctx, "3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17 shadow culled"));
     try testing.expect(overlay.findText(&ctx, "3D: 2 skinned draws  600 skinned vertices  1 skin budget dropped"));
     try testing.expect(overlay.findText(&ctx, "3D: 0 models pending"));
     try testing.expect(overlay.findText(&ctx, "3D: 1 mesh updates  3 texture writes  5 KiB uploaded"));

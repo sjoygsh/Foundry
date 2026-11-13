@@ -67,6 +67,19 @@ vec2 ambient_dfg(float rough, float nv) {
     float a=min(r.x*r.x,exp2(-9.28*nv))*r.x+r.y;
     return vec2(-1.04,1.04)*a+r.zw;
 }
+const vec3 TINTS[4]=vec3[4](vec3(1,.25,.25),vec3(.25,1,.25),vec3(.25,.25,1),vec3(1,1,.25));
+// shadows-cascaded.md §5: one cascade's 3x3 comparison filter, each tap clamped two texels
+// inside its tile so none reads a neighbour's depth; -1 when the point leaves the tile.
+float cascadeVisibility(uint c, vec3 normal) {
+    vec3 q=(frame.shadow_matrices[c]*vec4(world_position+normal*frame.shadow_offsets[c],1)).xyz;
+    vec4 tile=frame.shadow_tiles[c];
+    if (any(lessThan(q.xy,tile.xy)) || any(greaterThan(q.xy,tile.zw)) || q.z < 0 || q.z > 1) return -1;
+    vec2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
+    float visibility=0;
+    for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
+        visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(clamp(q.xy+vec2(x,y)*frame.shadow_parameters.xy,lo,hi),q.z));
+    return visibility/9;
+}
 void main() {
     vec4 base=texture(sampler2D(base_image,base_sampler),uv)*material.base_color*color;
 #ifdef MASK
@@ -87,6 +100,22 @@ void main() {
     if (!gl_FrontFacing) n=-n;
     vec3 v=safe_normalize(frame.camera_exposure.xyz-world_position,n);
     vec3 result=vec3(0);
+    // The cascade by view depth, and the weight of the next across the band at its end
+    // (lighting.chooseCascade); counts.y past the last split, unshadowed.
+    uint cascade=frame.counts.y;
+    float next_weight=0;
+    float view_depth=dot(world_position-frame.camera_exposure.xyz,frame.camera_forward.xyz);
+    float start=0;
+    for (uint c=0;c<frame.counts.y;c++) {
+        float end=frame.shadow_splits[c];
+        if (view_depth <= end) {
+            float band=frame.camera_forward.w*(end-start);
+            cascade=c;
+            next_weight=band > 0 ? clamp((view_depth-(end-band))/band,0,1) : 0;
+            break;
+        }
+        start=end;
+    }
     for (uint i=0;i<frame.counts.x;i++) {
         PackedLight light=frame.lights[i];
         vec3 l=-light.direction_range.xyz;
@@ -103,16 +132,14 @@ void main() {
                 falloff*=cone*cone;
             }
         }
-        if (frame.counts.y != 0 && light.cone_shadow.z != 0) {
-            // Cascade 0 only until M39 Step 3; its matrix maps straight to atlas UV.
-            vec3 q=(frame.shadow_matrices[0]*vec4(world_position+geometric_normal*frame.shadow_offsets.x,1)).xyz;
-            vec4 tile=frame.shadow_tiles[0];
-            if (all(greaterThanEqual(q.xy,tile.xy)) && all(lessThanEqual(q.xy,tile.zw)) && q.z >= 0 && q.z <= 1) {
-                float visibility=0;
-                for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
-                    visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(q.xy+vec2(x,y)*frame.shadow_parameters.xy,q.z));
-                falloff*=visibility/9;
+        if (cascade < frame.counts.y && light.cone_shadow.z != 0) {
+            float visibility=cascadeVisibility(cascade,geometric_normal);
+            if (visibility < 0) visibility=1;
+            if (next_weight > 0) {
+                float next=cascade+1 < frame.counts.y ? cascadeVisibility(cascade+1,geometric_normal) : 1;
+                if (next >= 0) visibility=mix(visibility,next,next_weight);
             }
+            falloff*=visibility;
         }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
     }
@@ -123,5 +150,7 @@ void main() {
     float dielectric=.04*ab.x+ab.y;
     result+=frame.ambient.rgb*((1-dielectric)*base.rgb*(1-metal)+spec)*ao;
     result+=material.emissive_strength.rgb*texture(sampler2D(emissive_image,emissive_sampler),uv).rgb*material.emissive_strength.w;
+    if (frame.counts.z != 0 && cascade < frame.counts.y)
+        result*=mix(TINTS[cascade],cascade+1 < frame.counts.y ? TINTS[cascade+1] : vec3(1),next_weight);
     out_color=vec4(result*frame.camera_exposure.w*base.a,base.a);
 }

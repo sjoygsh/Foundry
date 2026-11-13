@@ -692,3 +692,96 @@ bits (`powerOfTwo`). The functions under test did not change.
 
 Step 3 is next: four cascades, per-cascade casters, selection, the blend, the clamp, the tint,
 the statistics and the overlay's line.
+
+## Resolution — Step 3: four cascades, the lookup and the overlay (2026-11-14)
+
+**Casters per cascade.** Preparation now fits `shadow_cascades` cascades. Each caster carries a
+four-bit mask of the cascades whose light box holds it, from M20's frustum test against each
+cascade in turn. `shadow_order` lists every caster drawn into any tile, so budgets and pipelines
+see each caster once, and `recordShadow` skips a draw whose bit is clear for the tile it is
+drawing. `Stats` gains `shadow_cascades` and `shadow_cascade_draws`, whose sum is
+`shadow_draws`; `shadow_culled` counts once per cascade that culled a caster.
+
+**The lookup** (`lit.metal`, `lit.frag.glsl`):
+- **Selection.** The receiver's view depth is `dot(world - camera, forward)`. The first cascade
+  whose far split lies beyond it is read; past the last, nothing is.
+- **The band**, a sharpening of §5: it is the last `shadow_cascade_blend` of the range from the
+  *previous split*, and cascade 0's range is measured from the camera, not the near plane. The
+  uniform carries far splits only, and 0.1 m makes no visible difference. `lighting.chooseCascade`
+  is the same rule on the CPU, and the readbacks' oracle uses it.
+- **Outside a tile.** A cascade's lookup returns −1 when the point falls outside its tile or depth
+  range. The chosen cascade then reads as lit, as M22's map did. A band's *next* cascade is
+  skipped, because its sphere holds its own slice, not the band before it.
+- **The clamp.** Each tap is clamped to its tile inset by two texels.
+  `shadow_parameters.zw` holds that inset in U and V.
+- **The normal offset** is `shadow_offsets[c]` for whichever cascade is read.
+- **The tint** (`FrameView.shadow_tint`, `counts.z`) multiplies the final colour by
+  `lighting.cascade_tints`: red, green, blue and yellow, softened to 0.25 in the other channels
+  so shading still shows. It mixes toward the next cascade's colour across a band, and toward
+  white across the last band, as the shadow fades there.
+
+**The overlay** reads, as §7 has it, `3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17
+shadow culled`. With nothing casting, it reads `0 cascades` and has no parentheses.
+
+**Readbacks on Metal**, compared with the CPU oracle at ±2/255:
+
+| Readback | What it shows |
+| --- | --- |
+| M22's and M24's | Pass unchanged at four cascades with the real lookup. M22's receiver, 4 m out with a 6 m shadow distance, now reads cascade 3. |
+| A 2 cm pole, 3 m out, shadowing a wall 4 m out | At the default 2,048 tiles and the samples' field of view, cascade 0's texel is 4.1 mm and the pixel reads ambient only. One map over 80 m has 6.1 cm texels, and more than half the light gets through. |
+| A canopy 3 m above the eye, shadowing a wall facing the camera | The wall is in shadow at 9, 20, 64 and 72 m (cascades 1, 2, 3, 3), and above the shadow it reads lit. At 76 m it is in the last band, and the light let through is that band's weight, 0.255. At 83.2 m, past the last split, it reads lit. |
+| The tint, on lit ground | Rows in cascades 0 to 3 read their colours. A row in cascade 0's band reads the mix. |
+| No bleeding | Two cascades, no band. Cascade 0's lookup is aimed one texel inside its tile's right edge, beside a caster in tile 1's left column, and reads lit. |
+
+Several readbacks differ from §11's wording:
+- **The shadow is off the middle row.** The pole's shadow falls 0.62 m above the eye, off the
+  tile's middle row, as Step 2 asked. A flipped v now fails in pixels as well as in the unit test.
+- **The canopy replaces the far wall.** A wall at 60 m would hide what it shadows from the camera,
+  so a canopy overhead casts §11's far shadow instead.
+- **The band is checked on a wall.** On the grazing ground, one row of pixels at 76 m spans about
+  150 m of depth, and the rasterizer's subpixel precision moved the band weight by 3/255. A wall
+  facing the camera has one depth per pixel.
+- **The blend between two cascades** is shown by the tint, which shares the band weight with
+  visibility. The visibility blend is shown by the last band's fade.
+- **No bleeding could not happen naturally.** In a 32-pixel readback, a receiver inside a slice
+  sits at least about twenty texels inside its tile, as §5 expected, so no placed caster could
+  test the clamp. The test writes the aimed matrix into the uploaded uniform between `prepare` and
+  recording. The point is to test the shader's clamp itself.
+
+**Null tests:**
+- `chooseCascade` and `cascadeTint` at band edges, past the last split, at fewer cascades and
+  with no band.
+- The uniform at four cascades: every tile, split, offset, folded matrix, the inset and the tint
+  switch.
+- Casters per cascade, with the light overhead:
+  - a caster near the camera is drawn into cascade 0 and culled from cascade 3;
+  - one at the first split is drawn into cascades 0 and 1;
+  - one 70 m out is drawn into cascade 3 and not cascade 0;
+  - blend and disabled materials are drawn into none;
+  - the per-cascade draws add up to `shadow_draws`, and the culled count to the rest.
+- Two M22/M24 tests that count one map's draws now set `shadow_cascades = 1`.
+
+**Guards broken on purpose:**
+
+| Mistake | What failed |
+| --- | --- |
+| The clamp removed | the bleeding readback alone |
+| The band weight inverted | the canopy, the pole, and M22's and M24's readbacks |
+| The normal offset taken from cascade 0 for every cascade | the canopy and M22's readback |
+| The splits uploaded in reverse | the canopy, M22's and M24's readbacks, and the uniform test |
+| Tile column and row swapped in the caster pass only | the canopy, through cascades 1 and 2 |
+| V not flipped | the tile-matrix test and the pole readback |
+| Every cascade culled against cascade 0's box | the per-cascade caster test and the particle test |
+
+The GLSL lookup is the Metal one line for line. It is compiled and checked against the uniform by
+the Vulkan checks, and it runs on the PC at Step 6.
+
+**Bar:** passed, exit 0 throughout.
+- `zig build test` (null): 2,998/3,008 (ten skips, five new tests), 132/132 steps.
+- `zig build test -Drhi=metal`: 3,008/3,029 (21 skips), 146/146 steps.
+- `fmt`, the four checks, the four thirty-frame samples, `fdt-check`, the tour with every pin,
+  `court-test` 87/89 (two skips), and the five Vulkan checks.
+
+Step 4 is next: the yard in cascades, with `sandbox3d`'s flags, its tint key, the exit report
+and its budgets. The samples still use their own `shadow_distance` values, and they now draw
+four cascades by default.

@@ -39,7 +39,7 @@ pub const FrameUniform = extern struct {
     /// Each cascade's receiver offset along its normal, in metres.
     shadow_offsets: [4]f32,
     /// xy: the reciprocal atlas width and height (the atlas of two cascades is not square);
-    /// zw: unused until the lookup clamps taps to their tile.
+    /// zw: the clamp's inset, two texels in U and V, keeping every tap inside its tile.
     shadow_parameters: [4]f32,
     /// Each cascade's tile in atlas UV: origin xy, far corner zw.
     shadow_tiles: [max_cascades][4]f32,
@@ -221,6 +221,41 @@ pub fn fitCascades(camera: @import("camera.zig").Camera, aspect: f32, distance: 
         result.fits[i] = fitShadowSlice(camera, aspect, splits[slice], splits[slice + 1], light_world, size);
     }
     return result;
+}
+
+/// The cascade a receiver reads, by its view depth (`shadows-cascaded.md` §5), and how far it
+/// lies into the band at that cascade's end: `next` is the weight of the next cascade, or of
+/// "unshadowed" after the last. The band is the last `blend` fraction of the cascade's depth
+/// range, measured from the previous split, cascade 0's from the camera. `index == count` is
+/// past the last split, unshadowed. The lit shaders mirror this exactly.
+pub const CascadeChoice = struct { index: u32, next: f32 };
+
+pub fn chooseCascade(depth: f32, far_splits: [max_cascades]f32, count: u32, blend: f32) CascadeChoice {
+    var start: f32 = 0;
+    for (far_splits[0..count], 0..) |end, i| {
+        if (depth <= end) {
+            const band = blend * (end - start);
+            const next = if (band > 0) std.math.clamp((depth - (end - band)) / band, 0, 1) else 0;
+            return .{ .index = @intCast(i), .next = next };
+        }
+        start = end;
+    }
+    return .{ .index = count, .next = 0 };
+}
+
+/// The debug tint's colours (`shadows-cascaded.md` §5): red, green, blue and yellow, softened so
+/// a tinted surface keeps its shading.
+pub const cascade_tints = [max_cascades][3]f32{ .{ 1, 0.25, 0.25 }, .{ 0.25, 1, 0.25 }, .{ 0.25, 0.25, 1 }, .{ 1, 1, 0.25 } };
+
+/// The tint a receiver takes: its cascade's colour, mixed toward the next's across the band and
+/// toward white after the last, as the visibility fades out there.
+pub fn cascadeTint(choice: CascadeChoice, count: u32) [3]f32 {
+    if (choice.index >= count) return .{ 1, 1, 1 };
+    const here = cascade_tints[choice.index];
+    const next: [3]f32 = if (choice.index + 1 < count) cascade_tints[choice.index + 1] else .{ 1, 1, 1 };
+    var out: [3]f32 = undefined;
+    for (&out, here, next) |*o, a, b| o.* = a + (b - a) * choice.next;
+    return out;
 }
 
 test "shadow sphere is rotation invariant and contains every truncated frustum corner" {
@@ -526,6 +561,31 @@ test "a tile matrix maps the light's clip square onto its tile's UV rectangle, v
     const whole = tileMatrix(.identity, rect);
     try t.expectEqual(Vec3.init(0.5, 0, 0), whole.mulPoint(.init(-1, 1, 0)));
     try t.expectEqual(Vec3.init(1, 0.5, 0), whole.mulPoint(.init(1, -1, 0)));
+}
+
+test "a receiver chooses its cascade by view depth and blends across the band at its end" {
+    const t = std.testing;
+    const splits = [4]f32{ 2, 6, 14, 30 };
+    try t.expectEqual(CascadeChoice{ .index = 0, .next = 0 }, chooseCascade(1, splits, 4, 0.1));
+    // Cascade 0's band is its last 0.2 m, measured from the camera: 1.8 to 2.
+    try t.expectEqual(@as(u32, 0), chooseCascade(1.9, splits, 4, 0.1).index);
+    try t.expectApproxEqAbs(@as(f32, 0.5), chooseCascade(1.9, splits, 4, 0.1).next, 1e-5);
+    try t.expectEqual(CascadeChoice{ .index = 0, .next = 1 }, chooseCascade(2, splits, 4, 0.1));
+    try t.expectEqual(CascadeChoice{ .index = 1, .next = 0 }, chooseCascade(2.01, splits, 4, 0.1));
+    // Cascade 2's band, from 13.2 to 14, is measured from the previous split.
+    try t.expectApproxEqAbs(@as(f32, 0.25), chooseCascade(13.4, splits, 4, 0.1).next, 1e-5);
+    try t.expectEqual(CascadeChoice{ .index = 3, .next = 0 }, chooseCascade(20, splits, 4, 0.1));
+    try t.expectEqual(CascadeChoice{ .index = 4, .next = 0 }, chooseCascade(30.5, splits, 4, 0.1));
+    // Fewer cascades end sooner, and no band leaves one cascade.
+    try t.expectEqual(CascadeChoice{ .index = 2, .next = 0 }, chooseCascade(15, splits, 2, 0.1));
+    try t.expectEqual(CascadeChoice{ .index = 0, .next = 0 }, chooseCascade(1.99, splits, 4, 0));
+    // The tint follows: pure inside, mixed in a band, white toward the end and past it.
+    try t.expectEqual(cascade_tints[1], cascadeTint(chooseCascade(3, splits, 4, 0.1), 4));
+    const mixed = cascadeTint(chooseCascade(1.9, splits, 4, 0.1), 4);
+    try t.expectApproxEqAbs(@as(f32, 0.625), mixed[0], 1e-5);
+    try t.expectApproxEqAbs(@as(f32, 0.625), mixed[1], 1e-5);
+    try t.expectEqual([3]f32{ 1, 1, 1 }, cascadeTint(.{ .index = 4, .next = 0 }, 4));
+    try t.expectEqual([3]f32{ 1, 1, 1 }, cascadeTint(.{ .index = 3, .next = 1 }, 4));
 }
 
 test "photometric exposure attenuation and cone have pinned endpoints" {

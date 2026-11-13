@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 Step 2 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 3: four cascades, per-cascade casters, the lookup's selection, blend, clamp and tint, the statistics and the overlay's line. Preparation still fits one cascade. The PC holds no Foundry clone.
+**Current handoff: M39 Step 3 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 4: the yard in cascades on Metal (`sandbox3d`'s flags, tint key, exit report, tour at each count and budgets). The samples now draw four cascades by default, at their old shadow distances. The PC holds no Foundry clone.
+
+**M39 Step 3 is done (2026-11-14): four cascades, the lookup and the overlay.**
+- Each caster carries a mask of the cascades whose light box holds it, and the caster pass draws it into those tiles only. `Stats` gains `shadow_cascades` and `shadow_cascade_draws`, and the overlay reads `3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17 shadow culled`.
+- The lit shaders choose a cascade by view depth and blend across the band at its end, measured from the previous split, cascade 0's from the camera. Past the last split a receiver is lit. Taps are clamped two texels inside their tile, each cascade uses its own normal offset, and `FrameView.shadow_tint` colours receivers by cascade. `lighting.chooseCascade` is the same rule on the CPU.
+- Metal readbacks:
+  - a 2 cm pole's shadow reads ambient at four cascades (4.1 mm texels) and mostly lit with one 80 m map (6.1 cm);
+  - a canopy shadows a wall in cascades 1–3, fades by the band's weight at 76 m, and lets everything through past 80 m;
+  - the tint marks cascades 0–3 and mixes in a band;
+  - a lookup aimed at a tile's edge does not read its neighbour.
+- Seven guards were broken; each failed a test. Bar: null 2,998/3,008 (ten skips), Metal 3,008/3,029 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M39 Step 2 is done (2026-11-14): the uniform's second layout and the atlas, at one cascade.**
 - `FrameUniform` is 1,520 bytes in Zig, and in every GLSL and MSL shader that declares it, with Vulkan's agreement check updated. Its reciprocal atlas size has two components, since two cascades make a non-square atlas.
