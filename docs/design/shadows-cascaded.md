@@ -1,0 +1,528 @@
+# Design: M39 — Shadows II: cascaded shadow maps for the directional light, in one atlas
+
+**Status:** Proposed 2026-11-13. The owner has not yet accepted §14; no step has begun.
+**Date:** 2026-11-13
+**Baseline:** `d283098`, tag `m38`. M0–M38 are complete.
+**Decisions:**
+- ADR-0048 (reversed-Z, right-handed, −Z forward), ADR-0052 (a forward renderer, changed only
+  on measurement), ADR-0056 (photometric light units) and `light.md` §9 (M22's single shadow
+  map) are the contracts this milestone extends. ADR-0013 (deterministic-friendly) and ADR-0059
+  (the public 3D table, frozen at v6) constrain it.
+- [ADR-0079](../adr/0079-directional-shadows-are-cascades-in-one-atlas.md) (proposed): the one
+  directional caster's shadow is up to four cascades. Each is fitted and snapped as M22's single
+  map was, and each is drawn into a tile of one depth atlas, not a layer of a texture array. A
+  receiver picks its cascade by view depth and blends across a band at each seam. M40's spot and
+  point shadows will take tiles of the same atlas.
+
+`light.md` is M22's document. Its §14 set cascades aside with a trigger ("a scene whose single
+map shows measured aliasing at `shadow_distance` a game needs"), and ADR-0060 scheduled them in
+M39. `3d.md` §4 tied texture arrays to "shadow cascades that a scene proves it needs"; this design
+does not need them (§4), so texture arrays stay M41's.
+
+## 1. Purpose and boundary
+
+The roadmap's row is the contract:
+
+> **M39 — Shadows II.** Cascaded shadow maps.
+
+**The runnable result.** `sandbox3d`'s yard (M38) is seen with shadows out to 80 m, the
+camera's far plane:
+- the 2,048 stones and 64 posts cast shadows across the whole 64 m hillside;
+- a stone at the player's feet casts a shadow with edges as sharp as M22's room;
+- `--shadow-cascades=1` shows the same yard through M22's single map, for comparison;
+- `--shadow-tint` colours each receiver by the cascade it read, so a person can see the splits.
+
+The court gets cascades through the renderer's default, with no change of its own except a
+farther shadow distance, and the owner plays it.
+
+**The exit condition:**
+- The cascade maths agrees with a CPU oracle.
+- One cascade reproduces M22's matrix bit for bit, and every M22 and M24 shadow readback holds.
+- New Metal readbacks show a resolved near shadow that one map cannot resolve, and a far shadow
+  in the last cascade. They also show no bleeding between tiles and the blend across a seam.
+- The yard holds 60 Hz with four cascades on macOS/Metal and on Windows/Vulkan, and Vulkan
+  validation is clean.
+
+**In M39:**
+- splits over the shadow distance and one sphere fit per cascade, each snapped to its own texels
+  (§3);
+- the atlas, its tiles and the caster pass that fills them (§4);
+- the lookup: the cascade chosen by view depth, a blended band and filter taps kept inside their
+  tile (§5);
+- the frame uniform's second layout (§6);
+- configuration, statistics, the overlay's line and the tint (§7);
+- the yard and the court (§8).
+
+**Not in M39, each owned elsewhere:**
+- Point and spot shadows, and translucent (coloured) shadows: M40, which takes tiles of this
+  atlas (ADR-0079).
+- Texture arrays and cubemaps in the RHI: M41.
+- Contact-hardening penumbrae (PCSS): M40. Screen-space contact shadows: M81, which brings the
+  depth prepass they read.
+- Shadows cast by particles, and particles receiving shadows: M79.
+- Ray-traced shadows: M98.
+- Timing the shadow pass on the GPU, caching casters, alternate-frame cascades and drawing a
+  caster once into several tiles: M73 and M99 (§13).
+- Anything in the public table: v6 is frozen, and cascades are the host's renderer
+  configuration, as `shadow_size` was (§9).
+
+## 2. What exists
+
+**`engine/src/render3d/lighting.zig`** holds the pure maths, and is the oracle every readback
+compares against:
+- `FrameUniform` is 1,216 bytes: the view-projection, camera and exposure, ambient, `counts`,
+  one `shadow_matrix`, one `shadow_parameters` and sixteen packed lights. An offset test pins
+  every member.
+- `fitShadow(camera, aspect, distance, light_world, size)` returns a `ShadowFit`: the smallest
+  sphere around the camera frustum between `near` and `min(far, distance)`, padded half a texel a
+  side and snapped to whole texels in light space. `ShadowFit.includeCaster` extends the depth
+  range toward the light for a caster whose bounds overlap the receiver box, and
+  `ShadowFit.matrix` is the orthographic light matrix with reversed-Z.
+- Two tests pin it: the sphere is invariant under camera rotation and holds every frustum corner,
+  and the snap moves only by whole texels.
+
+**`engine/src/render3d/renderer.zig`** draws and owns the GPU side:
+- `Config` has `shadow_size` (0, 1024, 2048 or 4096), three depth-bias fields and
+  `shadow_normal_offset`, in texels. `FrameView` has `shadow_distance` (default 25 m).
+- At most one light may cast, and it must be directional (`InvalidShadowCaster`).
+- During preparation (around line 1815) the renderer fits the one map and extends it by casters.
+  It culls the frame's opaque and mask draws against the light box into `shadow_order`, then
+  `ensureShadowResources` makes the `depth32_float` target and its bind group on first use.
+- `recordShadow` sets one viewport and scissor and draws each caster with its world matrix.
+  `shadow.vert.glsl` and `shadow.metal` multiply by the frame uniform's `shadow_matrix`. Opaque
+  casters draw with no fragment stage (M26 Step 9).
+- `Stats` counts `shadow_draws` and `shadow_culled`. The overlay's profiler prints them on one
+  line (`engine/src/debug/profiler_panel.zig:149`).
+
+**The shaders.** `lit.frag.glsl` and `lit.metal` transform the receiver by `shadow_matrix` after
+a normal offset of `shadow_parameters.y` metres. They take a 3×3 grid of bilinear comparison taps
+spaced `shadow_parameters.x`, the reciprocal map size. `counts.y` switches the lookup on.
+`unlit` and `particle` declare the same `Frame` struct and assert its size, 1,216 bytes.
+
+**The RHI** already has what this needs:
+- viewports and scissors with an origin (`rhi/command.zig`'s `Viewport` and `ScissorRect`);
+- comparison samplers and sampled depth (M22);
+- a device's `max_texture_dimension`.
+
+It has no texture arrays, and M39 adds none (§4).
+
+**The samples:**
+- `sandbox3d` passes `shadow_size = 2048`, or 0 with `--shadows=off`. Its views use the default
+  shadow distance of 25 m with a far plane of 80 m, so the yard at (70, 0, 0) is mostly
+  unshadowed beyond 25 m.
+- The court uses `shadow_distance = 20`.
+- `--shadow-proof` draws M22's code-built cube over a ground.
+
+## 3. Splits and fits
+
+**Where it lives:** `render3d/lighting.zig`, beside `fitShadow`. It is pure maths with no device,
+so it unit-tests on the null backend and is the readbacks' oracle.
+
+**Splits.** The shadowed range runs from `near` to `d = min(far, shadow_distance)`. It is cut
+into `n` cascades, one to four, at the practical split scheme's distances:
+
+```
+split(i) = λ · near · (d / near)^(i/n)  +  (1 − λ) · (near + (d − near) · i/n),   i = 1 … n
+```
+
+λ mixes the logarithmic split, which keeps texel density constant with depth, with the uniform
+one, which keeps the last cascade from covering almost everything. **The default is λ = 0.75.**
+At the yard's 0.1 m to 80 m, with the samples' field of view and a 16:9 window, that puts the
+seams at about 5.4 m, 12.1 m and 26.3 m.
+`split(n) = d` exactly, which the code writes rather than computes.
+
+**One fit per cascade.** Cascade `i` is `fitShadow` applied to the slice of the frustum between
+`split(i−1)` and `split(i)`, with `split(0) = near`. The existing function takes a whole frustum
+from `near`, so it gains a near distance for the slice. Each fit keeps M22's three properties:
+- **The fit is a sphere,** so its size does not change as the camera turns, and the cascade's
+  texel size is fixed for a given view.
+- **It is snapped to its own texels,** so shadow edges do not crawl as the camera moves.
+- **Its depth extends toward the light** for any caster whose bounds overlap its box.
+
+**One cascade is M22.** With `n = 1`, the one slice is `near` to `d` and the fit is
+`fitShadow`'s, bit for bit. A test compares every field and the matrix. This is what lets the
+change be made with every existing readback still holding.
+
+**Why a sphere, and not a tighter box.** A box fitted tightly to each slice in light space uses
+more of the map, but it changes size as the camera turns. Its texel size then changes every
+frame, and every edge shimmers. M22 chose the sphere for that reason, and a cascade has the same
+problem at four times the rate.
+
+**Now / designed for / postponed:**
+- **Now:** four cascades at most, and λ and the blend band as configuration.
+- **Designed for:** a cascade count and splits that a game could set per view. They are plain
+  numbers in `Config`, and nothing caches them across frames.
+- **Postponed:** cascades that update every other frame, and cached casters (§13).
+
+## 4. The atlas
+
+**One `depth32_float` texture holds every cascade, as tiles.** Each tile is `shadow_size` texels
+a side:
+
+| Cascades | Tiles | Atlas size |
+| --- | --- | --- |
+| 1 | one | `s × s` |
+| 2 | two, side by side | `2s × s` |
+| 3 or 4 | a 2 × 2 grid, one tile unused at 3 | `2s × 2s` |
+
+Cascade `i` sits at column `i mod 2` and row `i / 2`.
+
+**Why an atlas and not a texture array.** A texture array is the usual answer, but:
+- the RHI has none, and the roadmap gives texture arrays to M41, with cubemaps;
+- an atlas needs nothing new below `render3d`, since viewports and scissors with origins already
+  exist;
+- M40's spot and point shadows want an atlas anyway. They are many small maps of different sizes,
+  which an array of equal layers holds badly. ADR-0079 records that they take tiles of this one.
+
+The price is that filter taps can cross into a neighbouring tile, which §5's clamp prevents.
+
+**Its size is checked at `init`.** An atlas side greater than the device's
+`max_texture_dimension` is `InvalidConfig`.
+- At the default, four 2048 tiles make a 4,096-texel atlas. That is 64 MiB, where M22's map was
+  16 MiB, and every Vulkan device must allow it.
+- Four 4096 tiles need 8,192 texels and 256 MiB. Metal on Apple silicon and the Arc A750 allow
+  it. A device that does not gets a named refusal, not a failed allocation.
+
+**The caster pass is one render pass over the whole atlas:**
+1. Clear the whole atlas to 0 (reversed-Z: far is 0).
+2. For each cascade in order, set its tile's viewport and scissor and draw its casters.
+
+Each cascade's casters are the frame's opaque and mask draws whose material casts, culled against
+that cascade's light box by M20's frustum code. That is the test M22 ran for the one map. A
+caster in two cascades is drawn twice, and is counted twice in `shadow_draws`.
+
+**The matrix reaches the vertex shader in the draw's inline constants.**
+- The shadow vertex shader now reads `constants.world`. For a shadow draw, `render3d` multiplies
+  the cascade's light matrix by the draw's world matrix on the CPU and passes the product there.
+- The shader no longer reads the frame uniform at all, so one bind group serves all four
+  cascades, and no per-cascade uniform is needed.
+- The product is computed once per draw per cascade, in `f32`, as the GPU would have done.
+- The cofactor half of the constants is unused by the shadow pass, as it is now.
+
+**The depth bias stays one pipeline state for every cascade.**
+- A constant and a slope-scaled bias are measured in depth-buffer units. Each cascade's depth
+  range differs, so the same bias is a different distance in each.
+- M22's defaults (−1, −1, unclamped) are small enough that this has not mattered. The normal
+  offset (§5), which scales with each cascade's texel, does most of the work.
+- Per-cascade bias would need dynamic bias state, which the RHI does not have. It is named in §13
+  in case a readback shows acne in one cascade and not another.
+
+## 5. The lookup
+
+**The cascade is chosen by view depth.**
+- The receiver's depth along the camera's forward axis is compared with the split distances.
+  The first cascade whose far split lies beyond it is the one read.
+- A sphere fit holds its whole slice, so the chosen cascade always covers the point. There is no
+  need to test map coordinates.
+- Past the last split the receiver is unshadowed, as M22's was past `shadow_distance`.
+
+**Seams are blended.**
+- In the last `shadow_cascade_blend` fraction of each cascade's depth range (default 0.1), the
+  receiver also reads the next cascade, and mixes the two visibilities linearly by its position
+  in the band.
+- The last cascade blends to "unshadowed" over its band, so the shadow fades out at the distance
+  rather than stopping on a line.
+- Outside a band, one cascade is read, so most pixels pay for one lookup, as now.
+
+**The normal offset scales per cascade.** `shadow_normal_offset` stays in texels, and each
+cascade multiplies it by its own texel size in metres. A far cascade's coarse texels get a
+correspondingly larger offset, which is what M22's offset was for.
+
+**Filter taps stay inside their tile.**
+- The filter is M22's 3×3 grid of bilinear comparison taps. Its footprint reaches 1.5 texels past
+  the centre tap.
+- Each tap's coordinate is clamped to the tile's rectangle, inset by two texels, so no tap reads a
+  neighbour's depth.
+- A sphere fit's tile already has half a texel of padding on each side, and the clamp only
+  matters at the sphere's rim, which the slice's frustum never reaches. The clamp is kept anyway,
+  because a test can show what happens without it (§11).
+
+**The tint.** When the frame asks for it (§7), a receiver's lit colour is multiplied by a fixed
+colour for the cascade it read: red, green, blue, yellow, mixed in the blend band. It is the
+same shader with a uniform switch, not a variant. It exists so a person can see the splits, and a
+readback checks it.
+
+## 6. The frame uniform, second layout
+
+`FrameUniform` is replaced, not extended: the shadow block changes shape, and every shader that
+declares `Frame` changes with it. Its members, in order, all `vec4`-aligned so std140 and Metal
+agree:
+
+| Member | Size | Holds |
+| --- | --- | --- |
+| `view_projection` | 64 | unchanged |
+| `camera_exposure` | 16 | unchanged |
+| `ambient` | 16 | unchanged |
+| `counts` | 16 | x: lights; y: cascades (0 means no lookup); z: the tint switch |
+| `camera_forward` | 16 | xyz: the camera's forward axis; w: the blend fraction |
+| `shadow_splits` | 16 | each cascade's far split in view depth, metres |
+| `shadow_offsets` | 16 | each cascade's normal offset, metres |
+| `shadow_parameters` | 16 | x: the reciprocal atlas size; y: the inset for the clamp, in UV |
+| `shadow_tiles` | 4 × 16 | each tile's UV rectangle: origin xy, far corner zw |
+| `shadow_matrices` | 4 × 64 | each cascade's light matrix, folded into its tile's UV |
+| `lights` | 16 × 64 | unchanged |
+
+- The total is 1,520 bytes, well inside every backend's uniform limit.
+- Each cascade's matrix maps a world point straight to atlas UV and depth, with its tile's scale
+  and offset folded in, so the shader does one multiply per lookup.
+- `lighting.zig`'s offset test pins every member. Each shader's size assertion moves to 1,520:
+  `unlit` and `particle` read none of the new members, but they declare the struct.
+
+## 7. Configuration, statistics, the overlay
+
+**`Config` gains:**
+- `shadow_cascades: u32 = 4`. 1 to 4; anything else is `InvalidConfig`. `shadow_size = 0` still
+  means no shadows at all.
+- `shadow_split_lambda: f32 = 0.75`. Finite and between 0 and 1.
+- `shadow_cascade_blend: f32 = 0.1`. Finite, from 0 to 0.5.
+
+`shadow_size` is now each tile's size. All three fields are the host's, like `shadow_size`, and
+none is content (`light.md` §9 kept bias out of content for the same reason).
+
+**Cascades are on by default.** Every host that casts a shadow gets four cascades unless it says
+otherwise.
+- **For:** a renderer default should be the better picture, and only the samples and the court
+  use this renderer.
+- **Against:** the court's and the room's pictures change.
+- Their simulation digests do not change, since nothing simulated reads a shadow, and a host keeps
+  M22's picture exactly with `shadow_cascades = 1`.
+
+**`FrameView` gains `shadow_tint: bool = false`,** the debug colouring of §5. It is per frame
+because a sample toggles it with a key.
+
+**`Stats` gains:**
+- `shadow_cascades`, the number fitted this frame;
+- `shadow_cascade_draws: [4]u32`, whose sum is `shadow_draws`.
+
+`shadow_culled` counts a caster once per cascade that culled it.
+
+**The overlay's profiler line** becomes `3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)
+17 shadow culled`. It is an ordinary `Stats` read and widens no grant.
+
+## 8. The samples
+
+**`sandbox3d`:**
+- Its own config record (`sandbox3d:config.main`, the sample's schema) gains `shadow_distance`,
+  default 80, so the yard is shadowed to the far plane. The dusk mod can change it.
+- New flags: `--shadow-cascades=1|2|3|4` (default 4) and `--shadow-tint`. **T** toggles the tint
+  while walking, and the overlay shows the cascade line.
+- The exit report logs each cascade's draws, splits and texel size in centimetres.
+- The tour's simulation pin, `1052a9ae891b0d27`, and every older pin do not move, because
+  rendering does not reach the simulation. The tour is run to prove it.
+
+**The measurement the trigger asked for.** `light.md` §14 brings cascades back for "measured
+aliasing at `shadow_distance` a game needs". The yard is that scene, and Step 4 records it:
+- one 2048 map over 0.1–80 m has a texel of about 8.5 cm, so a shadow's edge steps every
+  8.5 cm even at the player's feet;
+- with four cascades at λ = 0.75, the texels are about 0.6, 1.3, 2.8 and 8.5 cm, nearest first.
+
+Step 1 computes both from the oracle, and Step 4 shows them in the picture.
+
+**The court:**
+- `shadow_distance` goes from 20 m to 40 m, so shadows reach twice as far across the court.
+- No content, rule or simulation changes. Its four digests hold, and the owner plays it.
+
+**`--shadow-proof`** keeps M22's cube and gains nothing. The readbacks of §11 are the proof now.
+
+## 9. The public table
+
+**Nothing.** FoundryApi_v6 is frozen (ADR-0059). A mod's light may already say it casts, and M22's
+rule stands: one directional caster per frame. How that shadow is drawn is the host's `Config`,
+which no mod can reach, as `shadow_size` already was. M48's list does not change: a host-granted
+renderer configuration is not something M48 publishes.
+
+## 10. Platform assessment
+
+**Metal (macOS, Apple M5):**
+- `depth2d::sample_compare` with a clamped coordinate. Nothing else is new.
+- An 8,192-texel atlas is within the device's limit.
+
+**Vulkan (Windows, Arc A750):**
+- The GLSL variants change with the uniform.
+- The atlas is an ordinary 2D depth image, and the tile viewports are core Vulkan.
+- The GLSL is recompiled by the pinned SDK tools (ADR-0038).
+- **The PC is needed:** the shaders, the uniform and the readbacks change, and Step 6 runs the
+  Vulkan suites, the readbacks, both samples windowed and the budgets.
+
+**Linux:**
+- Compile only, confirmed at the close.
+- None of `3d.md` §10.2's triggers fires: nothing in the platform layer, presentation or a
+  Linux-only path changes, and the Vulkan code is the code the PC proves.
+
+## 11. Verification
+
+**Headless, in `zig build test` (null backend and Metal):**
+- **Splits:**
+  - strictly increasing, from `near` to exactly `d`;
+  - λ = 0 gives the uniform splits, and λ = 1 the logarithmic ones;
+  - a far plane nearer than `shadow_distance` cuts the range there.
+- **Fits:**
+  - each cascade's sphere is invariant under camera rotation;
+  - it holds every corner of its slice;
+  - it moves only by whole texels of its own size;
+  - it extends toward the light only for an overlapping caster.
+- **One cascade:** fit, matrix and `FrameUniform` equal M22's bit for bit.
+- **The uniform:** every member's offset, and the size of 1,520 bytes, which each shader also
+  asserts.
+- **Configuration:** cascades of 0 and 5, λ below 0, above 1 or NaN, and a blend below 0, above
+  0.5 or NaN are each `InvalidConfig`. An atlas side over the device's limit is `InvalidConfig`,
+  tested with a null device whose limit is set low.
+- **Casters per cascade:**
+  - a caster near the camera is drawn into cascade 0 and culled from cascade 3;
+  - one spanning two cascades is drawn into both;
+  - blend materials and disabled casters are never drawn;
+  - the per-cascade counts sum to `shadow_draws`.
+
+**Metal readbacks, compared with the CPU oracle as `light.md` §11's are (±2/255, no penumbra
+pixel compared):**
+- **Every M22 and M24 shadow readback holds unchanged** with `shadow_cascades = 1`, and again with
+  four cascades wherever the scene's receivers fall in cascade 0.
+- **A thin pole, 2 cm across, 3 m in front of the camera,** casts a shadow line that four
+  cascades resolve: pixels under the line read ambient only. With one map at 80 m, its texel is
+  wider than the pole, and the same pixels read lit. That one comparison is the milestone's
+  purpose.
+- **A wall 60 m away** casts into the last cascade: a receiver behind it reads ambient, one beside
+  it reads lit.
+- **No bleeding:** a caster placed so cascade 0's filter would reach across its tile's edge into
+  cascade 1's leaves a lit receiver lit.
+- **The blend:** a receiver in a band reads between its two cascades' values, and one just outside
+  reads its own.
+- **The tint:** one receiver in each cascade reads its tint colour, modulated as the oracle says.
+- **Past the last split,** a receiver under a caster reads lit.
+
+**Each guard is broken once** and must fail its test:
+- the clamp removed;
+- the tile origin swapped;
+- the split order reversed;
+- the band's weight inverted;
+- the normal offset left per-map instead of per-cascade.
+
+**The samples:**
+- `sandbox3d` thirty frames headless at each cascade count, and the tour, with every pin held.
+- The court's `court-test` with its four digests.
+- Windowed and relocated: the yard at four cascades and at one, and the court.
+
+**Budgets, p95, paced, from relocated ReleaseSafe installs:**
+- **The yard:** a whole frame within 16.67 ms with four cascades and no skipped frames, on the M5
+  and on the i3/Arc. `render.world`'s CPU time is recorded at one and at four cascades, so the
+  cascades' cost is a number, not a guess.
+- **The court:** unchanged frame pacing.
+
+## 12. Implementation order — seven steps
+
+Each step ends with a Resolution here, an updated `PROJECT_STATE.md`, the bar and a commit. There
+is no automatic chaining.
+
+### Step 1 — `render3d`: splits and fits, as maths
+
+§3 and §7's `Config` fields and their validation. `lighting.zig` gains the split scheme, the
+sliced fit and a `CascadeFit` of up to four `ShadowFit`s. The renderer still draws one map: it
+fits with `n = 1`, through the new code. Tests: §11's splits, fits, one-cascade identity and
+configuration refusals. The Resolution records the yard's texel sizes at one and at four
+cascades, the trigger's measurement.
+**Exit:** the sliced fit with one cascade equals `fitShadow` bit for bit, and every existing test
+and readback passes through it.
+
+### Step 2 — `render3d`: the uniform's second layout and the atlas, one tile at a time
+
+§6 in Zig, MSL and GLSL, for every shader that declares `Frame`. The shadow vertex shader takes
+its matrix from the draw's constants (§4). The atlas texture, sized by §4's table and checked
+against the device's limit. The caster pass loops over tiles, but the lookup still reads cascade 0
+only.
+**Exit:** with `shadow_cascades = 1`, every M22 and M24 shadow readback holds on Metal through
+the new uniform, atlas and caster pass. The offset and size tests pin 1,520 bytes in all three
+languages.
+
+### Step 3 — `render3d`: four cascades, the lookup and the overlay
+
+§4's per-cascade casters, §5's selection, blend, clamp, per-cascade offset and tint, §7's stats,
+the overlay's line.
+**Exit:** §11's Metal readbacks pass: the thin pole, the far wall, no bleeding, the blend, the
+tint and past the last split. Each guard is broken and fails.
+
+### Step 4 — `sandbox3d`: the yard in cascades, on Metal
+
+§8: `shadow_distance` in the sample's config, the flags, the tint key, the exit report, the tour
+run at each cascade count with every pin held, and the yard's budgets from a relocated
+ReleaseSafe install.
+**Exit:** the yard's whole frame holds 16.67 ms at p95 with four cascades on the M5, and the
+recorded texel sizes match Step 1's.
+
+### Step 5 — the court
+
+§8's court: `shadow_distance` 40, cascades by default, `court-test`'s digests held, a relocated
+run of each ending, and the owner plays it.
+**Exit:** the four court digests hold, the court's frame pacing is unchanged, and the owner has
+played it with cascades.
+
+### Step 6 — Windows/Vulkan
+
+`scripts/m39/`, from M38's. On the owner's PC, idle first, from a clone, `-j2` at below-normal
+priority:
+- the null and Vulkan suites, with the Vulkan readbacks at ±3/255;
+- every pin;
+- the installed content bytes against the Mac's;
+- the yard at one and four cascades and the court, windowed and relocated, validation clean;
+- the budgets on the i3.
+
+**Exit:** every readback, pin and byte equals the Mac's, validation is clean, and the yard holds
+16.67 ms at p95 with four cascades on the Arc.
+
+### Step 7 — Close M39
+
+Resolve the contract discrepancies in their documents:
+- `light.md` §9 (one map becomes cascades in an atlas), and §14's cascade row struck through;
+- `3d.md` §4's texture-array trigger (cascades did not need one; M41 keeps them) and §11's
+  "cascaded shadows";
+- `render3d.md`'s shadow pass, and `debug-overlay.md` §7.5's statistics line;
+- ADR-0052, if Step 4's measurement says anything about forward shading's cost.
+
+Then:
+- move ADR-0079 to Accepted and into `CLAUDE.md` §4.1, and update §4.3's `render3d` line and §9's
+  row;
+- add M39's costs and `scripts/m39` to `AGENTS.md`;
+- update the roadmap (M39 done, and §13's items in the rows of M40, M73, M81 and M99), the
+  design index, the README and `PROJECT_STATE.md`;
+- tag `m39`, push when asked, and stop before M40's design.
+
+## 13. What stays open, deliberately
+
+Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
+- **Point and spot shadows, and translucent shadows:** M40. It allocates tiles of this atlas,
+  which needs a tile allocator in place of §4's fixed table. M39 builds only the table.
+- **Texture arrays and cubemaps in the RHI:** M41, unchanged.
+- **Per-cascade depth bias:** M40, which must add bias per tile anyway for spot maps of different
+  depth ranges. The trigger is a readback with acne in one cascade and not another.
+- **The shadow pass timed on the GPU:** M73, which brings GPU timestamps to the profiler. Until
+  then Steps 4 and 6 record its CPU cost and the frame's pacing.
+- **Caster caching, cascades updated on alternate frames, and drawing a caster once into several
+  tiles:** M99, with its chunked submission. The trigger is a shadow pass measured over its share
+  of a frame.
+- **Contact-hardening penumbrae (PCSS):** M40, with the other shadow kinds.
+- **Screen-space contact shadows:** M81, which adds the depth prepass they read.
+- **Particles casting and receiving shadows:** M79, as the roadmap already says.
+
+## 14. Decisions acceptance fixes
+
+Each is recommended as written.
+
+| # | Choice | Where |
+| --- | --- | --- |
+| 1 | The one directional caster's shadow is up to four cascades, at the practical split scheme with λ = 0.75 (ADR-0079) | §3 |
+| 2 | Each cascade is M22's sphere fit over its slice, snapped to its own texels; one cascade is M22's fit bit for bit | §3 |
+| 3 | The cascades are tiles of one `depth32_float` atlas, not a texture array; texture arrays stay M41's, correcting `3d.md` §4's trigger; M40's shadows take tiles of the same atlas (ADR-0079) | §4 |
+| 4 | An atlas larger than the device's `max_texture_dimension` is `InvalidConfig` at `init` | §4 |
+| 5 | The cascade's matrix reaches the shadow vertex shader folded into the draw's inline constants; the shadow pass reads no uniform | §4 |
+| 6 | Depth bias stays one pipeline state; the normal offset scales per cascade; per-cascade bias is M40's | §4, §5 |
+| 7 | Selection by view depth; a linear blend over the last 10% of each cascade, and a fade at the last; taps clamped two texels inside the tile | §5 |
+| 8 | `FrameUniform` is replaced by a 1,520-byte second layout, asserted in every shader | §6 |
+| 9 | `Config` gains `shadow_cascades = 4`, `shadow_split_lambda = 0.75` and `shadow_cascade_blend = 0.1`, the host's and not content; cascades are on by default | §7 |
+| 10 | `FrameView.shadow_tint`, per-cascade statistics and one widened overlay line | §7 |
+| 11 | `sandbox3d`'s config gains `shadow_distance` (80); the yard is the trigger's measured scene; the court goes to 40 m | §8 |
+| 12 | Nothing in the public table; M48's list is unchanged | §9 |
+| 13 | The PC runs Step 6; Linux is compile only | §10 |
+| 14 | Seven steps: maths, the atlas at one cascade, four cascades, the yard, the court, Windows, the close | §12 |
+| 15 | §13's items go to M40, M41, M73, M79, M81 and M99; Step 7 writes each into its roadmap row | §13 |
+
+Once these are accepted nothing blocks Step 1: it is pure maths in `lighting.zig` and `Config`'s
+validation, on the code as it is.

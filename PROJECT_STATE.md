@@ -1,7 +1,14 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-11
-**Current handoff: M38 is complete** (2026-11-11, tag `m38`; [`docs/design/collision-scale.md`](docs/design/collision-scale.md), ADR-0077, ADR-0078). Stop before M39's design: M39, Shadows II (cascaded shadow maps), has no design yet. The PC holds no Foundry clone.
+**Last updated:** 2026-11-13
+**Current handoff: M39's design is proposed** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079); awaiting the owner's acceptance of §14. Stop before Step 1. No code has changed since tag `m38`; the PC holds no Foundry clone.
+
+**M39's design is proposed (2026-11-13): Shadows II, cascaded shadow maps.**
+- Up to four cascades for the one directional caster, at the practical split scheme (λ = 0.75). Each is M22's sphere fit over its slice, snapped to its own texels; one cascade is M22's map bit for bit.
+- The cascades are tiles of one `depth32_float` atlas, not a texture array (ADR-0079), so the RHI gains nothing and texture arrays stay M41's. M40's spot and point shadows will take tiles of the same atlas.
+- A receiver picks its cascade by view depth, blends across the last 10% of each, and keeps its filter taps inside its tile. `FrameUniform` gets a 1,520-byte second layout.
+- The yard is the trigger's measured scene: one 2048 map over 80 m has 8.5 cm texels, and four cascades give 0.6 cm nearest. `sandbox3d` shadows to 80 m; the court goes from 20 m to 40 m.
+- Seven steps: maths, the atlas at one cascade, four cascades, the yard, the court (played by the owner), Windows/Vulkan, the close. Nothing enters the public table.
 
 **M38 Step 12 is done (2026-11-11): M38 closed.**
 - Every document names M38 complete: `CLAUDE.md` §4.1, §4.3 (`physics3d`, `asset`, `author` and `debug`, the last two granted `physics3d`) and §9, ADR-0077/0078, the roadmap, the design index and the README.
