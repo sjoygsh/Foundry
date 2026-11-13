@@ -484,6 +484,12 @@ at 4× it resolves into one. HDR and the stored shadow map leave in `shader_read
 leaves in `render_target` for an overlay, otherwise `present`. Every opened pass closes on
 failure. Targets are replaced as complete candidates before old resources retire.
 
+**Since M39 (2026-11-14, ADR-0079):** the shadow pass draws up to four cascades into tiles of
+one `depth32_float` atlas, each tile through its own viewport and scissor, with each caster
+drawn only into the cascades whose light box holds it. Each draw's light matrix is folded into its
+inline constants, so the shadow shaders read no uniform. The frame uniform is its second layout of
+1,520 bytes, and `shadowCascades()` returns the last frame's fit (`shadows-cascaded.md` §4–§7).
+
 `app.renderScene` prefers a world's `recordFrame` when declared and retains the legacy
 `passDesc`/`record` pair for other recorders. `app` still names no renderer type and still
 owns the optional single-sampled overlay, which loads the tone-mapped surface. The following

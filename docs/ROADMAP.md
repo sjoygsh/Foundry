@@ -1241,8 +1241,8 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M36 | Animation logic III | Inverse kinematics: foot placement and look-at; also blend spaces, many clips mixed continuously by one or two parameters, on M35's sync groups (M35). **Complete 2026-11-09, tag `m36`: [`animation-ik.md`](design/animation-ik.md), ADR-0073/0074.** |
 | M37 | Character and collision extras | Moving platforms, pushing, surface types, one-sided triangles, rotational sweeps, runtime scale, collision proxies; also a configurable up axis, and a model record that names its collision. **Complete 2026-11-09, tag `m37`: [`collision-extras.md`](design/collision-extras.md), ADR-0075/0076.** |
 | M38 | Collision at scale | A broadphase, the tree baked into `.fcol`, hull assets, and a physics panel in the overlay; also specialised pair routines such as analytic capsule–triangle. **Complete 2026-11-11, tag `m38`: [`collision-scale.md`](design/collision-scale.md), ADR-0077/0078.** A balanced bounding-volume tree over bodies and mesh trees baked into `.fcol` v3 that find candidates and never decide an answer; hull faces and `foundry:collision_hull`; ray, sphere and capsule against a triangle in closed form; `physics3d.Report` and the overlay's physics panel; `sandbox3d`'s yard of 2,126 bodies on a baked 32,258-triangle hillside, on macOS/Metal and Windows/Vulkan with every pin and byte equal. |
-| M39 | Shadows II | Cascaded shadow maps. **Accepted 2026-11-13: [`shadows-cascaded.md`](design/shadows-cascaded.md), ADR-0079.** |
-| M40 | Shadows III | Point and spot shadows; translucent shadows |
+| M39 | Shadows II | Cascaded shadow maps. **Complete 2026-11-14, tag `m39`: [`shadows-cascaded.md`](design/shadows-cascaded.md), ADR-0079.** |
+| M40 | Shadows III | Point and spot shadows; translucent shadows; also a tile allocator for M39's shadow atlas, per-tile depth bias and contact-hardening penumbrae (`shadows-cascaded.md` §13) |
 | M41 | Environment | Sky, cubemaps and image-based lighting; an engine light record, glTF light import and tangent generation; also cubemaps and texture arrays in the RHI |
 | M42 | Tone and exposure | A second tone map, auto-exposure, bloom and colour grading |
 | M43 | Text I | Scalable fonts loaded as content |
@@ -1289,7 +1289,7 @@ Each step is measured against the forward renderer it changes (ADR-0052). Ends i
 | M70 | Shading language II | The engine's shading models ported, with per-backend parity readbacks |
 | M71 | Mod shaders | Mod-authored shaders and shading models, compiled at run time |
 | M72 | Material graphs | Materials as a node graph in content; the editor for it is M109 |
-| M73 | Render graph | Declared passes replace the fixed pass order; also bindless binding and GPU timestamps in the profiler |
+| M73 | Render graph | Declared passes replace the fixed pass order; also bindless binding and GPU timestamps in the profiler, which time M39's shadow pass and explain its paced-interval spread on the Arc (`shadows-cascaded.md` Step 6) |
 | M74 | Many lights | Clustered or forward+ shading; more than 16 lights |
 | M75 | GPU compute | Compute in the RHI on every backend; also async compute and transfer queues, GPU mipmap generation and 3D textures |
 | M76 | GPU skinning | Skinning on the GPU, clip compression, and the M24 limits lifted; also more than one skin, four influences or 256 joints, and inverse-transpose normals |
@@ -1297,7 +1297,7 @@ Each step is measured against the forward renderer it changes (ADR-0052). Ends i
 | M78 | Particles II | GPU particles |
 | M79 | Particles III | Ribbons, mesh particles and particle collision; also sub-emitters and events on death, and particles lit by the frame's lights and receiving shadows |
 | M80 | Decals | Projected decals |
-| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion; also soft particles, faded against that depth |
+| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion; also soft particles, faded against that depth, and screen-space contact shadows (`shadows-cascaded.md` §13) |
 | M82 | Temporal anti-aliasing | Motion vectors and TAA; also MSAA beyond 1× and 4×, depth resolve and alpha-to-coverage |
 | M83 | Upscaling | Dynamic resolution and a permissively licensed upscaler |
 | M84 | Lens effects | Depth of field and motion blur |
@@ -1315,7 +1315,7 @@ Each step is measured against the forward renderer it changes (ADR-0052). Ends i
 | M96 | Virtual geometry II | Continuous detail over them |
 | M97 | Ray tracing I | Acceleration structures in the RHI |
 | M98 | Ray tracing II | Ray-traced shadows and reflections |
-| M99 | Render thread | A pipelined frame and multi-threaded recording; also chunked draw submission, transient bind groups, adaptive frames in flight and thread QoS |
+| M99 | Render thread | A pipelined frame and multi-threaded recording; also chunked draw submission, transient bind groups, adaptive frames in flight and thread QoS; also shadow caster caching, cascades updated on alternate frames, and one caster drawn into several tiles at once (`shadows-cascaded.md` §13) |
 | M100 | Parallel systems | Systems scheduled in parallel from declared access; also `before`/`after` constraints, per-system and worker timing, archetype storage and the destroy mask, log-sink contention, and hierarchy propagation over jobs with dirty tracking; also crowds over 256 agents on `core.Jobs` (M33); also `moveBody` finding the characters it touches through the broadphase rather than asking every one (M38) |
 | M101 | Device recovery | Surviving a lost GPU device; also surface loss |
 | M102 | The rendering showcase | Every feature above in one scene, with budgets recorded per platform |

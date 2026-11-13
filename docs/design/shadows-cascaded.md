@@ -1,7 +1,7 @@
 # Design: M39 — Shadows II: cascaded shadow maps for the directional light, in one atlas
 
-**Status:** Accepted 2026-11-13, when the owner asked for Step 1, with §14 as written. Each
-step's Resolution follows §14.
+**Status:** Accepted 2026-11-13, when the owner asked for Step 1, with §14 as written.
+**Complete 2026-11-14, tag `m39`.** Each step's Resolution follows §14.
 **Date:** 2026-11-13
 **Baseline:** `d283098`, tag `m38`. M0–M38 are complete.
 **Decisions:**
@@ -976,3 +976,38 @@ whose bar stands: null 2,998/3,008 and Metal 3,008/3,029. The clone and its scra
 until the close removes them by exact name.
 
 Step 7 is next: close M39.
+
+## Resolution — Step 7: Close M39 (2026-11-14)
+
+Every document now names M39 complete:
+- the status line here, ADR-0079 and its `CLAUDE.md` §4.1 row;
+- §4.3's `render3d` line and §9's row;
+- the roadmap, the design index and the README, which now points to M40.
+
+**The contracts M39 changed, resolved by dated notes:**
+- `light.md` §9 notes that the one map is now up to four cascades, and §14's cascade row is
+  struck through as done, with the measured trigger;
+- `3d.md` §4 records that the RHI stayed unchanged and texture arrays stay M41's, and §11's
+  "cascaded shadows" is noted done;
+- `render3d.md` gains the atlas pass, the folded matrices, the 1,520-byte uniform and
+  `shadowCascades()`;
+- `debug-overlay.md` §7.5 gains the cascade line.
+
+ADR-0052 needs nothing. Steps 4 and 6 measured the cascades at about 0.1 ms of `render.world`,
+and the forward world pass's cost did not move.
+
+**§13's items are in their roadmap rows:**
+- **M40:** the tile allocator, per-tile depth bias and contact-hardening penumbrae, beside point,
+  spot and translucent shadows;
+- **M73:** GPU timestamps for the shadow pass, and the Arc's paced-interval spread from Step 6;
+- **M81:** screen-space contact shadows;
+- **M99:** caster caching, alternate-frame cascades and drawing one caster into several tiles.
+
+Texture arrays stay M41's, and particles casting shadows M79's, both unchanged.
+
+**`AGENTS.md`** gains M39's costs and `scripts/m39`, including the rule that renderer changes
+run the Metal suite, where the readbacks live. The bar itself is unchanged.
+
+**Cleanup.** The PC's `src\Foundry-m39` and `m39` are removed by exact name, and the Mac's
+scratch and caches are cleared. Only documents changed after Step 6, so Step 5's bar stands:
+null 2,998/3,008, Metal 3,008/3,029.

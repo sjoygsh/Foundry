@@ -454,6 +454,12 @@ exposed (§3).
 - **Filtering:** a 3×3 grid of hardware-bilinear comparison taps, a smooth 4×4-texel footprint.
 - **Receivers** are lit materials. Unlit ones ignore light, and so shadow.
 
+*Note, 2026-11-14 (M39):* the one map is now up to four cascades, each this section's fit over its
+own slice of the range, drawn as tiles of one depth atlas (ADR-0079,
+[`shadows-cascaded.md`](shadows-cascaded.md)). One cascade is this map bit for bit. The biases,
+the filter and the receivers are unchanged, and the normal offset now scales by each cascade's
+texel.
+
 ## 10. `sandbox3d`: a lit room a content mod changes
 
 - **The room, crates and orrery are lit.** Their glTF materials re-import as lit (§6); the code-built
@@ -938,9 +944,10 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   needs a sky. Cubemaps enter the RHI then. **M26 did not fire it** (2026-10-18): the court is lit by its
   content's constant ambient, one directional light and its beacons' point lights, and needed no
   sky. It is M41's.
-- **Point and spot shadows, cascades:** `3d.md` §11; the trigger is a scene whose single map shows
-  measured aliasing at `shadow_distance` a game needs. Cascades are M39's:
-  [`shadows-cascaded.md`](shadows-cascaded.md) (accepted 2026-11-13).
+- **Point and spot shadows,** ~~cascades~~: `3d.md` §11. **Cascades done in M39** (2026-11-14,
+  [`shadows-cascaded.md`](shadows-cascaded.md)): the trigger was measured in the yard, where one 2048
+  map over 80 m had 8.5 cm texels and four cascades give 0.58 cm nearest. Point and spot shadows
+  are M40's.
 - **An engine `foundry:light` record, and glTF light import (`KHR_lights_punctual`):** when an
   imported scene carries lights someone wants, or M25 publishes lights through the ABI, whichever is
   first. ADR-0056's units make the import a field-for-field copy.

@@ -530,6 +530,18 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
     every run. The court's four digests since Step 5 are `win` `4cea12a2d26686ba`, `caught`
     `448a83a95a46f1af`, `fell` `489ec244f5946487` and the soundtrack `38ee55e6ad5b65da`; its tick
     read 0.127–0.168 ms on the M5 and 0.080–0.189 ms on the i3.
+- **M39's cascaded shadows.** Run them when the shadow pass, the atlas, the lit lookup or the
+  frame uniform changes.
+  - The shadow readbacks run only under `zig build test -Drhi=metal` (and `-Drhi=vulkan` on the
+    PC). The null backend skips them, so a renderer change runs Metal's suite as well.
+  - `sandbox3d --shadow-cascades=1|2|3|4` and `--shadow-tint`, with H toggling the tint. The exit
+    report prints each cascade's range, texel and draws. At the default 16:9 window the texels are
+    0.58, 1.29, 2.80 and 8.52 cm.
+  - The yard's budget is the frame's work over the last 240 frames, from 900 frames with
+    `FOUNDRY_SANDBOX3D_KEYS=y@120`. At four cascades, p95 2.17 ms on the M5 and 1.12 ms on the
+    i3, against 16.67 ms. `render.world` costs about 0.1 ms more than with one map. The paced
+    interval's p95 sits near 17.1–17.4 ms from vsync jitter, which is M73's to time.
+  - The court shadows to 40 m. Its digests did not move.
 
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
@@ -539,7 +551,9 @@ On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31'
 and the warden's machine, `scripts/m36/windows.ps1` runs M36's, adding the crate, the strafer's
 cost and the walks' pins, `scripts/m37/windows.ps1` runs M37's: the corner, the tilted tour
 and the court's footsteps and `addMesh`, and `scripts/m38/windows.ps1` runs M38's: the yard, its
-replay and tilted stage, the moved pins and `sandbox3d-yard-test`. The Mac compares the install's
+replay and tilted stage, the moved pins and `sandbox3d-yard-test`, and `scripts/m39/windows.ps1`
+runs M39's: the tour at four cascades and at one, the yard's five budget runs and the court at
+40 m. The Mac compares the install's
 content hashes with its own. Each milestone's `-setup.ps1` clones and checks out
 unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from the scheduled
 task.

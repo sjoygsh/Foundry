@@ -517,7 +517,9 @@ selection; nothing else here changes.
 * **The last propagation's counts** head the panel, and the profiler adds `render3d`'s frame
   counts when the host passes `Sources.world3d`, which put `render3d` into `debug`'s imports.
   Since M22 those counts are draws, culled, blended, triangles and pipeline binds, followed
-  by lights, shadow draws and shadow culled (`light.md` §7.4). They are the renderer's
+  by lights, shadow draws and shadow culled (`light.md` §7.4). Since M39 the line reads
+  `3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17 shadow culled`, each fitted
+  cascade's draws in parentheses (`shadows-cascaded.md` §7). They are the renderer's
   read-only last-frame statistics; the overlay does not inspect RHI resources.
   M24 Step 5 adds skinned draws, skinned vertices and skin-budget drops, and the host-timed
   `render.skin` span. These are preparation counts, including shadow-only survivors; `debug`

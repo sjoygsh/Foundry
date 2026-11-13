@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 Step 6 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before Step 7, the close: every document names M39 complete, the ADR and design index updated, the PC's clone and scratch removed by exact name, and the tag. The PC still holds the `Foundry-m39` clone and the `m39` scratch.
+**Current handoff: M39 is complete** (2026-11-14, tag `m39`, pushed; [`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before M40's design (Shadows III: point, spot and translucent shadows in tiles of M39's atlas). The PC holds no Foundry clone.
+
+**M39 Step 7 is done (2026-11-14): M39 closed.**
+- Every document names M39 complete: `CLAUDE.md` §4.1, §4.3 and §9, ADR-0079, the roadmap, the design index and the README.
+- Dated notes in `light.md` §9 and §14, `3d.md` §4 and §11, `render3d.md` and `debug-overlay.md` §7.5.
+- §13's items went to their roadmap rows: M40 (tile allocator, per-tile bias, penumbrae), M73 (GPU timing, the Arc's interval spread), M81 (contact shadows) and M99 (caster caching).
+- `AGENTS.md` gains M39's costs and `scripts/m39`. The PC's clone and scratch, and the Mac's caches and scratch, are removed. Step 5's bar stands, since only documents changed after it.
 
 **M39 Step 6 is done (2026-11-14): Windows/Vulkan.**
 - `scripts/m39/` (from M38's) ran on the owner's i3/Arc PC from a fresh clone at `d678c14`, `-j2`, below normal, at 13% CPU before it began.
