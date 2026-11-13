@@ -1,6 +1,6 @@
 # ADR-0079: Directional shadows are cascades in one atlas
 
-**Status:** Proposed 2026-11-13
+**Status:** Accepted 2026-11-13, when the owner requested M39 Step 1
 **Date:** 2026-11-13
 **Informed by:** ADR-0048, ADR-0052, ADR-0056, `docs/design/light.md` §9 and §14, `docs/design/3d.md` §4, `docs/design/shadows-cascaded.md`
 

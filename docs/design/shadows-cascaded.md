@@ -1,6 +1,7 @@
 # Design: M39 — Shadows II: cascaded shadow maps for the directional light, in one atlas
 
-**Status:** Proposed 2026-11-13. The owner has not yet accepted §14; no step has begun.
+**Status:** Accepted 2026-11-13, when the owner asked for Step 1, with §14 as written. Each
+step's Resolution follows §14.
 **Date:** 2026-11-13
 **Baseline:** `d283098`, tag `m38`. M0–M38 are complete.
 **Decisions:**
@@ -8,7 +9,7 @@
   on measurement), ADR-0056 (photometric light units) and `light.md` §9 (M22's single shadow
   map) are the contracts this milestone extends. ADR-0013 (deterministic-friendly) and ADR-0059
   (the public 3D table, frozen at v6) constrain it.
-- [ADR-0079](../adr/0079-directional-shadows-are-cascades-in-one-atlas.md) (proposed): the one
+- [ADR-0079](../adr/0079-directional-shadows-are-cascades-in-one-atlas.md) (accepted 2026-11-13): the one
   directional caster's shadow is up to four cascades. Each is fitted and snapped as M22's single
   map was, and each is drawn into a tile of one depth atlas, not a layer of a texture array. A
   receiver picks its cascade by view depth and blends across a band at each seam. M40's spot and
@@ -526,3 +527,76 @@ Each is recommended as written.
 
 Once these are accepted nothing blocks Step 1: it is pure maths in `lighting.zig` and `Config`'s
 validation, on the code as it is.
+
+## Resolution — Step 1: splits and fits, as maths (2026-11-13)
+
+**Acceptance.** The owner accepted §14 as written by asking for Step 1. The status line here,
+ADR-0079 and `CLAUDE.md` §4.1's new "Cascaded shadows" row record it.
+
+**What `lighting.zig` now holds:**
+- `fitShadowSlice(camera, aspect, near, far, light, size)` is M22's fit over one slice. The
+  slice's frustum keeps its apex at the camera, so the sphere formula is unchanged with the
+  slice's near in place of the camera's. `fitShadow` now calls it with `camera.near` and the
+  shadowed range's end, so the old function and the slice share one body.
+- `cascadeSplits(near, far, count, lambda)` is §3's practical scheme. The logarithm is
+  `core.math.exp`'s, not a linked library's. `splits[0] = near` and `splits[count] = far` are
+  written, never computed, and entries past `count` repeat `far`.
+- `CascadeFit` holds `count`, the splits and four fits. `fitCascades` fills them, and
+  `CascadeFit.includeCaster` extends each cascade only by a caster overlapping its own box. Fits
+  past `count` repeat the last slice's, so the array is never undefined.
+
+**The renderer** (`Config`, preparation):
+- **The fields.** `shadow_cascades = 4`, `shadow_split_lambda = 0.75` and
+  `shadow_cascade_blend = 0.1` are new.
+- **The check.** `validCascades` refuses, as `InvalidConfig`:
+  - a count outside 1–4;
+  - a weight outside [0, 1], or a band outside [0, 0.5];
+  - NaN or infinity in either;
+  - an atlas side, `shadow_size` × (1 or 2), over the device's `max_texture_dimension`.
+
+  It is a pure function of the config and the limit, because the null device reports a fixed
+  16,384. The test drives it with Vulkan's guaranteed 4,096 and with 8,191 and 8,192.
+- **Preparation** fits through `fitCascades` with **one** cascade, whatever `shadow_cascades`
+  says, until Steps 2 and 3 give the atlas more tiles.
+
+**The one-cascade identity holds bit for bit.** For a turned, moved camera, distances of 6, 25,
+80 and 500 m, and maps of 1,024, 2,048 and 4,096, `fitCascades(…, 1, …)` equals `fitShadow` in
+every field and in its matrix. Every M22 and M24 shadow readback passed through the new path on
+Metal.
+
+**The trigger's measurement.** This is the yard's view: 0.1–80 m, the samples' field of view of
+π/3.2, 16:9, and 2048 texels. A test pins:
+
+| Fit | Range | Texel |
+| --- | --- | --- |
+| One map | 0.1–80 m | 8.52 cm |
+| Cascade 0 | 0.1–5.42 m | 0.58 cm |
+| Cascade 1 | 5.42–12.13 m | 1.29 cm |
+| Cascade 2 | 12.13–26.29 m | 2.80 cm |
+| Cascade 3 | 26.29–80 m | 8.52 cm |
+
+Near the player, cascades are about fifteen times finer. The last cascade is no finer than one
+map: a slice ending at the far plane has nearly the same sphere as the whole frustum, which is
+why the near cascades are where the gain is.
+
+**A sharpened test.** M22's snap test moved the camera by 1.2 texels and expected the centre to
+move by exactly one, which holds only where the centre's fraction is zero. For cascades at
+arbitrary offsets, the test instead asserts the snap property itself: after any move, each
+cascade's centre lies on a whole multiple of its own texel, and the texel does not change.
+
+**Guards broken on purpose, all four at once, each failing its own test:**
+
+| Mistake | Test that failed |
+| --- | --- |
+| The split weight swapped (λ on the uniform term) | the splits test |
+| Each slice fitted from the camera's near plane | the yard's texels |
+| Casters extending cascade 0 only | the caster test |
+| The atlas limit ignored | the configuration test |
+
+**Bar:** passed, exit 0 throughout.
+- `zig build test`: 2,990/3,000 (ten skips, six new tests), 132/132 steps.
+- `fmt`, the four checks, the four thirty-frame samples and `fdt-check` passed.
+- The tour passed with every pin, and `court-test` 87/89 (two skips).
+
+No shader, uniform or texture changed. Step 2, the uniform's second layout and the atlas at one
+cascade, is next.

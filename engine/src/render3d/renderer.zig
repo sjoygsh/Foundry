@@ -267,6 +267,14 @@ pub const Config = struct {
     shadow_bias_clamp: f32 = 0,
     /// Receiver offset in world-space shadow texels, along its geometric normal.
     shadow_normal_offset: f32 = 1.5,
+    /// Cascades for the directional caster, 1 to 4, each a `shadow_size` tile of one atlas
+    /// (`shadows-cascaded.md` §3, §4, ADR-0079). One is M22's single map. `shadow_size = 0`
+    /// still turns shadows off.
+    shadow_cascades: u32 = 4,
+    /// The practical split's weight, 0 (uniform) to 1 (logarithmic).
+    shadow_split_lambda: f32 = 0.75,
+    /// The fraction of each cascade's depth range blended with the next, 0 to 0.5.
+    shadow_cascade_blend: f32 = 0.1,
     /// Anisotropic filtering for linear, mipmapped material textures, 1 (none) to 16: a floor
     /// seen at a grazing angle stays sharp instead of blurring to its smallest level. A device
     /// that has less samples with what it has (`rhi.resource.SamplerDesc.max_anisotropy`).
@@ -591,6 +599,19 @@ fn unitValue(value: f32) bool {
     return std.math.isFinite(value) and value >= 0 and value <= 1;
 }
 
+/// The atlas's larger side: one tile, two side by side, or a 2 x 2 grid (`shadows-cascaded.md` §4).
+fn shadowAtlasSide(config: Config) u64 {
+    return @as(u64, config.shadow_size) * @as(u64, if (config.shadow_cascades == 1) 1 else 2);
+}
+
+/// The cascade fields are in range, and the atlas they imply fits the device.
+fn validCascades(config: Config, max_texture_dimension: u32) bool {
+    if (config.shadow_cascades < 1 or config.shadow_cascades > lighting.max_cascades) return false;
+    if (!(config.shadow_split_lambda >= 0 and config.shadow_split_lambda <= 1)) return false;
+    if (!(config.shadow_cascade_blend >= 0 and config.shadow_cascade_blend <= 0.5)) return false;
+    return shadowAtlasSide(config) <= max_texture_dimension;
+}
+
 fn drawConstants(world: Mat4) DrawConstants {
     const x = Vec3.init(world.cols[0][0], world.cols[0][1], world.cols[0][2]);
     const y = Vec3.init(world.cols[1][0], world.cols[1][1], world.cols[1][2]);
@@ -720,6 +741,7 @@ pub const Renderer = struct {
         for ([_]f32{ config.shadow_bias_constant, config.shadow_bias_slope, config.shadow_bias_clamp, config.shadow_normal_offset }) |value| {
             if (!std.math.isFinite(value)) return error.InvalidConfig;
         }
+        if (!validCascades(config, device.capabilities().max_texture_dimension)) return error.InvalidConfig;
         const surface_format = device.capabilities().surface_format;
 
         const frame_layout = try device.createBindGroupLayout(.{
@@ -1817,13 +1839,16 @@ pub const Renderer = struct {
         self.stats.shadow_culled = 0;
         if (self.config.shadow_size != 0) for (self.lights[0..self.light_count]) |light| {
             if (!light.casts_shadow) continue;
-            var fit = lighting.fitShadow(self.view.camera, @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height)), self.view.shadow_distance, light.world, self.config.shadow_size);
+            // One cascade until the atlas holds more (M39 Step 2 and 3): through the cascade
+            // code, it is M22's fit bit for bit.
+            var cascades = lighting.fitCascades(self.view.camera, @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height)), self.view.shadow_distance, light.world, self.config.shadow_size, 1, self.config.shadow_split_lambda);
             // Inspect ALL submissions, not the camera's visible order: off-camera
             // objects above the receiver volume can still cast into it.
             for (self.draws.items) |item| {
                 const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha != .blend and self.castsShadow(material)) fit.includeCaster(item.bounds);
+                if (item.alpha != .blend and self.castsShadow(material)) cascades.includeCaster(item.bounds);
             }
+            const fit = cascades.fits[0];
             if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
             if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
             const light_frustum = frustum_mod.Frustum.fromViewProjection(fit.matrix());
@@ -3281,6 +3306,36 @@ test "shadow configuration accepts only bounded map sizes and finite biases" {
         var renderer = try Renderer.init(testing.allocator, fx.device, .{ .shadow_size = size });
         renderer.deinit();
     }
+}
+
+test "cascade configuration accepts 1 to 4 cascades, a weight in [0, 1], a band in [0, 0.5] and an atlas the device holds" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const Case = struct { field: []const u8, value: f32 };
+    for ([_]u32{ 0, 5, 64 }) |count| {
+        try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, .{ .shadow_cascades = count }));
+    }
+    for ([_]Case{
+        .{ .field = "lambda", .value = -0.01 },             .{ .field = "lambda", .value = 1.01 },
+        .{ .field = "lambda", .value = std.math.nan(f32) }, .{ .field = "lambda", .value = std.math.inf(f32) },
+        .{ .field = "blend", .value = -0.01 },              .{ .field = "blend", .value = 0.51 },
+        .{ .field = "blend", .value = std.math.nan(f32) },  .{ .field = "blend", .value = std.math.inf(f32) },
+    }) |case| {
+        var config: Config = .{};
+        if (std.mem.eql(u8, case.field, "lambda")) config.shadow_split_lambda = case.value else config.shadow_cascade_blend = case.value;
+        try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, config));
+    }
+    for ([_]u32{ 1, 2, 3, 4 }) |count| for ([_]f32{ 0, 1 }) |lambda| for ([_]f32{ 0, 0.5 }) |blend| {
+        var renderer = try Renderer.init(testing.allocator, fx.device, .{ .shadow_cascades = count, .shadow_split_lambda = lambda, .shadow_cascade_blend = blend });
+        renderer.deinit();
+    };
+    // The atlas's side against a device's limit: Vulkan guarantees only 4,096.
+    try testing.expect(validCascades(.{ .shadow_size = 4096, .shadow_cascades = 1 }, 4096));
+    try testing.expect(validCascades(.{ .shadow_size = 2048, .shadow_cascades = 4 }, 4096));
+    try testing.expect(!validCascades(.{ .shadow_size = 4096, .shadow_cascades = 2 }, 4096));
+    try testing.expect(!validCascades(.{ .shadow_size = 4096, .shadow_cascades = 4 }, 8191));
+    try testing.expect(validCascades(.{ .shadow_size = 4096, .shadow_cascades = 4 }, 8192));
+    try testing.expect(validCascades(.{ .shadow_size = 0, .shadow_cascades = 4 }, 1));
 }
 
 test "anisotropy is configured 1 to 16 and asked for only by linear mipmapped textures" {

@@ -1,7 +1,13 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-13
-**Current handoff: M39's design is proposed** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079); awaiting the owner's acceptance of §14. Stop before Step 1. No code has changed since tag `m38`; the PC holds no Foundry clone.
+**Current handoff: M39 Step 1 is complete** ([`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079, accepted 2026-11-13). Stop before Step 2: the frame uniform's second layout (1,520 bytes) in Zig, MSL and GLSL, and the atlas at one cascade. No shader, uniform or atlas has changed yet. The PC holds no Foundry clone.
+
+**M39 Step 1 is done (2026-11-13): splits and fits, as maths.**
+- `lighting.zig` gains `fitShadowSlice`, which `fitShadow` now calls; `cascadeSplits`, the practical scheme on `core`'s log; and `CascadeFit` and `fitCascades`. One cascade equals `fitShadow` bit for bit.
+- `Config` gains `shadow_cascades = 4`, `shadow_split_lambda = 0.75` and `shadow_cascade_blend = 0.1`. `validCascades` refuses out-of-range values, NaN and an atlas over the device's limit. The renderer still fits one cascade, through the new code.
+- **The trigger, measured:** in the yard's view, one 2048 map over 80 m has 8.52 cm texels. Four cascades give 0.58, 1.29, 2.80 and 8.52 cm, split at 5.42, 12.13 and 26.29 m.
+- Four guards were broken, and each failed its test. Bar: 2,990/3,000 (ten skips), 132/132 steps; every check, sample, `fdt-check`, the tour and `court-test` (87/89) passed.
 
 **M39's design is proposed (2026-11-13): Shadows II, cascaded shadow maps.**
 - Up to four cascades for the one directional caster, at the practical split scheme (λ = 0.75). Each is M22's sphere fit over its slice, snapped to its own texels; one cascade is M22's map bit for bit.

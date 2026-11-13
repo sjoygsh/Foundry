@@ -121,8 +121,19 @@ fn projectedExtent(extent: Vec3, axis: Vec3) f32 {
 }
 
 pub fn fitShadow(camera: @import("camera.zig").Camera, aspect: f32, distance: f32, light_world: Mat4, size: u32) ShadowFit {
-    const near = camera.near;
-    const far = @max(near, @min(camera.far, distance));
+    return fitShadowSlice(camera, aspect, camera.near, shadowFar(camera, distance), light_world, size);
+}
+
+/// Where the shadowed range ends: the shadow distance, or the far plane if that is nearer.
+fn shadowFar(camera: @import("camera.zig").Camera, distance: f32) f32 {
+    return @max(camera.near, @min(camera.far, distance));
+}
+
+/// M22's fit over the slice of the frustum from `near` to `far` (`shadows-cascaded.md` §3).
+/// The sphere's axial centre and radius are those of the slice's frustum, which still has its
+/// apex at the camera, so a slice from the camera's own near plane is `fitShadow` exactly.
+pub fn fitShadowSlice(camera: @import("camera.zig").Camera, aspect: f32, near: f32, far_in: f32, light_world: Mat4, size: u32) ShadowFit {
+    const far = @max(near, far_in);
     const tangent = @tan(camera.vertical_fov * 0.5);
     const k = tangent * tangent * (1 + aspect * aspect);
     const axial_center = @min(far, (near + far) * (1 + k) * 0.5);
@@ -137,6 +148,50 @@ pub fn fitShadow(camera: @import("camera.zig").Camera, aspect: f32, distance: f3
     const texel = 2 * padded / @as(f32, @floatFromInt(size));
     const center = Vec3.init(@round(Vec3.dot(world_center, right) / texel) * texel, @round(Vec3.dot(world_center, up) / texel) * texel, Vec3.dot(world_center, toward));
     return .{ .right = right, .up = up, .toward = toward, .center = center, .radius = padded, .texel = texel, .min_z = center.z - padded, .max_z = center.z + padded };
+}
+
+pub const max_cascades = 4;
+
+/// The practical split scheme (`shadows-cascaded.md` §3): `lambda` mixes the logarithmic split,
+/// which keeps texel density constant with depth, with the uniform one. `splits[0]` is `near`
+/// and `splits[count]` is `far`, written rather than computed, so the last cascade ends exactly
+/// at the shadowed range's end. Entries past `count` repeat `far`. The logarithm is `core`'s,
+/// so the splits do not depend on a linked math library.
+pub fn cascadeSplits(near: f32, far: f32, count: u32, lambda: f32) [max_cascades + 1]f32 {
+    std.debug.assert(count >= 1 and count <= max_cascades);
+    var splits: [max_cascades + 1]f32 = @splat(far);
+    splits[0] = near;
+    const ratio = core.math.exp.log2(far / near);
+    const n: f32 = @floatFromInt(count);
+    for (1..count) |i| {
+        const t = @as(f32, @floatFromInt(i)) / n;
+        const logarithmic = near * core.math.exp.exp2(ratio * t);
+        const uniform = near + (far - near) * t;
+        splits[i] = lambda * logarithmic + (1 - lambda) * uniform;
+    }
+    return splits;
+}
+
+/// Up to four fits, cascade 0 nearest. With one cascade it is `fitShadow`, bit for bit.
+pub const CascadeFit = struct {
+    count: u32,
+    splits: [max_cascades + 1]f32,
+    fits: [max_cascades]ShadowFit,
+
+    /// Extend each cascade toward the light by a caster overlapping its own receiver box.
+    pub fn includeCaster(self: *CascadeFit, bounds: @import("frustum.zig").Bounds) void {
+        for (self.fits[0..self.count]) |*fit| fit.includeCaster(bounds);
+    }
+};
+
+pub fn fitCascades(camera: @import("camera.zig").Camera, aspect: f32, distance: f32, light_world: Mat4, size: u32, count: u32, lambda: f32) CascadeFit {
+    const splits = cascadeSplits(camera.near, shadowFar(camera, distance), count, lambda);
+    var result: CascadeFit = .{ .count = count, .splits = splits, .fits = undefined };
+    for (0..max_cascades) |i| {
+        const slice = @min(i, count - 1);
+        result.fits[i] = fitShadowSlice(camera, aspect, splits[slice], splits[slice + 1], light_world, size);
+    }
+    return result;
 }
 
 test "shadow sphere is rotation invariant and contains every truncated frustum corner" {
@@ -174,6 +229,104 @@ test "shadow snap moves by whole texels and extends only overlapping casters tow
     try std.testing.expectEqual(base.min_z, fit.min_z);
     try std.testing.expectApproxEqAbs(@as(f32, 1), fit.matrix().mulPoint(.init(0, 0, 101)).z, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0), fit.matrix().mulPoint(.init(0, 0, fit.min_z)).z, 1e-6);
+}
+
+test "cascade splits run from near to exactly far, increasing, between uniform and logarithmic" {
+    for ([_]f32{ 0, 0.25, 0.75, 1 }) |lambda| for (1..max_cascades + 1) |n| {
+        const count: u32 = @intCast(n);
+        const splits = cascadeSplits(0.1, 80, count, lambda);
+        try std.testing.expectEqual(@as(f32, 0.1), splits[0]);
+        try std.testing.expectEqual(@as(f32, 80), splits[count]);
+        for (1..count + 1) |i| try std.testing.expect(splits[i] > splits[i - 1]);
+        for (count..max_cascades + 1) |i| try std.testing.expectEqual(@as(f32, 80), splits[i]);
+    };
+    const uniform = cascadeSplits(1, 101, 4, 0);
+    const logarithmic = cascadeSplits(1, 81, 4, 1);
+    for ([_]f32{ 26, 51, 76 }, [_]f32{ 3, 9, 27 }, 1..) |u, l, i| {
+        try std.testing.expectApproxEqRel(u, uniform[i], 1e-5);
+        try std.testing.expectApproxEqRel(l, logarithmic[i], 1e-5);
+    }
+}
+
+test "one cascade is fitShadow bit for bit, and a near far plane cuts the range" {
+    const Camera = @import("camera.zig").Camera;
+    var camera: Camera = .{ .near = 0.1, .far = 80, .position = .init(3.3, 1.7, -2.1), .rotation = core.math.Quat.fromAxisAngle(.init(0.6, 0.8, 0), 0.4) };
+    const light = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?);
+    for ([_]f32{ 6, 25, 80, 500 }) |distance| for ([_]u32{ 1024, 2048, 4096 }) |size| {
+        const one = fitShadow(camera, 1.6, distance, light, size);
+        const cascades = fitCascades(camera, 1.6, distance, light, size, 1, 0.75);
+        try std.testing.expectEqual(one, cascades.fits[0]);
+        try std.testing.expectEqual(one.matrix(), cascades.fits[0].matrix());
+    };
+    camera.far = 30;
+    const cut = fitCascades(camera, 1.6, 80, light, 2048, 4, 0.75);
+    try std.testing.expectEqual(@as(f32, 30), cut.splits[4]);
+    try std.testing.expectEqual(cut.fits[3], fitShadowSlice(camera, 1.6, cut.splits[3], 30, light, 2048));
+}
+
+test "each cascade's sphere is rotation invariant, holds its slice and snaps by its own texels" {
+    const Camera = @import("camera.zig").Camera;
+    const camera: Camera = .{ .near = 0.1, .far = 80 };
+    const light = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?);
+    const base = fitCascades(camera, 1.6, 80, light, 2048, 4, 0.75);
+    for ([_]f32{ 0, 0.7, 1.6, 3.1 }) |angle| {
+        var turned = camera;
+        turned.rotation = core.math.Quat.fromAxisAngle(.up, angle);
+        const cascades = fitCascades(turned, 1.6, 80, light, 2048, 4, 0.75);
+        for (0..4) |c| {
+            const fit = cascades.fits[c];
+            try std.testing.expectEqual(base.fits[c].radius, fit.radius);
+            for ([_]f32{ cascades.splits[c], cascades.splits[c + 1] }) |depth| for ([_]f32{ -1, 1 }) |x| for ([_]f32{ -1, 1 }) |y| {
+                const height = depth * @tan(camera.vertical_fov * 0.5);
+                const p = Mat4.fromQuat(turned.rotation).mulPoint(.init(x * height * 1.6, y * height, -depth));
+                const q = fit.matrix().mulPoint(p);
+                try std.testing.expect(@abs(q.x) <= 1.00001 and @abs(q.y) <= 1.00001 and q.z >= -0.00001 and q.z <= 1.00001);
+            };
+        }
+    }
+    // Nearer cascades have finer texels, and each snaps by its own: wherever the camera is,
+    // every centre lies on a whole multiple of its own cascade's texel, and a move of a
+    // fraction of a texel moves it by at most one.
+    for (1..4) |c| try std.testing.expect(base.fits[c].texel > base.fits[c - 1].texel);
+    for ([_]f32{ 0.13, 0.31, 0.77, 1.9, 7.3 }) |step| {
+        var moved = camera;
+        moved.position = .init(step * 0.01, step * 0.003, -step * 0.007);
+        const cascades = fitCascades(moved, 1.6, 80, light, 2048, 4, 0.75);
+        for (cascades.fits[0..4], base.fits[0..4]) |fit, original| {
+            try std.testing.expectEqual(original.texel, fit.texel);
+            for ([_]f32{ fit.center.x, fit.center.y }) |coordinate| {
+                const texels = coordinate / fit.texel;
+                try std.testing.expectApproxEqAbs(@round(texels), texels, 1e-3);
+            }
+        }
+    }
+}
+
+test "a caster extends only the cascades whose box it overlaps" {
+    const Camera = @import("camera.zig").Camera;
+    const camera: Camera = .{ .near = 0.1, .far = 80 };
+    var cascades = fitCascades(camera, 1.6, 80, .identity, 2048, 4, 0.75);
+    const before = cascades;
+    // The light looks down -Z, so +Z is toward it; a box above the nearest slice only.
+    cascades.includeCaster(.{ .center = .init(0, 0, 50), .extent = .init(0.5, 0.5, 0.5) });
+    try std.testing.expectEqual(@as(f32, 50.5), cascades.fits[0].max_z);
+    for (0..4) |c| try std.testing.expectEqual(before.fits[c].min_z, cascades.fits[c].min_z);
+    // Far to the side of every slice but the last, wide one.
+    cascades = before;
+    cascades.includeCaster(.{ .center = .init(30, 0, 100), .extent = .one });
+    for (0..3) |c| try std.testing.expectEqual(before.fits[c].max_z, cascades.fits[c].max_z);
+    try std.testing.expectEqual(@as(f32, 101), cascades.fits[3].max_z);
+}
+
+test "the yard's texels: one 2048 map over 80 m against four cascades (the M39 trigger)" {
+    const Camera = @import("camera.zig").Camera;
+    const camera: Camera = .{ .near = 0.1, .far = 80, .vertical_fov = std.math.pi / 3.2 };
+    const light = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?);
+    const one = fitShadow(camera, 16.0 / 9.0, 80, light, 2048);
+    const four = fitCascades(camera, 16.0 / 9.0, 80, light, 2048, 4, 0.75);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0852), one.texel, 0.0005);
+    for ([_]f32{ 0.0058, 0.0129, 0.0280, 0.0852 }, four.fits) |want, fit| try std.testing.expectApproxEqAbs(want, fit.texel, 0.0005);
+    for ([_]f32{ 5.42, 12.13, 26.29 }, four.splits[1..4]) |want, split| try std.testing.expectApproxEqAbs(want, split, 0.01);
 }
 
 pub fn attenuation(distance: f32, range: f32) f32 {

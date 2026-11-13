@@ -940,7 +940,7 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   sky. It is M41's.
 - **Point and spot shadows, cascades:** `3d.md` §11; the trigger is a scene whose single map shows
   measured aliasing at `shadow_distance` a game needs. Cascades are M39's:
-  [`shadows-cascaded.md`](shadows-cascaded.md) (proposed 2026-11-13).
+  [`shadows-cascaded.md`](shadows-cascaded.md) (accepted 2026-11-13).
 - **An engine `foundry:light` record, and glTF light import (`KHR_lights_punctual`):** when an
   imported scene carries lights someone wants, or M25 publishes lights through the ABI, whichever is
   first. ADR-0056's units make the import a field-for-field copy.
