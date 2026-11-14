@@ -19,6 +19,8 @@ pub const BeaconSettings = struct {
     light_range: f32,
     /// Metres above `position` at which the lit beacon's light stands.
     light_height: f32,
+    /// Whether the lit beacon's light casts point shadows (`shadows-local.md` §12).
+    light_casts_shadow: bool,
     /// The Use ray's target: a box of these half extents standing on `position`.
     use_half: Vec3,
 
@@ -50,6 +52,8 @@ pub const BeaconSettings = struct {
         const intensity = try bounded(light_fields, "intensity", 0.01, 10000);
         const range = try bounded(light_fields, "range", 0.1, 100);
         const height = try bounded(light_fields, "height", 0, 10);
+        // The schema defaults it, so a record without it is not one the compiler wrote.
+        const casts_shadow = (light_fields.boolAt(try index(light_fields, "casts_shadow")) catch return error.InvalidBeacon) orelse return error.InvalidBeacon;
         return .{
             .model = model,
             .sound = sound,
@@ -58,6 +62,7 @@ pub const BeaconSettings = struct {
             .light_intensity = intensity,
             .light_range = range,
             .light_height = height,
+            .light_casts_shadow = casts_shadow,
             .use_half = half,
         };
     }

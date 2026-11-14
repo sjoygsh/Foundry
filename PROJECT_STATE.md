@@ -1,7 +1,17 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M40 Step 7 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 8: the court's beacon record gains `light_casts_shadow`, `court-test`'s four digests hold, a relocated run of each ending, and the owner plays it. None of that exists yet. The PC holds no Foundry clone.
+**Current handoff: M40 Step 8 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 9: Windows/Vulkan on the Arc PC, with the room and the court windowed and relocated, validation clean, and the room's budget on the i3/Arc. The PC holds no Foundry clone.
+
+**M40 Step 8 is done (2026-11-15): the court.**
+- The beacon record's light gains `casts_shadow bool (default true)`, read into `BeaconSettings.light_casts_shadow` and submitted with each lit beacon's point light. The exit report logs the most beacon lights casting in one frame.
+- `court-test` 87/89 in Debug and 89/89 at ReleaseSafe; the four digests are M39's.
+- Relocated, read-only ReleaseSafe installs, windowed, baseline with no beacon casting → M40. Pacing is unchanged:
+  - `win` (3 beacons, 18 face tiles): frame work p95 1.330 → 1.350 ms;
+  - `caught` and `fell` light no beacon, so they draw the same frames both ways.
+- The baseline's first `win` run had 41 music underruns on its first, cold launch; rerun clean.
+- The owner played it: won at tick 1701, all three casting, frame work p95 2.52 ms, all 11 music starts on time. **"All good."**
+- One guard broken, failing. Bar: null 3,024/3,034 (ten skips), Metal 3,035/3,056 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 7 is done (2026-11-15): the room, every light casting, on Metal.**
 - Content:

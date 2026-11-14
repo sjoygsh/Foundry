@@ -81,7 +81,9 @@ rules court:rules.main {
     exit_max { x 1.2 y 2.5 z -8.0 }
 }
 
-# A beacon is lit by a Use ray against `use_half`, a box standing on `position`.
+# A beacon is lit by a Use ray against `use_half`, a box standing on `position`. Its light casts
+# point shadows of the court once lit, unless `casts_shadow` says otherwise (M40,
+# `shadows-local.md` §12).
 @schema beacon {
     model id
     sound id
@@ -92,6 +94,7 @@ rules court:rules.main {
         intensity f32
         range f32
         height f32
+        casts_shadow bool (default true)
     }
 }
 beacon court:beacon.open {

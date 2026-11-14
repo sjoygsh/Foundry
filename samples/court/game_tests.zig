@@ -663,6 +663,13 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
     for ([_]f32{ -0.1, 11 }) |v| try expectValueRefused(S.beacon, &.{ "light", "height" }, v, S.Beacon, error.InvalidBeacon);
     for ([_]f32{ -0.1, 101 }) |v| try expectValueRefused(S.beacon, &.{ "light", "color", "r" }, v, S.Beacon, error.InvalidBeacon);
     try expectValueRefused(S.beacon, &.{ "position", "y" }, 1e30, S.Beacon, error.InvalidBeacon);
+    // M40: a lit beacon casts by the schema's default, and a record may say it does not.
+    try testing.expect((try beacon_mod.BeaconSettings.read(S.beacon)).light_casts_shadow);
+    const light = (try S.beacon.nestedAt(fieldIndex(S.beacon, "light"))).?;
+    const flag = &@constCast(light.block)[fieldOffset(light.fields, fieldIndex(light, "casts_shadow"))];
+    flag.* = 0;
+    try testing.expect(!(try beacon_mod.BeaconSettings.read(S.beacon)).light_casts_shadow);
+    flag.* = 1;
 
     for ([_]f32{ 0, -1, 61 }) |v| try expectValueRefused(S.gate, &.{"travel_time"}, v, S.Gate, error.InvalidGate);
     for ([_]f32{ 0, -1, 21 }) |v| for ([_][]const u8{ "x", "y", "z" }) |axis|

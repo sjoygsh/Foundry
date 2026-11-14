@@ -1258,3 +1258,70 @@ first seen when the owner plays at Step 8 or watches Step 9's Windows run.
   them (`sandbox3d-test` 75/76, one skip);
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.
+
+## Resolution — Step 8: the court (2026-11-15)
+
+**What the step pinned:**
+- **The beacon record's light gains `casts_shadow bool (default true)`.** It sits beside the
+  light's colour, intensity, range and height, as `light.casts_shadow`. §12 named it
+  `light_casts_shadow`, which is the Zig field's name in `BeaconSettings`, where the light's
+  other values are flattened as `light_color` and the rest. The three beacons rely on the
+  default.
+- **`BeaconSettings.read`** refuses a record without the flag, as it refuses any other missing
+  field. The schema defaults it, so only a record the compiler did not write lacks it. The
+  presence test therefore covers it with the others.
+- **`main.zig`** submits each lit beacon's point light with the flag. No rule, tick or
+  simulation changed.
+- **The exit report** logs, over the run, the most beacon lights casting in one frame, their
+  tiles, their local draws and drops. A frame's stats show only that frame, and the court's
+  last frame is usually a menu.
+
+**The digests hold.** `court-test` passed 87 of 89 in Debug (two skips) and 89 of 89 at
+ReleaseSafe, where the ten-minute soundtrack runs. The four digests are M39's: `win`
+`4cea12a2d26686ba`, `caught` `448a83a95a46f1af`, `fell` `489ec244f5946487` and `soundtrack`
+`38ee55e6ad5b65da`.
+
+**Frame pacing is unchanged.** Two relocated, read-only ReleaseSafe installs were built on the
+Mac:
+- **M40:** this tree;
+- **Baseline:** the same tree with the schema's default set to `false`, so no beacon casts.
+
+Each scripted play ran windowed from both, with preferences redirected to scratch:
+
+| Play | Ending, both installs | Ticks matched | Beacons casting (tiles) | Frame work p95, baseline → M40 | Whole tick p95, baseline → M40 |
+| --- | --- | --- | --- | --- | --- |
+| `win` | won at 1219 and 2436 | 2,443 | 3 (18 faces beside 4 cascades) | 1.330 → 1.350 ms | 0.254 → 0.246 ms |
+| `caught` | caught at 90 | 92 | 0 | 2.388 → 3.494 ms | 0.195 → 0.220 ms |
+| `fell` | fell at 186 | 188 | 0 | 1.280 → 1.322 ms | 0.190 → 0.248 ms |
+
+- **Only `win` lights beacons,** so it is the comparison that measures their shadows: 20 µs at
+  p95.
+- **`caught` and `fell` draw the same frames in both installs.** Their differences are the
+  noise of 90 and 186 frames, the warden's first frames among them.
+- **No frame was skipped.** The court's files under Application Support were fingerprinted
+  before and after, and were unchanged.
+
+**The first baseline `win` failed its music check,** with 41 underruns. It was the first launch
+of the first install, and it casts nothing. Rerun, it had no underrun, with 15 of 17 starts on
+their frame and two pending at the quit, as M40's run had. The table uses the rerun.
+
+**The owner's play.** The owner played the M40 install by hand:
+- won at tick 1701, all three beacons lit and casting into 22 tiles, with nothing dropped;
+- frame work p95 2.515 ms over 1,906 frames;
+- whole tick p95 0.220 ms;
+- the warden's skinning p95 0.108 ms;
+- audio p95 0.032 ms;
+- all 11 music starts on their frame, no underrun, and no frame skipped.
+
+**Their verdict: "All good."** This is the first time anyone has looked at local shadows in a
+real scene. The face offset that Step 4 left unproved showed no acne the owner remarked on.
+
+**Guard broken on purpose:** a reader that ignores the content's flag and always casts failed
+the court's refusal test, which turns the flag off.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,024/3,034 (ten skips) and Metal 3,035/3,056 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks;
+- the court's content changed, so `zig build dist -Dapp=court` staged it on macOS, ReleaseSafe
+  on Metal, exit 0.

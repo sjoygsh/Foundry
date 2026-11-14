@@ -443,6 +443,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var quit_by_menu = false;
     var captured_for: ?game_mod.Phase = null;
     var skin_dropped: u32 = 0;
+    // M40 (`shadows-local.md` §12): the most beacon lights casting in one frame, and their tiles.
+    var local_peak: render3d.Stats = .{};
 
     log.info("WASD walk, Space jump, E light a beacon, mouse or arrows look, Escape pause; menus: arrows, Enter, Escape or the pointer", .{});
     log.info("content: '{s}', exposure {d:.1}, warden speed {d:.2}; {d} selected package(s)", .{
@@ -586,6 +588,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             break :blk false;
         };
         skin_dropped += renderer.frameStats().skin_budget_dropped;
+        if (renderer.frameStats().shadow_local_lights > local_peak.shadow_local_lights) local_peak = renderer.frameStats();
         {
             // Criterion 4's measure (music.md §1), and mixing.md's criterion 6: the main
             // thread's audio work, now with the listener, each spatial voice's ray and its
@@ -637,6 +640,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         sounds.requested, sounds.played, sounds.dropped, commands_dropped, game.events_dropped,
     });
     log.info("footsteps: {d} by their surface, {d} by the sound set's own", .{ sounds.surfaced, sounds.unsurfaced });
+    log.info("local shadows: at most {d} beacon lights casting, {d} tiles, {d} local draws, {d} dropped", .{ local_peak.shadow_local_lights, local_peak.shadow_tiles, local_peak.shadow_local_draws, local_peak.shadow_lights_dropped });
     soundtrack.report("at exit");
     if (script_driver) |d| {
         log.info("replay: {d} tick hashes matched a fresh simulation", .{replay_ticks});
@@ -733,6 +737,7 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
                 .color = b.settings.light_color,
                 .intensity = b.settings.light_intensity,
                 .range = b.settings.light_range,
+                .casts_shadow = b.settings.light_casts_shadow,
                 .world = core.math.Mat4.translation(b.lightPosition()),
             });
         }
