@@ -11,11 +11,11 @@ layout(set = 0, binding = 0, std140) uniform Frame {
     layout(offset=96) uvec4 counts;
     layout(offset=112) vec4 camera_forward;
     layout(offset=128) vec4 shadow_splits;
-    layout(offset=144) vec4 shadow_offsets;
-    layout(offset=160) vec4 shadow_parameters;
-    layout(offset=176) vec4 shadow_tiles[4];
-    layout(offset=240, column_major) mat4 shadow_matrices[4];
-    layout(offset=496) PackedLight lights[16];
+    layout(offset=144) vec4 shadow_parameters;
+    layout(offset=160) vec4 shadow_tiles[32];
+    layout(offset=672) vec4 shadow_tile_parameters[32];
+    layout(offset=1184, column_major) mat4 shadow_matrices[32];
+    layout(offset=3232) PackedLight lights[16];
 } frame;
 layout(push_constant, std430) uniform Constants {
     layout(offset=0, column_major) mat4 world;

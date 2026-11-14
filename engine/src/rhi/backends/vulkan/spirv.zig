@@ -356,8 +356,8 @@ fn requireMeshVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
 fn requireLightFrame(bytes: []const u8) Error!void {
     try requireFrameMatrix(bytes);
     const frame = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
-    // `lighting.FrameUniform`'s second layout (`shadows-cascaded.md` §6).
-    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 128 }, .{ 6, 144 }, .{ 7, 160 }, .{ 8, 176 }, .{ 9, 240 }, .{ 10, 496 } }) |field|
+    // `lighting.FrameUniform`'s third layout (`shadows-local.md` §8).
+    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 128 }, .{ 6, 144 }, .{ 7, 160 }, .{ 8, 672 }, .{ 9, 1184 }, .{ 10, 3232 } }) |field|
         try require(try hasMemberDecoration(bytes, frame, field[0], Decoration.offset, field[1]));
     const light = try namedId(bytes, "PackedLight") orelse return error.DecorationMismatch;
     inline for (0..4) |member|

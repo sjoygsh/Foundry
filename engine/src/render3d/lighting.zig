@@ -28,27 +28,35 @@ pub const PackedLight = extern struct {
     cone_shadow: [4]f32,
 };
 
-/// The second layout (`shadows-cascaded.md` §6), 1,520 bytes. Every shader that declares
-/// `Frame` declares all of it and asserts the size.
+/// Tiles a frame's shadows may use, cascades included (`shadows-local.md` §5, §8).
+pub const max_shadow_tiles = 32;
+
+/// The third layout (`shadows-local.md` §8), 4,256 bytes. Every shader that declares `Frame`
+/// declares all of it and asserts the size.
 pub const FrameUniform = extern struct {
     view_projection: Mat4,
     camera_exposure: [4]f32,
     ambient: [4]f32,
-    /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: unused.
+    /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: the
+    /// translucent switch (`shadows-local.md` §9).
     counts: [4]u32,
     /// xyz: the camera's forward axis, for view depth; w: the blend band's fraction.
     camera_forward: [4]f32,
     /// Each cascade's far split, in view depth (metres).
     shadow_splits: [4]f32,
-    /// Each cascade's receiver offset along its normal, in metres.
-    shadow_offsets: [4]f32,
     /// xy: the reciprocal atlas width and height (the atlas of two cascades is not square);
     /// zw: the clamp's inset, two texels in U and V, keeping every tap inside its tile.
     shadow_parameters: [4]f32,
-    /// Each cascade's tile in atlas UV: origin xy, far corner zw.
-    shadow_tiles: [max_cascades][4]f32,
-    /// Each cascade's light matrix with its tile folded in: world to atlas UV and depth.
-    shadow_matrices: [max_cascades]Mat4,
+    /// Each tile in atlas UV: origin xy, far corner zw. The directional light's cascades come
+    /// first, from 0.
+    shadow_tiles: [max_shadow_tiles][4]f32,
+    /// x: the normal offset, metres for a cascade, metres per metre of axial depth for a
+    /// perspective tile; y: 0 orthographic, 1 perspective; z: the penumbra scale (§10); w: the
+    /// translucent depth bias (§9).
+    shadow_tile_parameters: [max_shadow_tiles][4]f32,
+    /// Each tile's light matrix with its tile folded in: world to atlas UV and depth, divided by
+    /// w for a perspective tile.
+    shadow_matrices: [max_shadow_tiles]Mat4,
     lights: [max_lights]PackedLight,
 };
 
@@ -86,7 +94,9 @@ pub fn packLight(light: Light) PackedLight {
         .position_kind = .{ light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2], @floatFromInt(@intFromEnum(light.kind)) },
         .direction_range = .{ axis.x, axis.y, axis.z, light.range },
         .color_intensity = .{ light.color[0], light.color[1], light.color[2], light.intensity },
-        .cone_shadow = .{ @cos(light.inner_cone), @cos(light.outer_cone), @floatFromInt(@intFromBool(light.casts_shadow)), 0 },
+        // z and w, the light's first tile plus one and its tile count, are the renderer's, once
+        // it has placed the frame's tiles; until then the light casts nothing.
+        .cone_shadow = .{ @cos(light.inner_cone), @cos(light.outer_cone), 0, 0 },
     };
 }
 
@@ -623,8 +633,8 @@ pub fn toneMap(input: [3]f32) [3]f32 {
 test "frame packing pins every uniform offset and light stride" {
     const t = std.testing;
     try t.expectEqual(@as(usize, 64), @sizeOf(PackedLight));
-    try t.expectEqual(@as(usize, 1520), @sizeOf(FrameUniform));
-    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "camera_forward", 112 }, .{ "shadow_splits", 128 }, .{ "shadow_offsets", 144 }, .{ "shadow_parameters", 160 }, .{ "shadow_tiles", 176 }, .{ "shadow_matrices", 240 }, .{ "lights", 496 } }) |field|
+    try t.expectEqual(@as(usize, 4256), @sizeOf(FrameUniform));
+    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "camera_forward", 112 }, .{ "shadow_splits", 128 }, .{ "shadow_parameters", 144 }, .{ "shadow_tiles", 160 }, .{ "shadow_tile_parameters", 672 }, .{ "shadow_matrices", 1184 }, .{ "lights", 3232 } }) |field|
         try t.expectEqual(@as(usize, field[1]), @offsetOf(FrameUniform, field[0]));
     const light: Light = .{ .kind = .spot, .intensity = 70, .range = 9, .world = Mat4.translation(.init(3, 4, 5)) };
     const frame = packFrame(.identity, .init(1, 2, 3), null, .{ 4, 5, 6 }, &.{light});

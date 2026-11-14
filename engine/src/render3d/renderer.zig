@@ -308,6 +308,19 @@ pub const FrameView = struct {
     shadow_distance: f32 = 25,
     /// Colour each receiver by the cascade it reads (`shadows-cascaded.md` §5), a debug view.
     shadow_tint: bool = false,
+    /// Point and spot lights cast (`shadows-local.md` §11); false draws M39's frame, so a
+    /// sample can compare.
+    local_shadows: bool = true,
+};
+
+/// One granted tile, as a host reports it (`shadows-local.md` §11).
+pub const ShadowTile = struct {
+    /// The light's submission index.
+    light: u32,
+    kind: enum { cascade, spot, face },
+    /// The cascade's index, or the face's (+X, -X, +Y, -Y, +Z, -Z), or 0 for a spot.
+    index: u32,
+    tile: shadow_atlas.Tile,
 };
 
 pub const Mesh = opaque {};
@@ -329,13 +342,24 @@ pub const Stats = struct {
     culled: u32 = 0,
     blended: u32 = 0,
     lights: u32 = 0,
-    /// Every caster draw into the atlas: the sum of `shadow_cascade_draws`.
+    /// Every caster draw into the atlas: the cascades', the local tiles' and the translucent.
     shadow_draws: u32 = 0,
-    /// Casters culled, once for each cascade that culled them.
+    /// Casters culled, once for each tile that culled them.
     shadow_culled: u32 = 0,
     /// Cascades fitted this frame, 0 when nothing casts.
     shadow_cascades: u32 = 0,
     shadow_cascade_draws: [lighting.max_cascades]u32 = @splat(0),
+    /// Tiles granted this frame, cascades included (`shadows-local.md` §11).
+    shadow_tiles: u32 = 0,
+    /// Point and spot lights granted tiles, those the camera cannot see, and those the atlas or
+    /// the tile limit had no room for (§5).
+    shadow_local_lights: u32 = 0,
+    shadow_lights_unseen: u32 = 0,
+    shadow_lights_dropped: u32 = 0,
+    /// Caster draws into local tiles, and translucent caster draws (§9); both are in
+    /// `shadow_draws`.
+    shadow_local_draws: u32 = 0,
+    shadow_translucent_draws: u32 = 0,
     skinned_draws: u32 = 0,
     skinned_vertices: u32 = 0,
     skin_budget_dropped: u32 = 0,
@@ -693,8 +717,8 @@ const DrawItem = struct {
     skin_offset: ?u32 = null,
     kept: bool = false,
     budget_dropped: bool = false,
-    /// The cascades this caster is drawn into, bit `i` for cascade `i`.
-    shadow_cascades: u4 = 0,
+    /// The tiles this caster is drawn into, bit `t` for tile `t`, cascades first.
+    shadow_tiles: u32 = 0,
 };
 
 pub const Renderer = struct {
@@ -722,6 +746,13 @@ pub const Renderer = struct {
     shadow_atlas: shadow_atlas.Atlas,
     shadow_tiles: [shadow_atlas.max_tiles]shadow_atlas.Tile = undefined,
     shadow_tile_count: u32 = 0,
+    /// Each tile's light matrix to clip space, and what it belongs to.
+    shadow_clip: [shadow_atlas.max_tiles]Mat4 = undefined,
+    shadow_tile_info: [shadow_atlas.max_tiles]ShadowTile = undefined,
+    /// Each tile's normal offset and kind, as the uniform's `shadow_tile_parameters` x and y.
+    shadow_tile_offset: [shadow_atlas.max_tiles][2]f32 = undefined,
+    /// Each light's first tile and count; count 0 casts nothing this frame.
+    light_tiles: [max_lights][2]u32 = undefined,
     shadow_order: std.ArrayList(u32) = .empty,
     tone_layout: rhi.BindGroupLayoutHandle,
     tone_pipeline_layout: rhi.PipelineLayoutHandle,
@@ -1822,11 +1853,17 @@ pub const Renderer = struct {
     pub fn addLight(self: *Self, light: Light) Error!void {
         if (!self.recording or self.planned_draws != null or self.frame != null or self.skin_frame != null) return error.NotRecording;
         if (!lighting.valid(light)) return error.InvalidLight;
-        if (light.casts_shadow and (light.kind != .directional or self.has_shadow_caster)) return error.InvalidShadowCaster;
+        // One casting directional light; casting spots to `max_spot_cone`. Point lights and wider
+        // spots cast through six faces, which Step 4 of `shadows-local.md` adds.
+        if (light.casts_shadow) switch (light.kind) {
+            .directional => if (self.has_shadow_caster) return error.InvalidShadowCaster,
+            .spot => if (light.outer_cone > shadow_atlas.max_spot_cone) return error.InvalidShadowCaster,
+            .point => return error.InvalidShadowCaster,
+        };
         if (self.light_count == max_lights) return error.TooManyLights;
         self.lights[self.light_count] = light;
         self.light_count += 1;
-        self.has_shadow_caster = self.has_shadow_caster or light.casts_shadow;
+        self.has_shadow_caster = self.has_shadow_caster or (light.casts_shadow and light.kind == .directional);
         self.stats.lights = self.light_count;
         self.planned_draws = null;
     }
@@ -1905,45 +1942,35 @@ pub const Renderer = struct {
         self.shadow_order.clearRetainingCapacity();
         self.stats.shadow_culled = 0;
         self.stats.shadow_cascades = 0;
+        self.stats.shadow_tiles = 0;
+        self.stats.shadow_local_lights = 0;
+        self.stats.shadow_lights_unseen = 0;
+        self.stats.shadow_lights_dropped = 0;
         self.shadow_atlas.reset();
         self.shadow_tile_count = 0;
-        if (self.config.shadow_size != 0) for (self.lights[0..self.light_count]) |light| {
-            if (!light.casts_shadow) continue;
-            var cascades = lighting.fitCascades(self.view.camera, @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height)), self.view.shadow_distance, light.world, self.config.shadow_size, self.config.shadow_cascades, self.config.shadow_split_lambda);
-            // Inspect ALL submissions, not the camera's visible order: off-camera
-            // objects above the receiver volume can still cast into it.
-            for (self.draws.items) |item| {
-                const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha != .blend and self.castsShadow(material)) cascades.includeCaster(item.bounds);
-            }
-            var light_frusta: [lighting.max_cascades]frustum_mod.Frustum = undefined;
-            for (cascades.fits[0..cascades.count], 0..) |fit, c| {
-                if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
-                if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
-                light_frusta[c] = .fromViewProjection(fit.matrix());
-            }
-            // Each cascade's casters are culled against its own light box (§4); a caster in two
-            // cascades is drawn into both, and one culled from two is counted twice.
+        for (&self.light_tiles) |*t| t.* = .{ 0, 0 };
+        if (self.config.shadow_size != 0) try self.placeShadowTiles();
+        if (self.shadow_tile_count != 0) {
+            var light_frusta: [shadow_atlas.max_tiles]frustum_mod.Frustum = undefined;
+            for (self.shadow_clip[0..self.shadow_tile_count], 0..) |clip, t| light_frusta[t] = .fromViewProjection(clip);
+            // Each tile's casters are culled against its own frustum (`shadows-cascaded.md` §4,
+            // `shadows-local.md` §6); a caster in two tiles is drawn into both, and one culled
+            // from two is counted twice.
             try self.shadow_order.ensureTotalCapacity(self.gpa, self.draws.items.len);
             for (self.draws.items, 0..) |*item, i| {
                 const material = self.materials.getConst(item.material) orelse continue;
                 if (item.alpha == .blend or !self.castsShadow(material)) continue;
-                var mask: u4 = 0;
-                for (light_frusta[0..cascades.count], 0..) |light_frustum, c| {
+                var mask: u32 = 0;
+                for (light_frusta[0..self.shadow_tile_count], 0..) |light_frustum, t| {
                     if (self.config.cull and light_frustum.excludes(item.bounds)) {
                         self.stats.shadow_culled += 1;
-                    } else mask |= @as(u4, 1) << @intCast(c);
+                    } else mask |= @as(u32, 1) << @intCast(t);
                 }
-                item.shadow_cascades = mask;
+                item.shadow_tiles = mask;
                 if (mask != 0) self.shadow_order.appendAssumeCapacity(@intCast(i));
             }
-            // The cascades are the allocator's first requests, so on an empty page 0 they are
-            // granted M39's tiles: column `c mod 2`, row `c / 2` (`shadows-local.md` §4).
-            for (0..cascades.count) |c| self.shadow_tiles[c] = self.shadow_atlas.allocate(self.config.shadow_size).?;
-            self.shadow_tile_count = cascades.count;
-            self.shadow_fit = cascades;
-            self.stats.shadow_cascades = cascades.count;
-        };
+            self.stats.shadow_tiles = self.shadow_tile_count;
+        }
         for (self.order.items) |i| self.draws.items[i].kept = true;
         for (self.shadow_order.items) |i| self.draws.items[i].kept = true;
         self.stats.skinned_draws = 0;
@@ -2051,7 +2078,7 @@ pub const Renderer = struct {
         try self.prepareSkin(cmd, frame);
         try self.ensureTargets(self.view.target_size);
         for (self.order.items) |draw_index| _ = try self.ensurePipeline(self.draws.items[draw_index].pipeline_key);
-        if (self.shadow_fit != null) {
+        if (self.shadow_tile_count != 0) {
             try self.ensureShadowResources();
             for (self.shadow_order.items) |i| _ = try self.ensurePipeline(self.shadowKey(self.draws.items[i]));
         }
@@ -2059,21 +2086,28 @@ pub const Renderer = struct {
         const slot = self.slots[frame.slot];
         const bytes = try self.device.mapBuffer(slot.uniform);
         var uniform = lighting.packFrame(self.view_projection, self.view.camera.position, self.view.exposure_ev100, self.view.ambient, self.lights[0..self.light_count]);
-        if (self.shadow_fit) |cascades| {
+        if (self.shadow_tile_count != 0) {
             const atlas = shadowAtlasExtent(self.config);
             const forward = Mat4.fromQuat(self.view.camera.rotation).mulPoint(Vec3.forward);
-            uniform.counts[1] = cascades.count;
             uniform.counts[2] = @intFromBool(self.view.shadow_tint);
             uniform.camera_forward = .{ forward.x, forward.y, forward.z, self.config.shadow_cascade_blend };
             const texel_u = 1 / @as(f32, @floatFromInt(atlas.width));
             const texel_v = 1 / @as(f32, @floatFromInt(atlas.height));
             uniform.shadow_parameters = .{ texel_u, texel_v, 2 * texel_u, 2 * texel_v };
-            for (cascades.fits[0..cascades.count], 0..) |fit, c| {
-                const rect = shadowTileRect(self.config, self.shadow_tiles[c]);
-                uniform.shadow_splits[c] = cascades.splits[c + 1];
-                uniform.shadow_offsets[c] = self.config.shadow_normal_offset * fit.texel;
-                uniform.shadow_tiles[c] = rect;
-                uniform.shadow_matrices[c] = lighting.tileMatrix(fit.matrix(), rect);
+            if (self.shadow_fit) |cascades| {
+                uniform.counts[1] = cascades.count;
+                for (0..cascades.count) |c| uniform.shadow_splits[c] = cascades.splits[c + 1];
+            }
+            for (0..self.shadow_tile_count) |t| {
+                const rect = shadowTileRect(self.config, self.shadow_tiles[t]);
+                uniform.shadow_tiles[t] = rect;
+                uniform.shadow_tile_parameters[t] = .{ self.shadow_tile_offset[t][0], self.shadow_tile_offset[t][1], 0, 0 };
+                uniform.shadow_matrices[t] = lighting.tileMatrix(self.shadow_clip[t], rect);
+            }
+            for (self.light_tiles[0..self.light_count], 0..) |tiles, li| {
+                if (tiles[1] == 0) continue;
+                uniform.lights[li].cone_shadow[2] = @floatFromInt(tiles[0] + 1);
+                uniform.lights[li].cone_shadow[3] = @floatFromInt(tiles[1]);
             }
         }
         @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
@@ -2126,7 +2160,7 @@ pub const Renderer = struct {
             self.last_stats = self.stats;
             self.freeDoomed();
         }
-        if (self.shadow_fit != null) {
+        if (self.shadow_tile_count != 0) {
             const shadow_pass = try cmd.beginRenderPass(.{
                 .label = "render3d shadow",
                 .color = &.{},
@@ -2177,7 +2211,7 @@ pub const Renderer = struct {
             if (!pipeline.eql(bound_pipeline)) {
                 pass.setPipeline(pipeline);
                 const slot = self.slots[frame.slot];
-                pass.setBindGroup(0, if (self.shadow_fit == null and !slot.shadow_group.isNone()) slot.shadow_group else slot.group);
+                pass.setBindGroup(0, if (self.shadow_tile_count == 0 and !slot.shadow_group.isNone()) slot.shadow_group else slot.group);
                 bound_pipeline = pipeline;
                 self.stats.pipeline_binds += 1;
             }
@@ -2251,29 +2285,89 @@ pub const Renderer = struct {
         self.shadow_target = target;
     }
 
+    /// This frame's tiles (`shadows-local.md` §4, §5): the directional light's cascades first,
+    /// on M39's tiles, then each seen casting spot, nearest first, sized by its coverage.
+    fn placeShadowTiles(self: *Self) Error!void {
+        const aspect = @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height));
+        for (self.lights[0..self.light_count], 0..) |light, li| {
+            if (!light.casts_shadow or light.kind != .directional) continue;
+            var cascades = lighting.fitCascades(self.view.camera, aspect, self.view.shadow_distance, light.world, self.config.shadow_size, self.config.shadow_cascades, self.config.shadow_split_lambda);
+            // Inspect ALL submissions, not the camera's visible order: off-camera
+            // objects above the receiver volume can still cast into it.
+            for (self.draws.items) |item| {
+                const material = self.materials.getConst(item.material) orelse continue;
+                if (item.alpha != .blend and self.castsShadow(material)) cascades.includeCaster(item.bounds);
+            }
+            for (cascades.fits[0..cascades.count], 0..) |fit, c| {
+                if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
+                if (!std.math.isFinite(self.config.shadow_normal_offset * fit.texel)) return error.InvalidConfig;
+                // The cascades are the allocator's first requests, so on an empty page 0 they
+                // are granted M39's tiles: column `c mod 2`, row `c / 2`.
+                self.shadow_tiles[c] = self.shadow_atlas.allocate(self.config.shadow_size).?;
+                self.shadow_clip[c] = fit.matrix();
+                self.shadow_tile_offset[c] = .{ self.config.shadow_normal_offset * fit.texel, 0 };
+                self.shadow_tile_info[c] = .{ .light = @intCast(li), .kind = .cascade, .index = @intCast(c), .tile = self.shadow_tiles[c] };
+            }
+            self.shadow_tile_count = cascades.count;
+            self.light_tiles[li] = .{ 0, cascades.count };
+            self.shadow_fit = cascades;
+            self.stats.shadow_cascades = cascades.count;
+        }
+        if (!self.view.local_shadows) return;
+        const view_frustum: frustum_mod.Frustum = .fromViewProjection(self.view_projection);
+        const limits: shadow_atlas.Limits = .{ .min = self.config.shadow_local_min, .max = self.config.shadow_local_max };
+        var requests: [max_lights]shadow_atlas.Request = undefined;
+        var n: usize = 0;
+        for (self.lights[0..self.light_count], 0..) |light, li| {
+            if (!light.casts_shadow or light.kind == .directional) continue;
+            if (shadow_atlas.requestFor(light, @intCast(li), self.view.camera, view_frustum, self.view.target_size.width, self.view.target_size.height, self.config.shadow_local_near, limits)) |request| {
+                requests[n] = request;
+                n += 1;
+            } else self.stats.shadow_lights_unseen += 1;
+        }
+        shadow_atlas.order(requests[0..n]);
+        const placement = shadow_atlas.place(&self.shadow_atlas, requests[0..n], limits, &self.shadow_tiles, &self.shadow_tile_count);
+        self.stats.shadow_lights_dropped = placement.dropped;
+        self.stats.shadow_local_lights = placement.count;
+        for (placement.placed[0..placement.count]) |placed| {
+            const light = self.lights[placed.request.light];
+            const far = lighting.localFar(light, self.config.shadow_local_far);
+            // Spots only, until point lights' faces (Step 4): `addLight` refuses the rest.
+            std.debug.assert(placed.request.faces == 1);
+            const t = placed.first_tile;
+            const tangent = lighting.widenedTangent(@tan(light.outer_cone), placed.side, self.config.shadow_penumbra_max);
+            self.shadow_clip[t] = lighting.spotMatrix(light, self.config.shadow_local_near, far, placed.side, self.config.shadow_penumbra_max);
+            // The texel at one metre along the axis, so the shader scales it by axial depth (§6).
+            self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / @as(f32, @floatFromInt(placed.side)), 1 };
+            self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .spot, .index = 0, .tile = self.shadow_tiles[t] };
+            self.light_tiles[placed.request.light] = .{ t, placed.request.faces };
+        }
+    }
+
     /// One pass over the whole atlas, cleared once: each cascade's casters into its own tile,
     /// its light matrix folded into each draw's constants, so no shadow shader reads the frame
     /// uniform (`shadows-cascaded.md` §4).
     fn recordShadow(self: *Self, pass: *rhi.RenderPass) Error!void {
         const frame = self.frame orelse return error.NotRecording;
-        const cascades = self.shadow_fit orelse return;
-        const size = self.config.shadow_size;
-        for (cascades.fits[0..cascades.count], 0..) |fit, c| {
-            const tile = self.shadow_tiles[c];
-            std.debug.assert(tile.side == size);
-            pass.setViewport(.{ .x = @floatFromInt(tile.x), .y = @floatFromInt(tile.y), .width = @floatFromInt(size), .height = @floatFromInt(size) });
-            pass.setScissor(.{ .x = tile.x, .y = tile.y, .width = size, .height = size });
-            const light = fit.matrix();
+        const cascades: u32 = if (self.shadow_fit) |fit| fit.count else 0;
+        const local_bias: rhi.pipeline.DepthBias = .{ .constant = self.config.shadow_local_bias_constant, .slope = self.config.shadow_local_bias_slope, .clamp = self.config.shadow_local_bias_clamp, .dynamic = true };
+        for (self.shadow_tiles[0..self.shadow_tile_count], self.shadow_clip[0..self.shadow_tile_count], 0..) |tile, clip, t| {
+            pass.setViewport(.{ .x = @floatFromInt(tile.x), .y = @floatFromInt(tile.y), .width = @floatFromInt(tile.side), .height = @floatFromInt(tile.side) });
+            pass.setScissor(.{ .x = tile.x, .y = tile.y, .width = tile.side, .height = tile.side });
+            const local = t >= cascades;
             for (self.shadow_order.items) |i| {
                 const item = self.draws.items[i];
-                if (item.shadow_cascades & (@as(u4, 1) << @intCast(c)) == 0) continue;
+                if (item.shadow_tiles & (@as(u32, 1) << @intCast(t)) == 0) continue;
                 const mesh = self.meshes.getConst(item.mesh) orelse continue;
                 const material = self.materials.getConst(item.material) orelse continue;
                 const key = self.shadowKey(item);
                 pass.setPipeline(self.pipelineFor(key).?);
+                // Binding a pipeline restores the cascades' bias; a local tile sets its own
+                // after it (`shadows-local.md` §3).
+                if (local) pass.setDepthBias(local_bias);
                 pass.setBindGroup(0, self.slots[frame.slot].shadow_group);
                 pass.setBindGroup(2, material.group);
-                const constants: DrawConstants = .{ .world = light.mul(item.world), .cofactor = std.mem.zeroes([3][4]f32) };
+                const constants: DrawConstants = .{ .world = clip.mul(item.world), .cofactor = std.mem.zeroes([3][4]f32) };
                 pass.setInlineConstants(std.mem.asBytes(&constants));
                 self.bindStream(pass, mesh, item, 0);
                 if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
@@ -2282,7 +2376,7 @@ pub const Renderer = struct {
                 const submesh = mesh.submeshes[item.submesh];
                 pass.drawIndexed(.{ .index_count = submesh.index_count, .first_index = submesh.first_index });
                 self.stats.shadow_draws += 1;
-                self.stats.shadow_cascade_draws[c] += 1;
+                if (local) self.stats.shadow_local_draws += 1 else self.stats.shadow_cascade_draws[t] += 1;
             }
         }
     }
@@ -2295,6 +2389,11 @@ pub const Renderer = struct {
     /// cast: their splits and texels are what a host reports (`shadows-cascaded.md` §8).
     pub fn shadowCascades(self: *const Self) ?lighting.CascadeFit {
         return self.shadow_fit;
+    }
+
+    /// The tiles the last prepared frame granted, cascades first (`shadows-local.md` §11).
+    pub fn shadowTiles(self: *const Self) []const ShadowTile {
+        return self.shadow_tile_info[0..self.shadow_tile_count];
     }
 
     fn bindStream(self: *const Self, pass: *rhi.RenderPass, mesh: *const MeshState, item: DrawItem, slot: u32) void {
@@ -2386,7 +2485,7 @@ pub const Renderer = struct {
                 .format = .depth32_float,
                 .depth_write_enabled = key.alpha != .blend,
                 .depth_compare = .greater_equal,
-                .bias = if (key.shadow) .{ .constant = self.config.shadow_bias_constant, .slope = self.config.shadow_bias_slope, .clamp = self.config.shadow_bias_clamp } else .{},
+                .bias = if (key.shadow) .{ .constant = self.config.shadow_bias_constant, .slope = self.config.shadow_bias_slope, .clamp = self.config.shadow_bias_clamp, .dynamic = true } else .{},
             },
             .primitive = .{
                 .topology = .triangle_list,
@@ -3138,10 +3237,13 @@ test "light refusals leave the submitted frame unchanged" {
     }
     var shadow = good;
     shadow.casts_shadow = true;
+    // Point lights and spots wider than pi/3 cast through six faces, which Step 4 adds.
     shadow.kind = .point;
     try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
     shadow.kind = .spot;
+    shadow.outer_cone = 1.2;
     try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    shadow.outer_cone = good.outer_cone;
     try testing.expectEqual(@as(u32, 1), fx.renderer.light_count);
     shadow.kind = .directional;
     try fx.renderer.addLight(shadow);
@@ -3219,13 +3321,16 @@ test "a shadowed frame uploads every cascade's tile, folded matrix, offset, spli
         const rect = shadowTileRect(fx.renderer.config, fx.renderer.shadow_tiles[c]);
         try testing.expectEqual(rect, uniform.shadow_tiles[c]);
         try testing.expectEqual(cascades.splits[c + 1], uniform.shadow_splits[c]);
-        try testing.expectEqual(1.5 * cascades.fits[c].texel, uniform.shadow_offsets[c]);
+        try testing.expectEqual([4]f32{ 1.5 * cascades.fits[c].texel, 0, 0, 0 }, uniform.shadow_tile_parameters[c]);
         try testing.expectEqual(lighting.tileMatrix(cascades.fits[c].matrix(), rect), uniform.shadow_matrices[c]);
         if (c > 0) {
             try testing.expect(uniform.shadow_splits[c] > uniform.shadow_splits[c - 1]);
-            try testing.expect(uniform.shadow_offsets[c] > uniform.shadow_offsets[c - 1]);
+            try testing.expect(uniform.shadow_tile_parameters[c][0] > uniform.shadow_tile_parameters[c - 1][0]);
         }
     }
+    // The directional light's tiles are 0 to 3: first plus one, then the count.
+    try testing.expectEqual(@as(f32, 1), uniform.lights[0].cone_shadow[2]);
+    try testing.expectEqual(@as(f32, 4), uniform.lights[0].cone_shadow[3]);
     try testing.expectEqual(@as(f32, 6), uniform.shadow_splits[3]);
     try testing.expectEqual([4]f32{ 0.25, 0.5, 0.5, 1 }, uniform.shadow_tiles[3]);
     if (rhi.backend == .null) {
@@ -3257,11 +3362,11 @@ test "each cascade draws only the casters its own light box holds, and the count
     const items = fx.renderer.draws.items;
     const cascades = fx.renderer.shadow_fit.?;
     try testing.expect(cascades.splits[1] > 5 and cascades.splits[1] < 6);
-    try testing.expect(items[0].shadow_cascades & 1 != 0 and items[0].shadow_cascades & 8 == 0);
-    try testing.expect(items[1].shadow_cascades & 3 == 3);
-    try testing.expect(items[2].shadow_cascades & 8 != 0 and items[2].shadow_cascades & 1 == 0);
-    try testing.expectEqual(@as(u4, 0), items[3].shadow_cascades);
-    try testing.expectEqual(@as(u4, 0), items[4].shadow_cascades);
+    try testing.expect(items[0].shadow_tiles & 1 != 0 and items[0].shadow_tiles & 8 == 0);
+    try testing.expect(items[1].shadow_tiles & 3 == 3);
+    try testing.expect(items[2].shadow_tiles & 8 != 0 and items[2].shadow_tiles & 1 == 0);
+    try testing.expectEqual(@as(u32, 0), items[3].shadow_tiles);
+    try testing.expectEqual(@as(u32, 0), items[4].shadow_tiles);
     try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, fx.renderer.shadow_order.items);
     try finishTestFrame(&fx);
     const stats = fx.renderer.frameStats();
@@ -3269,7 +3374,7 @@ test "each cascade draws only the casters its own light box holds, and the count
     var drawn: u32 = 0;
     var masks: [4]u32 = @splat(0);
     for (items[0..3]) |item| for (0..4) |c| {
-        if (item.shadow_cascades & (@as(u4, 1) << @intCast(c)) != 0) masks[c] += 1;
+        if (item.shadow_tiles & (@as(u32, 1) << @intCast(c)) != 0) masks[c] += 1;
     };
     for (stats.shadow_cascade_draws, masks) |count, expected| {
         try testing.expectEqual(expected, count);
@@ -3948,18 +4053,161 @@ test "a filter at its tile's edge never reads the neighbouring cascade's depth" 
     const format = fx.device.capabilities().surface_format;
     const p = Vec3.init(1.0 / 32.0, -1.0 / 32.0, -1);
     const lit = displayTexel(format, lighting.shade(surface, p, .init(0, 0, 1), .zero, &.{light}, view.ambient, null));
-    // Every receiver pixel reads the same atlas point, nearly at the light's far end.
+    // Every receiver pixel reads the same atlas point, nearly at the light's far end: one texel
+    // inside tile 0's right edge, at its middle row. The atlas is two 2,048 pages wide
+    // (`shadows-local.md` §4), so that edge is u = 0.25 and a texel 1/4,096.
+    const atlas = shadowAtlasExtent(fx.renderer.config);
+    try testing.expectEqual(Extent2D{ .width = 4096, .height = 2048 }, atlas);
     var aimed = Mat4.identity;
-    aimed.cols = .{ .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 0.5 - 1.0 / 2048.0, 0.5, 0.001, 1 } };
+    aimed.cols = .{ .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 0, 0, 0, 0 }, .{ 0.25 - 1.0 / 4096.0, 0.25, 0.001, 1 } };
     for ([_]bool{ false, true }) |with_caster| {
         try fx.renderer.begin(view);
         try fx.renderer.addLight(light);
         try fx.renderer.drawMesh(.{ .mesh = quad, .material = receiver, .world = Mat4.translation(.init(0, 0, 1)) });
         if (with_caster) try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = Mat4.translation(edge) });
         try fx.renderer.plan();
-        if (with_caster) try testing.expectEqual(@as(u4, 2), fx.renderer.draws.items[1].shadow_cascades);
+        if (with_caster) try testing.expectEqual(@as(u32, 2), fx.renderer.draws.items[1].shadow_tiles);
         const bytes = try cascadeReadback(&fx, readback, aimed);
         try expectDisplayTexel(lit, readTexel(&bytes, 16, 16));
+    }
+}
+
+test "a casting spot takes a tile after the cascades, culled per tile, and the uniform points the light at it" {
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024 }, 32);
+    defer fx.deinit();
+    const mesh = try litQuad(&fx.renderer, 0);
+    var view = testView(32);
+    view.shadow_distance = 6;
+    try fx.renderer.begin(view);
+    try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?) });
+    // A spot 3 m ahead looking down, and one behind the camera that it cannot see.
+    var spot_world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, -1, 0), .init(0, 0, -1)).?);
+    spot_world.cols[3] = .{ 0, 2, -3, 1 };
+    const spot: Light = .{ .kind = .spot, .intensity = 50, .range = 6, .outer_cone = 0.6, .casts_shadow = true, .world = spot_world };
+    try fx.renderer.addLight(spot);
+    var behind = spot;
+    behind.world.cols[3] = .{ 0, 2, 20, 1 };
+    try fx.renderer.addLight(behind);
+    // A caster under the spot, and one far off to the side that its tile culls.
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, -3)) });
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(30, 0, -3)) });
+    const frame = try fx.device.beginFrame();
+    const cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+    var uniform: lighting.FrameUniform = undefined;
+    @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+    fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+    cmd.discard();
+    try fx.device.endFrame();
+    const tiles = fx.renderer.shadowTiles();
+    try testing.expectEqual(@as(usize, 5), tiles.len);
+    for (tiles[0..4], 0..) |tile, c| try testing.expect(tile.kind == .cascade and tile.index == c and tile.light == 0);
+    try testing.expect(tiles[4].kind == .spot and tiles[4].light == 1);
+    // Its sphere holds the camera's view of a 32-pixel target: the smallest side, on page 1.
+    try testing.expectEqual(shadow_atlas.Tile{ .x = 2048, .y = 0, .side = 256 }, tiles[4].tile);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.stats.shadow_local_lights);
+    try testing.expectEqual(@as(u32, 1), fx.renderer.stats.shadow_lights_unseen);
+    try testing.expectEqual(@as(u32, 5), fx.renderer.stats.shadow_tiles);
+    // The light points at tile 4, one of it; the unseen one casts nothing.
+    try testing.expectEqual(@as(f32, 5), uniform.lights[1].cone_shadow[2]);
+    try testing.expectEqual(@as(f32, 1), uniform.lights[1].cone_shadow[3]);
+    try testing.expectEqual(@as(f32, 0), uniform.lights[2].cone_shadow[2]);
+    const rect = shadowTileRect(fx.renderer.config, tiles[4].tile);
+    try testing.expectEqual(rect, uniform.shadow_tiles[4]);
+    const clip = lighting.spotMatrix(spot, 0.05, 6, 256, 12);
+    try testing.expectEqual(lighting.tileMatrix(clip, rect), uniform.shadow_matrices[4]);
+    const tangent = lighting.widenedTangent(@tan(@as(f32, 0.6)), 256, 12);
+    try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, 0 }, uniform.shadow_tile_parameters[4]);
+    // The near caster is in the spot's tile; the far one only in cascades whose boxes hold it.
+    const items = fx.renderer.draws.items;
+    try testing.expect(items[0].shadow_tiles & (1 << 4) != 0);
+    try testing.expect(items[1].shadow_tiles & (1 << 4) == 0);
+}
+
+test "local shadows off, a full atlas or a wide spot: nothing local is drawn, and each is counted" {
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024, .shadow_atlas_pages = 1 }, 32);
+    defer fx.deinit();
+    const mesh = try litQuad(&fx.renderer, 0);
+    var spot_world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, -1, 0), .init(0, 0, -1)).?);
+    spot_world.cols[3] = .{ 0, 2, -3, 1 };
+    const spot: Light = .{ .kind = .spot, .intensity = 50, .range = 6, .outer_cone = 0.6, .casts_shadow = true, .world = spot_world };
+    const sun: Light = .{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?) };
+    // One page: four cascades fill it, so the spot is dropped.
+    try fx.renderer.begin(testView(32));
+    try fx.renderer.addLight(sun);
+    try fx.renderer.addLight(spot);
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, -3)) });
+    try finishTestFrame(&fx);
+    var stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 1), stats.shadow_lights_dropped);
+    try testing.expectEqual(@as(u32, 0), stats.shadow_local_lights);
+    try testing.expectEqual(@as(u32, 0), stats.shadow_local_draws);
+    try testing.expectEqual(@as(u32, 4), stats.shadow_tiles);
+    // Without the sun, the spot alone has the page; with local shadows off, nothing casts.
+    for ([_]bool{ true, false }) |local| {
+        var view = testView(32);
+        view.local_shadows = local;
+        try fx.renderer.begin(view);
+        try fx.renderer.addLight(spot);
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, 0, -3)) });
+        try finishTestFrame(&fx);
+        stats = fx.renderer.frameStats();
+        try testing.expectEqual(@as(u32, @intFromBool(local)), stats.shadow_local_lights);
+        try testing.expectEqual(@as(u32, @intFromBool(local)), stats.shadow_tiles);
+        try testing.expectEqual(@as(u32, @intFromBool(local)), stats.shadow_local_draws);
+        try testing.expectEqual(stats.shadow_local_draws, stats.shadow_draws);
+    }
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a spot shadows a wall where the oracle says, lights it beside the shadow, and nothing outside its cone" {
+    if (rhi.backend == .null) return;
+    // Pixel (16, 13) sees a wall at 4 m; a cube halfway from the spot to that point shadows it.
+    // Pixel (16, 20) is inside the cone and unoccluded; pixel (0, 16) is outside the cone.
+    // With a local bias large enough to push every caster to the far plane, the spot casts
+    // nothing, which only the per-tile bias command can do (`shadows-local.md` §3).
+    for ([_]f32{ -1, -1e9 }) |local_bias| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_local_bias_constant = local_bias }, material_test_size);
+        defer fx.deinit();
+        const quad = try litQuad(&fx.renderer, 0);
+        const cube = try litCube(&fx.renderer, .zero, 0.15);
+        const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+        const wall = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .casts_shadow = false }, "wall");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const format = fx.device.capabilities().surface_format;
+        const tangent: f32 = @tan(cascade_fov * 0.5);
+        const at = struct {
+            fn wallPoint(x: f32, y: f32, t: f32) Vec3 {
+                return .init(((x + 0.5) / 16 - 1) * t * 4, (1 - (y + 0.5) / 16) * t * 4, -4);
+            }
+        };
+        const eye = Vec3.init(1.5, 0, -1);
+        const axis = Vec3.init(-0.3, 0, -1).normalize();
+        var world = Mat4.fromQuat(core.math.Quat.lookRotation(axis, .up).?);
+        world.cols[3] = .{ eye.x, eye.y, eye.z, 1 };
+        const spot: Light = .{ .kind = .spot, .intensity = 40, .range = 10, .inner_cone = 0.4, .outer_cone = 0.5, .casts_shadow = true, .world = world };
+        const shadowed = at.wallPoint(16, 13, tangent);
+        const caster = eye.add(shadowed.sub(eye).scale(0.5));
+        try fx.renderer.begin(cascadeView(80, false));
+        try fx.renderer.addLight(spot);
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(.init(0, 0, -2)).mul(Mat4.scaling(.init(4, 4, 1))) });
+        try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = Mat4.translation(caster) });
+        const bytes = try cascadeReadback(&fx, readback, null);
+        try testing.expectEqual(@as(u32, 1), fx.renderer.stats.shadow_local_lights);
+        try testing.expect(fx.renderer.shadowTiles()[0].kind == .spot);
+        const n = Vec3.init(0, 0, 1);
+        const ambient = fx.renderer.view.ambient;
+        const dark = displayTexel(format, lighting.shade(surface, shadowed, n, .zero, &.{}, ambient, null));
+        const lit = displayTexel(format, lighting.shade(surface, shadowed, n, .zero, &.{spot}, ambient, null));
+        try testing.expect(!texelMatches(dark, lit));
+        try expectDisplayTexel(if (local_bias == -1) dark else lit, readTexel(&bytes, 16, 13));
+        const beside = at.wallPoint(16, 20, tangent);
+        try expectDisplayTexel(displayTexel(format, lighting.shade(surface, beside, n, .zero, &.{spot}, ambient, null)), readTexel(&bytes, 16, 20));
+        const outside = at.wallPoint(0, 16, tangent);
+        try testing.expect(Vec3.dot(outside.sub(eye).normalize(), axis) < @cos(spot.outer_cone));
+        try expectDisplayTexel(displayTexel(format, lighting.shade(surface, outside, n, .zero, &.{}, ambient, null)), readTexel(&bytes, 0, 16));
     }
 }
 

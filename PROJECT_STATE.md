@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40 Step 2 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 3: the third uniform layout (4,256 bytes) in Zig, MSL and GLSL, and spot shadows allocated, culled, drawn with their own bias and looked up. No local tile is granted or drawn yet, and `addLight` still refuses a casting point or spot. The PC holds no Foundry clone.
+**Current handoff: M40 Step 3 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 4: point shadows, six widened faces chosen in the shaders, and wide spots cast through faces. `addLight` still refuses casting point lights and spots wider than π/3. The PC holds no Foundry clone.
+
+**M40 Step 3 is done (2026-11-14): the third uniform and spot shadows.**
+- `FrameUniform` is 4,256 bytes, with 32 tiles' rectangles, parameters and matrices, in Zig, three Metal and seven GLSL files, and the SPIR-V agreement check. Each light finds its own tiles in `cone_shadow.z/w`.
+- Casting spots to π/3 get tiles after the cascades. Casters are culled per tile (`DrawItem.shadow_tiles: u32`), and local tiles are drawn with their own bias by `setDepthBias`.
+- `Stats` gains six counts, and the overlay a second shadow line. Also `FrameView.local_shadows` and `Renderer.shadowTiles()`.
+- `DepthBias.dynamic` lets a zero-bias pipeline take a tile's bias. `order` no longer overflows on an empty list.
+- M39's no-bleed test had been made vacuous by the wider atlas; it is re-aimed.
+- A Metal readback shows a spot's shadow, its lit neighbour, unlit outside its cone, and no shadow under a huge local bias. Three guards broken, each failing. Bar: null 3,015/3,025 (ten skips), Metal 3,026/3,047 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 2 is done (2026-11-14): the allocator and local matrices, as maths.**
 - `render3d/shadow_atlas.zig`: a buddy allocator over a row of pages, rebuilt each frame, with its fixed walk; requests nearest sphere first, sized by screen coverage, halved then dropped when full, at most 32 tiles.

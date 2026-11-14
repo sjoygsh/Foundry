@@ -158,6 +158,8 @@ fn describeStats3d(view: *View, stats: render3d.Stats) Allocator.Error!void {
         used += 1;
     }
     try view.line("3D: {d} lights  {d} cascades  {d} shadow draws{s}  {d} shadow culled", .{ stats.lights, stats.shadow_cascades, stats.shadow_draws, per_cascade[0..used], stats.shadow_culled });
+    // `shadows-local.md` §11: point and spot shadows, the tiles they took and what was left out.
+    try view.line("3D: {d} local lights  {d} tiles  {d} local draws  {d} translucent  {d} dropped", .{ stats.shadow_local_lights, stats.shadow_tiles, stats.shadow_local_draws, stats.shadow_translucent_draws, stats.shadow_lights_dropped });
     try view.line("3D: {d} skinned draws  {d} skinned vertices  {d} skin budget dropped", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
     try view.line("3D: {d} models pending", .{stats.pending_models});
     try view.line("3D: {d} mesh updates  {d} texture writes  {d} KiB uploaded", .{ stats.mesh_updates, stats.texture_writes, stats.uploaded_bytes / 1024 });
@@ -216,7 +218,7 @@ test "render3d's frame counts are a line beside render2d's" {
     ctx.begin(.{}, .init(0, 0, 400, 300));
     var view: View = .{ .ui = &ctx, .arena = test_arena.allocator(), .frame = .{}, .sources = .{} };
     // A renderer needs a device, which `debug` has no way to make; the line is its stats.
-    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 41, .shadow_culled = 17, .shadow_cascades = 4, .shadow_cascade_draws = .{ 12, 9, 11, 9 }, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024, .particles = 900, .particle_emitters = 4, .particle_emitters_culled = 1, .particles_dropped = 6, .particle_emitters_refused = 2 });
+    try describeStats3d(&view, .{ .draws = 12, .culled = 3, .blended = 2, .triangles = 4096, .pipeline_binds = 5, .lights = 3, .shadow_draws = 41, .shadow_culled = 17, .shadow_cascades = 4, .shadow_cascade_draws = .{ 12, 9, 11, 9 }, .shadow_tiles = 13, .shadow_local_lights = 2, .shadow_local_draws = 210, .shadow_translucent_draws = 4, .skinned_draws = 2, .skinned_vertices = 600, .skin_budget_dropped = 1, .mesh_updates = 1, .texture_writes = 3, .uploaded_bytes = 5 * 1024, .particles = 900, .particle_emitters = 4, .particle_emitters_culled = 1, .particles_dropped = 6, .particle_emitters_refused = 2 });
     try describeStats3d(&view, .{ .lights = 1 });
     ctx.end();
 
@@ -224,6 +226,8 @@ test "render3d's frame counts are a line beside render2d's" {
     try testing.expect(overlay.findText(&ctx, "3D: 12 draws  3 culled  2 blended"));
     try testing.expect(overlay.findText(&ctx, "3D: 4096 triangles  5 pipeline binds"));
     try testing.expect(overlay.findText(&ctx, "3D: 3 lights  4 cascades  41 shadow draws (12 9 11 9)  17 shadow culled"));
+    try testing.expect(overlay.findText(&ctx, "3D: 2 local lights  13 tiles  210 local draws  4 translucent  0 dropped"));
+    try testing.expect(overlay.findText(&ctx, "3D: 0 local lights  0 tiles  0 local draws  0 translucent  0 dropped"));
     try testing.expect(overlay.findText(&ctx, "3D: 2 skinned draws  600 skinned vertices  1 skin budget dropped"));
     try testing.expect(overlay.findText(&ctx, "3D: 0 models pending"));
     try testing.expect(overlay.findText(&ctx, "3D: 1 mesh updates  3 texture writes  5 KiB uploaded"));

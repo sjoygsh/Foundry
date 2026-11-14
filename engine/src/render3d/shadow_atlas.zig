@@ -14,7 +14,7 @@ pub const min_side = 128;
 /// The largest page: two 4,096 cascade tiles a side.
 pub const max_page_side = 8192;
 /// Tiles a frame may hold, cascades included; compiled into the frame uniform (§8).
-pub const max_tiles = 32;
+pub const max_tiles = lighting.max_shadow_tiles;
 /// A point light, or a spot wider than `max_spot_cone`, casts through six faces (§6, §7).
 pub const face_count = 6;
 /// The widest spot that casts through one perspective tile, radians from its axis.
@@ -182,6 +182,7 @@ pub fn requestFor(light: lighting.Light, index: u32, camera: camera_mod.Camera, 
 /// Nearest first, ties by submission order: a stable insertion sort, so the order is a pure
 /// function of the requests.
 pub fn order(requests: []Request) void {
+    if (requests.len < 2) return;
     for (1..requests.len) |i| {
         const item = requests[i];
         var j = i;
@@ -334,6 +335,9 @@ test "requests go nearest sphere first, ties by submission, and sizes follow cov
         }
     }
     try testing.expectEqual(@as(usize, 5), n);
+    // No requests, and one, are already in order.
+    order(requests[0..0]);
+    order(requests[0..1]);
     order(requests[0..n]);
     const want = [_]u32{ 2, 4, 1, 5, 0 };
     for (requests[0..n], want) |r, light| try testing.expectEqual(light, r.light);

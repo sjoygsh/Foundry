@@ -857,3 +857,72 @@ expects a 4,096 × 2,048 atlas at `s = 1024`.
 - null 3,012/3,022 (ten skips) and Metal 3,023/3,044 (21 skips);
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.
+
+## Resolution — Step 3: the third uniform and spot shadows (2026-11-14)
+
+**What the step pinned:**
+- **`FrameUniform`'s third layout,** 4,256 bytes, in Zig and in all ten shader files that
+  declare `Frame`: three Metal (`lit`, `unlit`, `particle`) and seven GLSL. The SPIR-V agreement check
+  in `rhi/backends/vulkan/spirv.zig` pins the new offsets, which §13 had not listed. The offsets
+  are 144 for the parameters, 160 for the tiles, 672 for their parameters, 1,184 for the
+  matrices and 3,232 for the lights.
+- **`packLight` leaves `cone_shadow.z` and `w` zero.** The renderer writes them once it has
+  placed the frame's tiles, so a light that asked to cast and got no tile casts nothing.
+- **One lookup, `tileVisibility`, serves cascades and spots.** A tile's parameter y says
+  whether to divide by w, and its normal offset is scaled by `axial`: 1 for a cascade, or the
+  receiver's depth along the spot's axis. The directional branch reads the cascade from the
+  light's first tile, as M39 did from 0. The spot branch tests the light's kind as well as its
+  one tile, so a one-cascade sun past its last split is never read as a spot.
+- **`addLight`** accepts casting spots to π/3. It still refuses point lights and wider spots,
+  which are Step 4's, and a second casting directional light. Only a directional caster sets
+  `has_shadow_caster`.
+- **Preparation** is now `placeShadowTiles`: the cascades first (M39's fit, on M39's tiles),
+  then each seen casting spot through §5's order and placement. Every caster is culled against
+  every tile into `DrawItem.shadow_tiles: u32`, which replaces M39's `u4`.
+- **`recordShadow`** draws every tile. A local tile issues `setDepthBias` after each
+  `setPipeline`, since binding a pipeline restores the cascades' bias.
+- **`Stats`** gains `shadow_tiles`, `shadow_local_lights`, `shadow_lights_unseen`,
+  `shadow_lights_dropped`, `shadow_local_draws` and `shadow_translucent_draws` (0 until Step 5).
+  The overlay's second line reads
+  `3D: 2 local lights  13 tiles  210 local draws  4 translucent  0 dropped`.
+- **`FrameView.local_shadows`** and **`Renderer.shadowTiles()`** (light, kind, index, tile).
+
+**Where implementation sharpened the design:**
+- **`DepthBias.dynamic`.** Step 1's contract let only a pipeline built with non-zero bias take
+  a per-pass bias. A host may set the cascades' bias to zero while the local bias is not, so
+  shadow pipelines are now built with `dynamic = true`. That enables bias even at zero, and
+  `enabled()` includes it. Vulkan enables bias for such a pipeline, and Metal and null need
+  nothing else.
+- **A short request list.** `order` overflowed on an empty list (`1..0`), which every frame
+  without a casting local light hit. It now returns for fewer than two requests, and a test
+  calls it on zero and one.
+- **The local bias defaults stay M22's (−1, −1, 0).** The spot readback holds at ±2/255 with
+  them, lit and shadowed, so the readbacks gave no reason to move them.
+
+**A weakened M39 test found and repaired.** "A filter at its tile's edge never reads the
+neighbouring cascade's depth" aims its lookup at a fixed atlas UV, `0.5 − 1/2048`. Step 2's
+paged atlas is twice as wide, so that point lay outside tile 0, and the test would have passed
+whatever the clamp did. It now asserts the atlas's size and aims at `0.25 − 1/4096`, one texel
+inside tile 0's new right edge. Removing the clamp fails it again.
+
+**Tests:**
+- **Null:** a sun and two casting spots, one unseen. The seen spot takes tile 4, the smallest
+  side on page 1. The uniform points it at tile 4 with its folded perspective matrix and its
+  per-metre offset, the unseen spot points nowhere, and the casters are culled per tile. A
+  second test covers four cascades filling a one-page atlas so the spot is dropped and counted,
+  and a spot alone with local shadows on and off.
+- **Metal:** a spot's cube shadows a wall to the oracle's ambient, lights the wall beside the
+  shadow to the oracle's lit value, and leaves a point outside its cone unlit. The same scene
+  with a local bias of −10⁹ casts nothing, because only the per-tile command can push those
+  casters to the far plane while the cascades keep theirs.
+
+**Each guard was broken once, and each failed its test:**
+- dropping the spot's perspective divide in `lit.metal` failed the spot readback;
+- not issuing `setDepthBias` for a local tile failed the spot readback's large-bias case;
+- removing the tile clamp failed the re-aimed no-bleed test.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,015/3,025 (ten skips) and Metal 3,026/3,047 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, whose SPIR-V agreement
+  check now pins the third layout.

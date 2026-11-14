@@ -14,11 +14,11 @@ layout(set=0,binding=0,std140) uniform Frame {
     layout(offset=96) uvec4 counts;
     layout(offset=112) vec4 camera_forward;
     layout(offset=128) vec4 shadow_splits;
-    layout(offset=144) vec4 shadow_offsets;
-    layout(offset=160) vec4 shadow_parameters;
-    layout(offset=176) vec4 shadow_tiles[4];
-    layout(offset=240) mat4 shadow_matrices[4];
-    layout(offset=496) PackedLight lights[16];
+    layout(offset=144) vec4 shadow_parameters;
+    layout(offset=160) vec4 shadow_tiles[32];
+    layout(offset=672) vec4 shadow_tile_parameters[32];
+    layout(offset=1184) mat4 shadow_matrices[32];
+    layout(offset=3232) PackedLight lights[16];
 } frame;
 layout(set=0,binding=1) uniform texture2D shadow_image;
 layout(set=0,binding=2) uniform samplerShadow shadow_sampler;
@@ -68,11 +68,16 @@ vec2 ambient_dfg(float rough, float nv) {
     return vec2(-1.04,1.04)*a+r.zw;
 }
 const vec3 TINTS[4]=vec3[4](vec3(1,.25,.25),vec3(.25,1,.25),vec3(.25,.25,1),vec3(1,1,.25));
-// shadows-cascaded.md §5: one cascade's 3x3 comparison filter, each tap clamped two texels
-// inside its tile so none reads a neighbour's depth; -1 when the point leaves the tile.
-float cascadeVisibility(uint c, vec3 normal) {
-    vec3 q=(frame.shadow_matrices[c]*vec4(world_position+normal*frame.shadow_offsets[c],1)).xyz;
-    vec4 tile=frame.shadow_tiles[c];
+// One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
+// clamped two texels inside its tile so none reads a neighbour's depth; -1 when the point
+// leaves the tile. A perspective tile divides by w, and its normal offset grows with `axial`,
+// the receiver's depth along the light's axis; a cascade's is in metres, `axial` 1.
+float tileVisibility(uint t, vec3 normal, float axial) {
+    vec4 p=frame.shadow_tile_parameters[t];
+    vec4 h=frame.shadow_matrices[t]*vec4(world_position+normal*p.x*axial,1);
+    if (p.y != 0) { if (h.w <= 0) return -1; h.xyz/=h.w; }
+    vec3 q=h.xyz;
+    vec4 tile=frame.shadow_tiles[t];
     if (any(lessThan(q.xy,tile.xy)) || any(greaterThan(q.xy,tile.zw)) || q.z < 0 || q.z > 1) return -1;
     vec2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
     float visibility=0;
@@ -132,14 +137,20 @@ void main() {
                 falloff*=cone*cone;
             }
         }
-        if (cascade < frame.counts.y && light.cone_shadow.z != 0) {
-            float visibility=cascadeVisibility(cascade,geometric_normal);
+        // A light's tiles start at cone_shadow.z - 1, cone_shadow.w of them (shadows-local.md §8).
+        uint first=uint(light.cone_shadow.z)-1;
+        if (light.cone_shadow.z != 0 && light.position_kind.w == 0 && cascade < frame.counts.y) {
+            float visibility=tileVisibility(first+cascade,geometric_normal,1);
             if (visibility < 0) visibility=1;
             if (next_weight > 0) {
-                float next=cascade+1 < frame.counts.y ? cascadeVisibility(cascade+1,geometric_normal) : 1;
+                float next=cascade+1 < frame.counts.y ? tileVisibility(first+cascade+1,geometric_normal,1) : 1;
                 if (next >= 0) visibility=mix(visibility,next,next_weight);
             }
             falloff*=visibility;
+        } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0 && light.cone_shadow.w == 1) {
+            float axial=max(dot(world_position-light.position_kind.xyz,light.direction_range.xyz),0);
+            float visibility=tileVisibility(first,geometric_normal,axial);
+            if (visibility >= 0) falloff*=visibility;
         }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
     }

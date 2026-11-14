@@ -4,15 +4,16 @@ using namespace metal;
 struct PackedLight { float4 position_kind, direction_range, color_intensity, cone_shadow; };
 struct Frame {
     float4x4 view_projection; float4 camera_exposure; float4 ambient; uint4 counts;
-    float4 camera_forward; float4 shadow_splits; float4 shadow_offsets; float4 shadow_parameters;
-    float4 shadow_tiles[4]; float4x4 shadow_matrices[4]; PackedLight lights[16];
+    float4 camera_forward; float4 shadow_splits; float4 shadow_parameters;
+    float4 shadow_tiles[32]; float4 shadow_tile_parameters[32]; float4x4 shadow_matrices[32];
+    PackedLight lights[16];
 };
 struct Constants { float4x4 world; float3x3 cofactor; };
 struct Material {
     float4 base_color; float alpha_cutoff; float p0,p1,p2;
     float4 surface; float4 emissive_strength;
 };
-static_assert(sizeof(Frame)==1520, "Frame matches lighting.zig");
+static_assert(sizeof(Frame)==4256, "Frame matches lighting.zig");
 static_assert(sizeof(Constants)==112, "Constants matches renderer.zig");
 static_assert(sizeof(Material)==64, "Material matches renderer.zig");
 struct VertexOut {
@@ -94,12 +95,17 @@ float2 ambient_dfg(float rough, float nv) {
     return float2(-1.04,1.04)*a+r.zw;
 }
 constant float3 TINTS[4]={float3(1,.25,.25),float3(.25,1,.25),float3(.25,.25,1),float3(1,1,.25)};
-// shadows-cascaded.md §5: one cascade's 3x3 comparison filter, each tap clamped two texels
-// inside its tile so none reads a neighbour's depth; -1 when the point leaves the tile.
-static float cascadeVisibility(constant Frame &frame,uint c,float3 world,float3 normal,
+// One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
+// clamped two texels inside its tile so none reads a neighbour's depth; -1 when the point
+// leaves the tile. A perspective tile divides by w, and its normal offset grows with `axial`,
+// the receiver's depth along the light's axis; a cascade's is in metres, `axial` 1.
+static float tileVisibility(constant Frame &frame,uint t,float3 world,float3 normal,float axial,
     depth2d<float> shadow_image,sampler shadow_sampler) {
-    float3 q=(frame.shadow_matrices[c]*float4(world+normal*frame.shadow_offsets[c],1)).xyz;
-    float4 tile=frame.shadow_tiles[c];
+    float4 p=frame.shadow_tile_parameters[t];
+    float4 h=frame.shadow_matrices[t]*float4(world+normal*p.x*axial,1);
+    if (p.y != 0) { if (h.w <= 0) return -1; h.xyz/=h.w; }
+    float3 q=h.xyz;
+    float4 tile=frame.shadow_tiles[t];
     if (any(q.xy<tile.xy) || any(q.xy>tile.zw) || q.z<0 || q.z>1) return -1;
     float2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
     float visibility=0;
@@ -164,14 +170,20 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
                 falloff*=cone*cone;
             }
         }
-        if (cascade < frame.counts.y && light.cone_shadow.z != 0) {
-            float visibility=cascadeVisibility(frame,cascade,in.world,geometric_normal,shadow_image,shadow_sampler);
+        // A light's tiles start at cone_shadow.z - 1, cone_shadow.w of them (shadows-local.md §8).
+        uint first=uint(light.cone_shadow.z)-1;
+        if (light.cone_shadow.z != 0 && light.position_kind.w == 0 && cascade < frame.counts.y) {
+            float visibility=tileVisibility(frame,first+cascade,in.world,geometric_normal,1,shadow_image,shadow_sampler);
             if (visibility < 0) visibility=1;
             if (next_weight > 0) {
-                float next=cascade+1 < frame.counts.y ? cascadeVisibility(frame,cascade+1,in.world,geometric_normal,shadow_image,shadow_sampler) : 1;
+                float next=cascade+1 < frame.counts.y ? tileVisibility(frame,first+cascade+1,in.world,geometric_normal,1,shadow_image,shadow_sampler) : 1;
                 if (next >= 0) visibility=mix(visibility,next,next_weight);
             }
             falloff*=visibility;
+        } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0 && light.cone_shadow.w == 1) {
+            float axial=max(dot(in.world-light.position_kind.xyz,light.direction_range.xyz),0.0f);
+            float visibility=tileVisibility(frame,first,in.world,geometric_normal,axial,shadow_image,shadow_sampler);
+            if (visibility >= 0) falloff*=visibility;
         }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
     }
