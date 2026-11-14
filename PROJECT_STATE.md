@@ -1,7 +1,20 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40 Step 5 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 6: contact-hardening penumbrae from `Light.source_radius`, which exists and is validated but does not yet widen any shadow. The PC holds no Foundry clone.
+**Current handoff: M40 Step 6 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 7: `sandbox3d`'s room with every light casting, on Metal, with `source_radius` in the light schema, the flags and the J key. None of that exists yet. The PC holds no Foundry clone.
+
+**M40 Step 6 is done (2026-11-14): contact-hardening penumbrae.**
+- `lighting.zig`:
+  - `penumbra_disc`, sixteen Vogel points written out, the same in both lit shaders and tested against their source text;
+  - `perspectivePenumbraScale` and `orthographicPenumbraScale`;
+  - `penumbraWidth` and `blockerSearchWidth`, which the shaders mirror.
+- Each tile's scale goes in `shadow_tile_parameters.z`, and `Config.shadow_penumbra_max` in `ambient.w`, the uniform's one free lane.
+- The width is the depth gap times the tile's scale, for both perspective and cascade tiles. That is §10's linear-depth formula exactly, since reversed-Z depth is linear in 1/d.
+- A sized tile does sixteen nearest reads of the depth atlas, using Step 5's sampler, then sixteen comparison taps at the width. With no blocker the point is lit. A zero scale is M39's nine taps, unchanged, so every earlier readback holds.
+- Tests:
+  - no GPU: the scales in every kind of tile, and zero at radius 0;
+  - Metal: one plate's edge at three gaps, every pixel of a row against a CPU oracle of the same filter, the half width 1.5 texels at contact. The penumbra is 0, 4 and 11 pixels wide, and 1 pixel at radius 0.
+- Four guards broken, each failing. Removing the radius-0 branch fails only the new readback's radius-0 frame. Bar: null 3,024/3,034 (ten skips), Metal 3,035/3,056 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 5 is done (2026-11-14): translucent shadows.**
 - Blend materials that cast are culled per tile into `translucent_order` and drawn by a second pass into an `rgba16_float` colour atlas, made the first frame one is drawn: filter `mix(1, base.rgb, base.a)` multiplied in, depth kept in alpha by `max`, tested against the depth atlas without writing. `shadow_translucent = false` keeps M39's behaviour.

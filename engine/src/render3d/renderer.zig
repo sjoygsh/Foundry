@@ -763,8 +763,9 @@ pub const Renderer = struct {
     /// Each tile's light matrix to clip space, and what it belongs to.
     shadow_clip: [shadow_atlas.max_tiles]Mat4 = undefined,
     shadow_tile_info: [shadow_atlas.max_tiles]ShadowTile = undefined,
-    /// Each tile's normal offset and kind, as the uniform's `shadow_tile_parameters` x and y.
-    shadow_tile_offset: [shadow_atlas.max_tiles][2]f32 = undefined,
+    /// Each tile's normal offset, kind and penumbra scale, as the uniform's
+    /// `shadow_tile_parameters` x, y and z.
+    shadow_tile_offset: [shadow_atlas.max_tiles][3]f32 = undefined,
     /// Each light's first tile and count; count 0 casts nothing this frame.
     light_tiles: [max_lights][2]u32 = undefined,
     shadow_order: std.ArrayList(u32) = .empty,
@@ -2139,6 +2140,8 @@ pub const Renderer = struct {
             const texel_u = 1 / @as(f32, @floatFromInt(atlas.width));
             const texel_v = 1 / @as(f32, @floatFromInt(atlas.height));
             uniform.shadow_parameters = .{ texel_u, texel_v, 2 * texel_u, 2 * texel_v };
+            // The widest penumbra, in texels, where the uniform has a free lane (§10).
+            uniform.ambient[3] = self.config.shadow_penumbra_max;
             if (self.shadow_fit) |cascades| {
                 uniform.counts[1] = cascades.count;
                 for (0..cascades.count) |c| uniform.shadow_splits[c] = cascades.splits[c + 1];
@@ -2146,7 +2149,7 @@ pub const Renderer = struct {
             for (0..self.shadow_tile_count) |t| {
                 const rect = shadowTileRect(self.config, self.shadow_tiles[t]);
                 uniform.shadow_tiles[t] = rect;
-                uniform.shadow_tile_parameters[t] = .{ self.shadow_tile_offset[t][0], self.shadow_tile_offset[t][1], 0, lighting.translucent_bias };
+                uniform.shadow_tile_parameters[t] = .{ self.shadow_tile_offset[t][0], self.shadow_tile_offset[t][1], self.shadow_tile_offset[t][2], lighting.translucent_bias };
                 uniform.shadow_matrices[t] = lighting.tileMatrix(self.shadow_clip[t], rect);
             }
             for (self.light_tiles[0..self.light_count], 0..) |tiles, li| {
@@ -2402,7 +2405,9 @@ pub const Renderer = struct {
                 // are granted M39's tiles: column `c mod 2`, row `c / 2`.
                 self.shadow_tiles[c] = self.shadow_atlas.allocate(self.config.shadow_size).?;
                 self.shadow_clip[c] = fit.matrix();
-                self.shadow_tile_offset[c] = .{ self.config.shadow_normal_offset * fit.texel, 0 };
+                const penumbra = lighting.orthographicPenumbraScale(light.source_radius, fit.max_z - fit.min_z, fit.texel);
+                if (!std.math.isFinite(penumbra)) return error.InvalidCamera;
+                self.shadow_tile_offset[c] = .{ self.config.shadow_normal_offset * fit.texel, 0, penumbra };
                 self.shadow_tile_info[c] = .{ .light = @intCast(li), .kind = .cascade, .index = @intCast(c), .tile = self.shadow_tiles[c] };
             }
             self.shadow_tile_count = cascades.count;
@@ -2437,17 +2442,18 @@ pub const Renderer = struct {
                 const tangent = lighting.widenedTangent(@tan(light.outer_cone), placed.side, footprint);
                 self.shadow_clip[t] = lighting.spotMatrix(light, near, far, placed.side, footprint);
                 // The texel at one metre along the axis, so the shader scales it by axial depth (§6).
-                self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1 };
+                self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1, lighting.perspectivePenumbraScale(light.source_radius, tangent, placed.side, near, far) };
                 self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .spot, .index = 0, .tile = self.shadow_tiles[t] };
             } else {
                 // A point light, or a spot wider than `max_spot_cone`: six widened faces in
                 // face order, each its own tile, the same side and offset (§7).
                 const eye = Vec3.init(light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2]);
                 const tangent = lighting.widenedTangent(1, placed.side, footprint);
+                const penumbra = lighting.perspectivePenumbraScale(light.source_radius, tangent, placed.side, near, far);
                 for (0..shadow_atlas.face_count) |f| {
                     const t = placed.first_tile + @as(u32, @intCast(f));
                     self.shadow_clip[t] = lighting.faceMatrix(eye, @intCast(f), near, far, placed.side, footprint);
-                    self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1 };
+                    self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1, penumbra };
                     self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .face, .index = @intCast(f), .tile = self.shadow_tiles[t] };
                 }
             }
@@ -4614,6 +4620,176 @@ test "glass tints the wall behind it by its filter colour, not a receiver before
         // The pane itself, where the camera sees it, is the same with its shadow on or off.
         if (enabled) pane_on = readTexel(&bytes, 10, 14) else try expectDisplayTexel(readTexel(&bytes, 10, 14), pane_on);
     }
+}
+
+/// `shadows-local.md` §10's filter on the CPU, along atlas U, for a straight caster edge: the
+/// atlas holds `z_caster` in every texel whose centre lies left of atlas column `edge`, and 0
+/// (nothing) elsewhere, so rows do not matter. A zero scale is M39's 3x3 filter.
+fn edgeVisibility(q: [3]f32, edge: f32, z_caster: f32, scale: f32, limit: f32, width: f32, lo: f32, hi: f32) f32 {
+    const atlas = struct {
+        fn stored(i: f32, e: f32, z: f32) f32 {
+            return if (i + 0.5 < e) z else 0;
+        }
+        fn compare(u: f32, w: f32, r: f32, e: f32, z: f32) f32 {
+            const s = u * w - 0.5;
+            const i = @floor(s);
+            const f = s - i;
+            const a: f32 = if (r >= stored(i, e, z)) 1 else 0;
+            const b: f32 = if (r >= stored(i + 1, e, z)) 1 else 0;
+            return a * (1 - f) + b * f;
+        }
+    };
+    if (scale == 0) {
+        var sum: f32 = 0;
+        for ([_]f32{ -1, 0, 1 }) |x| sum += atlas.compare(std.math.clamp(q[0] + x / width, lo, hi), width, q[2], edge, z_caster);
+        return sum / 3;
+    }
+    const search = lighting.blockerSearchWidth(q[2], scale, limit);
+    var total: f32 = 0;
+    var found: f32 = 0;
+    for (lighting.penumbra_disc) |d| {
+        const u = std.math.clamp(q[0] + d[0] * search / width, lo, hi);
+        const depth = atlas.stored(@floor(u * width), edge, z_caster);
+        if (depth > q[2]) {
+            total += depth;
+            found += 1;
+        }
+    }
+    if (found == 0) return 1;
+    const half = lighting.penumbraWidth(q[2], total / found, scale, limit);
+    var sum: f32 = 0;
+    for (lighting.penumbra_disc) |d| sum += atlas.compare(std.math.clamp(q[0] + d[0] * half / width, lo, hi), width, q[2], edge, z_caster);
+    return sum / 16;
+}
+
+test "a sized light's tiles carry its penumbra scale, a size of zero none, and the uniform the widest penumbra" {
+    for ([_]f32{ 1, 0 }) |size| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024, .shadow_cascades = 2, .shadow_penumbra_max = 20 }, 32);
+        defer fx.deinit();
+        const cube = try litCube(&fx.renderer, .zero, 0.15);
+        try fx.renderer.begin(testView(32));
+        const sun: Light = .{ .kind = .directional, .intensity = 1, .casts_shadow = true, .source_radius = 0.0047 * size, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?) };
+        var spot_world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, 0, -1), .up).?);
+        spot_world.cols[3] = .{ 0, 0, -1, 1 };
+        const spot: Light = .{ .kind = .spot, .intensity = 50, .range = 8, .inner_cone = 0.4, .outer_cone = 0.5, .casts_shadow = true, .source_radius = 0.2 * size, .world = spot_world };
+        const point: Light = .{ .kind = .point, .intensity = 50, .range = 6, .casts_shadow = true, .source_radius = 0.05 * size, .world = Mat4.translation(.init(0, 1, -3)) };
+        try fx.renderer.addLight(sun);
+        try fx.renderer.addLight(spot);
+        try fx.renderer.addLight(point);
+        try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = Mat4.translation(.init(0, 0, -3)) });
+        const frame = try fx.device.beginFrame();
+        var cmd = try fx.device.beginCommandBuffer();
+        try fx.renderer.prepare(cmd, frame);
+        const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+        var uniform: lighting.FrameUniform = undefined;
+        @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+        fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+        try fx.renderer.recordFrame(cmd, frame, false);
+        try cmd.submit();
+        try fx.device.endFrame();
+        try testing.expectEqual(@as(f32, 20), uniform.ambient[3]);
+        const fit = fx.renderer.shadow_fit.?;
+        const tiles = fx.renderer.shadowTiles();
+        try testing.expectEqual(@as(usize, 2 + 1 + 6), tiles.len);
+        for (tiles, 0..) |tile, t| {
+            const lights = [_]Light{ sun, spot, point };
+            const light = lights[tile.light];
+            const expected: f32 = switch (tile.kind) {
+                .cascade => lighting.orthographicPenumbraScale(light.source_radius, fit.fits[tile.index].max_z - fit.fits[tile.index].min_z, fit.fits[tile.index].texel),
+                .spot => lighting.perspectivePenumbraScale(light.source_radius, lighting.widenedTangent(@tan(light.outer_cone), tile.tile.side, 20), tile.tile.side, 0.05, light.range),
+                .face => lighting.perspectivePenumbraScale(light.source_radius, lighting.widenedTangent(1, tile.tile.side, 20), tile.tile.side, 0.05, light.range),
+            };
+            try testing.expectEqual(expected, uniform.shadow_tile_parameters[t][2]);
+            if (size == 0) try testing.expectEqual(@as(f32, 0), uniform.shadow_tile_parameters[t][2]) else try testing.expect(uniform.shadow_tile_parameters[t][2] > 0);
+        }
+        if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    }
+}
+
+test "a penumbra widens with the gap between caster and receiver as the oracle's does, from M39's 1.5 texels, and radius 0 is M39's filter" {
+    if (rhi.backend == .null) return;
+    // A 0.9 m spot 6 m before a wall, looking straight at it, and a plate whose right edge
+    // throws its shadow's edge to x = 1.5 m on the wall, 0.2 m, 1.5 m and 3 m before it. The
+    // camera stands 2 m to the right, so it sees the wall past the plate's edge.
+    const Case = struct { radius: f32, blocker: f32 };
+    const cases = [_]Case{ .{ .radius = 0.9, .blocker = 5.8 }, .{ .radius = 0.9, .blocker = 4.5 }, .{ .radius = 0.9, .blocker = 3 }, .{ .radius = 0, .blocker = 3 } };
+    var transitions: [cases.len]u32 = undefined;
+    for (cases, 0..) |case, ci| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_local_min = 256, .shadow_local_max = 256, .shadow_penumbra_max = 32 }, material_test_size);
+        defer fx.deinit();
+        const quad = try litQuad(&fx.renderer, 0);
+        const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+        const wall = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .casts_shadow = false }, "wall");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const format = fx.device.capabilities().surface_format;
+        const tangent: f32 = @tan(cascade_fov * 0.5);
+        const eye = Vec3.init(0, 0, 2);
+        const spot: Light = .{ .kind = .spot, .intensity = 60, .range = 10, .inner_cone = 0.45, .outer_cone = 0.5, .casts_shadow = true, .source_radius = case.radius, .world = Mat4.translation(eye) };
+        const plate_z = eye.z - case.blocker;
+        const plate_x = 1.5 * case.blocker / 6;
+        var view = cascadeView(80, false);
+        const camera = Vec3.init(2, 0, 0);
+        view.camera.position = camera;
+        try fx.renderer.begin(view);
+        try fx.renderer.addLight(spot);
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(.init(2, 0, -2)).mul(Mat4.scaling(.init(4, 4, 1))) });
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = fx.material, .world = Mat4.translation(.init(plate_x - 3, 0, plate_z + 2)).mul(Mat4.scaling(.init(3, 4, 1))) });
+        const bytes = try cascadeReadback(&fx, readback, null);
+        const tiles = fx.renderer.shadowTiles();
+        try testing.expectEqual(@as(usize, 1), tiles.len);
+        try testing.expectEqual(@as(u32, 256), tiles[0].tile.side);
+        const atlas = shadowAtlasExtent(fx.renderer.config);
+        const width: f32 = @floatFromInt(atlas.width);
+        const rect = shadowTileRect(fx.renderer.config, tiles[0].tile);
+        const widened = lighting.widenedTangent(@tan(spot.outer_cone), 256, 32);
+        const matrix = lighting.tileMatrix(lighting.spotMatrix(spot, 0.05, 10, 256, 32), rect);
+        const project = struct {
+            fn at(m: Mat4, p: Vec3) [3]f32 {
+                const h = m.mulVec4(.{ .x = p.x, .y = p.y, .z = p.z, .w = 1 });
+                return .{ h.x / h.w, h.y / h.w, h.z / h.w };
+            }
+        };
+        const edge = project.at(matrix, .init(plate_x, 0, plate_z));
+        const scale = lighting.perspectivePenumbraScale(case.radius, widened, 256, 0.05, 10);
+        const n = Vec3.init(0, 0, 1);
+        const offset = 1.5 * 2 * widened / 256;
+        const ambient = fx.renderer.view.ambient;
+        const dark = displayTexel(format, lighting.shade(surface, .init(1.5, 0, -4), n, camera, &.{}, ambient, null));
+        const lit = displayTexel(format, lighting.shade(surface, .init(1.5, 0, -4), n, camera, &.{spot}, ambient, null));
+        try testing.expect(!texelMatches(dark, lit));
+        // The receiver's penumbra at the edge, from the plate's own depth: M39's 1.5 texels at
+        // 0.2 m, then wider with the gap, as §10's ratio says.
+        const at_edge = project.at(matrix, Vec3.init(1.5, 0, -4).add(n.scale(offset * 6)));
+        const half = lighting.penumbraWidth(at_edge[2], edge[2], scale, 32);
+        if (case.radius != 0 and case.blocker == 5.8) try testing.expectEqual(lighting.penumbra_min, half);
+        var count: u32 = 0;
+        for (0..material_test_size) |x| {
+            const point = Vec3.init(camera.x + ((@as(f32, @floatFromInt(x)) + 0.5) / 16 - 1) * tangent * 4, (1 - 16.5 / 16.0) * tangent * 4, -4);
+            // Where the camera sees the plate before the wall, the wall is not the receiver.
+            if (plate_z < 0 and camera.x + (point.x - camera.x) * (-plate_z / 4) <= plate_x) continue;
+            const axial = eye.z - point.z;
+            const q = project.at(matrix, point.add(n.scale(offset * axial)));
+            const visibility = edgeVisibility(q, edge[0] * width, edge[2], scale, 32, width, rect[0] + 2 / width, rect[2] - 2 / width);
+            var dimmed = spot;
+            dimmed.intensity *= visibility;
+            const expected = displayTexel(format, lighting.shade(surface, point, n, camera, &.{dimmed}, ambient, null));
+            const actual = readTexel(&bytes, x, 16);
+            if (!texelMatches(expected, actual)) {
+                std.debug.print("case {d} x {d} vis {d:.4} expected {any} actual {any}\n", .{ ci, x, visibility, expected, actual });
+            }
+            try expectDisplayTexel(expected, actual);
+            // In the penumbra: neither this point's own unlit nor its own lit value.
+            const own_dark = displayTexel(format, lighting.shade(surface, point, n, camera, &.{}, ambient, null));
+            const own_lit = displayTexel(format, lighting.shade(surface, point, n, camera, &.{spot}, ambient, null));
+            if (!texelMatches(own_dark, actual) and !texelMatches(own_lit, actual)) count += 1;
+        }
+        transitions[ci] = count;
+    }
+    // Wider with the gap, and at contact no wider than M39's filter.
+    try testing.expect(transitions[0] < transitions[1] and transitions[1] < transitions[2]);
+    try testing.expect(transitions[0] <= transitions[3] + 1);
+    try testing.expect(transitions[3] < transitions[2]);
 }
 
 fn litBox(renderer: *Renderer) !MeshHandle {

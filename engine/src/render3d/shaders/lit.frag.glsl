@@ -77,6 +77,16 @@ const vec3 TINTS[4]=vec3[4](vec3(1,.25,.25),vec3(.25,1,.25),vec3(.25,.25,1),vec3
 // rgb is the light's transmittance (shadows-local.md §9): each tap whose receiver lies beyond
 // the translucent depth by more than the tile's relative bias takes the atlas's colour, any
 // other white, and only in a frame that drew translucent casters (counts.w).
+// A sized light's tile has a penumbra scale, p.z (shadows-local.md §10): sixteen point reads
+// on DISC find the blockers within the light's size projected through the receiver, their
+// mean depth gives the penumbra's half width, from 1.5 texels to ambient.w, and sixteen
+// comparison taps on DISC at that width filter it. With no blocker the point is lit. A zero
+// scale is M39's 3x3 filter exactly. lighting.penumbra_disc holds the same points.
+const vec2 DISC[16]=vec2[16](
+    vec2(0.176777,0.000000),vec2(-0.225772,0.206826),vec2(0.034558,-0.393771),vec2(0.284571,0.371173),
+    vec2(-0.522223,-0.092374),vec2(0.494695,-0.314685),vec2(-0.165466,0.615525),vec2(-0.315561,-0.607594),
+    vec2(0.684642,0.250030),vec2(-0.712256,0.294009),vec2(0.343354,-0.733729),vec2(0.253730,0.808932),
+    vec2(-0.764746,-0.443186),vec2(0.897134,-0.197232),vec2(-0.547507,0.778772),vec2(-0.126487,-0.976090));
 vec4 tileShadow(uint t, vec3 normal, float axial) {
     vec4 p=frame.shadow_tile_parameters[t];
     vec4 h=frame.shadow_matrices[t]*vec4(world_position+normal*p.x*axial,1);
@@ -88,6 +98,27 @@ vec4 tileShadow(uint t, vec3 normal, float axial) {
     bool tinted=frame.counts.w != 0;
     float visibility=0;
     vec3 transmit=vec3(0);
+    if (p.z != 0) {
+        float limit=frame.ambient.w;
+        float search=clamp((1-q.z)*p.z,1.5,limit);
+        float sum=0;
+        int found=0;
+        for (int i=0;i<16;i++) {
+            float d=texture(sampler2D(shadow_image,tint_sampler),clamp(q.xy+DISC[i]*search*frame.shadow_parameters.xy,lo,hi)).r;
+            if (d > q.z) { sum+=d; found++; }
+        }
+        if (found == 0 && !tinted) return vec4(1);
+        float width=found > 0 ? clamp((sum/float(found)-q.z)*p.z,1.5,limit) : 1.5;
+        for (int i=0;i<16;i++) {
+            vec2 c=clamp(q.xy+DISC[i]*width*frame.shadow_parameters.xy,lo,hi);
+            visibility+=found > 0 ? texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(c,q.z)) : 1.0;
+            if (tinted) {
+                vec4 f=texture(sampler2D(tint_image,tint_sampler),c);
+                transmit+=q.z < f.a*(1-p.w) ? f.rgb : vec3(1);
+            }
+        }
+        return vec4(tinted ? transmit/16 : vec3(1),visibility/16);
+    }
     for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++) {
         vec2 c=clamp(q.xy+vec2(x,y)*frame.shadow_parameters.xy,lo,hi);
         visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(c,q.z));

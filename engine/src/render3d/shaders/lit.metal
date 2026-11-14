@@ -102,6 +102,16 @@ constant float3 TINTS[4]={float3(1,.25,.25),float3(.25,1,.25),float3(.25,.25,1),
 // rgb is the light's transmittance (shadows-local.md §9): each tap whose receiver lies beyond
 // the translucent depth by more than the tile's relative bias takes the atlas's colour, any
 // other white, and only in a frame that drew translucent casters (counts.w).
+// A sized light's tile has a penumbra scale, p.z (shadows-local.md §10): sixteen point reads
+// on DISC find the blockers within the light's size projected through the receiver, their
+// mean depth gives the penumbra's half width, from 1.5 texels to ambient.w, and sixteen
+// comparison taps on DISC at that width filter it. With no blocker the point is lit. A zero
+// scale is M39's 3x3 filter exactly. lighting.penumbra_disc holds the same points.
+constant float2 DISC[16]={
+    float2(0.176777,0.000000),float2(-0.225772,0.206826),float2(0.034558,-0.393771),float2(0.284571,0.371173),
+    float2(-0.522223,-0.092374),float2(0.494695,-0.314685),float2(-0.165466,0.615525),float2(-0.315561,-0.607594),
+    float2(0.684642,0.250030),float2(-0.712256,0.294009),float2(0.343354,-0.733729),float2(0.253730,0.808932),
+    float2(-0.764746,-0.443186),float2(0.897134,-0.197232),float2(-0.547507,0.778772),float2(-0.126487,-0.976090)};
 static float4 tileShadow(constant Frame &frame,uint t,float3 world,float3 normal,float axial,
     depth2d<float> shadow_image,sampler shadow_sampler,texture2d<float> tint_image,sampler tint_sampler) {
     float4 p=frame.shadow_tile_parameters[t];
@@ -114,6 +124,27 @@ static float4 tileShadow(constant Frame &frame,uint t,float3 world,float3 normal
     bool tinted=frame.counts.w != 0;
     float visibility=0;
     float3 transmit=0;
+    if (p.z != 0) {
+        float limit=frame.ambient.w;
+        float search=clamp((1-q.z)*p.z,1.5f,limit);
+        float sum=0;
+        int found=0;
+        for (int i=0;i<16;i++) {
+            float d=shadow_image.sample(tint_sampler,clamp(q.xy+DISC[i]*search*frame.shadow_parameters.xy,lo,hi));
+            if (d > q.z) { sum+=d; found++; }
+        }
+        if (found == 0 && !tinted) return float4(1);
+        float width=found > 0 ? clamp((sum/found-q.z)*p.z,1.5f,limit) : 1.5f;
+        for (int i=0;i<16;i++) {
+            float2 c=clamp(q.xy+DISC[i]*width*frame.shadow_parameters.xy,lo,hi);
+            visibility+=found > 0 ? shadow_image.sample_compare(shadow_sampler,c,q.z) : 1.0f;
+            if (tinted) {
+                float4 f=tint_image.sample(tint_sampler,c);
+                transmit+=q.z < f.a*(1-p.w) ? f.rgb : float3(1);
+            }
+        }
+        return float4(tinted ? transmit/16 : float3(1),visibility/16);
+    }
     for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++) {
         float2 c=clamp(q.xy+float2(x,y)*frame.shadow_parameters.xy,lo,hi);
         visibility+=shadow_image.sample_compare(shadow_sampler,c,q.z);

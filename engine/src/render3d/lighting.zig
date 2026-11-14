@@ -36,6 +36,8 @@ pub const max_shadow_tiles = 32;
 pub const FrameUniform = extern struct {
     view_projection: Mat4,
     camera_exposure: [4]f32,
+    /// rgb: ambient radiance; w: the widest penumbra in texels, `Config.shadow_penumbra_max`
+    /// (`shadows-local.md` §10), written when a frame has shadow tiles.
     ambient: [4]f32,
     /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: the
     /// translucent switch (`shadows-local.md` §9).
@@ -273,6 +275,50 @@ pub const shadow_clamp_inset: f32 = 2;
 /// receiver is behind the glass when its depth is below `a·(1 − bias)`. Half precision keeps
 /// depth to 2^-11 of itself, so four of its steps leave a pane unshadowed by its own depth.
 pub const translucent_bias: f32 = 1.0 / 512.0;
+
+/// The narrowest penumbra, in texels: M39's filter's half width (`shadows-local.md` §10).
+pub const penumbra_min: f32 = 1.5;
+
+/// The fixed disc of the blocker search and the penumbra's filter (`shadows-local.md` §10):
+/// a Vogel spiral of unit radius, point i at radius sqrt((i + .5) / 16), turned i golden
+/// angles. Both lit shaders write the same sixteen numbers out, and a test holds them to it.
+pub const penumbra_disc = [16][2]f32{
+    .{ 0.176777, 0.000000 },   .{ -0.225772, 0.206826 }, .{ 0.034558, -0.393771 }, .{ 0.284571, 0.371173 },
+    .{ -0.522223, -0.092374 }, .{ 0.494695, -0.314685 }, .{ -0.165466, 0.615525 }, .{ -0.315561, -0.607594 },
+    .{ 0.684642, 0.250030 },   .{ -0.712256, 0.294009 }, .{ 0.343354, -0.733729 }, .{ 0.253730, 0.808932 },
+    .{ -0.764746, -0.443186 }, .{ 0.897134, -0.197232 }, .{ -0.547507, 0.778772 }, .{ -0.126487, -0.976090 },
+};
+
+/// A perspective tile's penumbra scale (`shadows-local.md` §10): texels of penumbra per unit
+/// of tile depth between blocker and receiver, for a light of `radius` metres. The width is
+/// `(d_r - d_b) radius / d_b` metres over the receiver's texel, `2 tangent d_r / side`, which
+/// is `radius side / (2 tangent) (1/d_b - 1/d_r)`. Reversed-Z depth is `A/d - near/(far -
+/// near)` with `A = near far / (far - near)`, so `1/d_b - 1/d_r` is `(z_b - z_r) / A`, and the
+/// width is the depth difference times this scale. Zero radius, zero scale: M39's filter.
+pub fn perspectivePenumbraScale(radius: f32, tangent: f32, side: u32, near: f32, far: f32) f32 {
+    const a = near * far / (far - near);
+    return radius * @as(f32, @floatFromInt(side)) / (2 * tangent * a);
+}
+
+/// A cascade's penumbra scale (§10): its depth runs over `depth_range` metres, so a depth
+/// difference is that many metres, and the width is the gap times the tangent of the light's
+/// angular radius, over the cascade's texel.
+pub fn orthographicPenumbraScale(angular_radius: f32, depth_range: f32, texel: f32) f32 {
+    return depth_range * @tan(angular_radius) / texel;
+}
+
+/// The penumbra's half width in texels from the average blocker's depth (§10), between M39's
+/// 1.5 texels and `limit`. The lit shaders mirror this.
+pub fn penumbraWidth(z_receiver: f32, z_blocker: f32, scale: f32, limit: f32) f32 {
+    return std.math.clamp((z_blocker - z_receiver) * scale, penumbra_min, limit);
+}
+
+/// The blocker search's radius in texels (§10): the light's size projected through the
+/// receiver into the tile, which is the penumbra a blocker at the tile's near end (depth 1)
+/// would cast, between 1.5 texels and `limit`.
+pub fn blockerSearchWidth(z_receiver: f32, scale: f32, limit: f32) f32 {
+    return std.math.clamp((1 - z_receiver) * scale, penumbra_min, limit);
+}
 
 /// The tangent of a local tile's half field of view, widened from `tangent` so that the tile,
 /// inset by the clamp and by `footprint` texels of filter, still covers `tangent`
@@ -813,4 +859,59 @@ test "a source radius is finite and non-negative, the sun's at most pi/8, a lamp
     unbounded.range = 0;
     unbounded.source_radius = 5;
     try testing.expect(valid(unbounded));
+}
+
+test "the penumbra disc is a Vogel spiral, and both lit shaders write out the same sixteen points" {
+    // In f64: the last point is turned about 36 radians, past f32's trig at six places.
+    const golden: f64 = std.math.pi * (3 - @sqrt(5.0));
+    for (penumbra_disc, 0..) |point, i| {
+        const k: f64 = @floatFromInt(i);
+        const radius = @sqrt((k + 0.5) / 16);
+        try testing.expectApproxEqAbs(radius * @cos(k * golden), point[0], 1e-6);
+        try testing.expectApproxEqAbs(radius * @sin(k * golden), point[1], 1e-6);
+        try testing.expect(radius <= 1);
+    }
+    const sources = [_][]const u8{ @embedFile("shaders/lit.metal"), @embedFile("shaders/lit.frag.glsl") };
+    for (sources, [_][]const u8{ "float2", "vec2" }) |source, kind| {
+        for (penumbra_disc) |point| {
+            var buffer: [64]u8 = undefined;
+            const text = try std.fmt.bufPrint(&buffer, "{s}({d:.6},{d:.6})", .{ kind, point[0], point[1] });
+            try testing.expect(std.mem.indexOf(u8, source, text) != null);
+        }
+    }
+}
+
+test "a penumbra's width is the gap times the light's size over the blocker's distance, in the receiver's texels" {
+    // A perspective tile: a 0.3 m lamp, a blocker at 2 m and a receiver at 5 m along the axis.
+    const near: f32 = 0.05;
+    const far: f32 = 10;
+    const tangent: f32 = 0.75;
+    const side: u32 = 512;
+    const projection = localProjection(tangent, near, far);
+    const depth = struct {
+        fn at(p: Mat4, d: f32) f32 {
+            const h = p.mulVec4(.{ .x = 0, .y = 0, .z = -d, .w = 1 });
+            return h.z / h.w;
+        }
+    };
+    const z_b = depth.at(projection, 2);
+    const z_r = depth.at(projection, 5);
+    const scale = perspectivePenumbraScale(0.3, tangent, side, near, far);
+    const metres = (5.0 - 2.0) * 0.3 / 2.0;
+    const texel = 2 * tangent * 5 / @as(f32, @floatFromInt(side));
+    try testing.expectApproxEqRel(metres / texel, (z_b - z_r) * scale, 1e-4);
+    try testing.expectApproxEqRel(metres / texel, penumbraWidth(z_r, z_b, scale, 32), 1e-4);
+    // The search is the penumbra a blocker at the near plane would cast, clamped.
+    const at_near = (5 - near) * 0.3 / near / texel;
+    try testing.expectApproxEqRel(@min(at_near, 1e6), blockerSearchWidth(z_r, scale, 1e6), 1e-3);
+    try testing.expectEqual(@as(f32, 32), blockerSearchWidth(z_r, scale, 32));
+    // Nearer the receiver, narrower, never under M39's 1.5 texels; past the limit, the limit.
+    try testing.expect(penumbraWidth(z_r, depth.at(projection, 4), scale, 32) < penumbraWidth(z_r, z_b, scale, 32));
+    try testing.expectEqual(penumbra_min, penumbraWidth(z_r, depth.at(projection, 4.999), scale, 32));
+    try testing.expectEqual(@as(f32, 4), penumbraWidth(z_r, z_b, scale, 4));
+    try testing.expectEqual(@as(f32, 0), perspectivePenumbraScale(0, tangent, side, near, far));
+    // A cascade: depth over 40 m, a 2 cm texel, the sun's 0.0047 rad; a 3 m gap.
+    const ortho = orthographicPenumbraScale(0.0047, 40, 0.02);
+    try testing.expectApproxEqRel(3 * @tan(@as(f32, 0.0047)) / 0.02, (3.0 / 40.0) * ortho, 1e-5);
+    try testing.expectEqual(@as(f32, 0), orthographicPenumbraScale(0, 40, 0.02));
 }

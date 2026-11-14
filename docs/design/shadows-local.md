@@ -1081,3 +1081,94 @@ checks had passed regardless: they validate the RHI's own stages, not render3d's
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, whose SPIR-V agreement
   check now pins the lit fragment's bindings 3 and 4 and the translucent caster's output.
+
+## Resolution — Step 6: contact-hardening penumbrae (2026-11-14)
+
+**What the step pinned:**
+- **`lighting.zig`:**
+  - `penumbra_min = 1.5`, M39's filter's half width;
+  - `penumbra_disc`, the sixteen Vogel points written out to six places;
+  - `perspectivePenumbraScale` and `orthographicPenumbraScale`, a tile's penumbra scale;
+  - `penumbraWidth` and `blockerSearchWidth`, which the lit shaders mirror.
+- **The renderer** writes each tile's scale into `shadow_tile_parameters.z`:
+  - a cascade's from the sun's angular radius, its fitted depth range and its texel;
+  - a spot's or a face's from the lamp's radius, its widened tangent, its side and its near
+    and far planes.
+  It writes `Config.shadow_penumbra_max` into `ambient.w`, the uniform's one free lane, in every
+  frame with shadow tiles. A light of radius 0 has scale 0.
+- **The lit shaders' `tileShadow`** (`lit.metal`, `lit.frag.glsl`) take §10's path when the
+  tile's scale is not zero. Otherwise they run M39's nine taps, unchanged.
+  - Sixteen point reads of the depth atlas on the disc, at the search radius, use binding 4's
+    nearest sampler. That sampler is Step 5's, so no binding was added. A read is a blocker when
+    its depth is nearer the light than the receiver's.
+  - With no blocker the point is lit and stops there. In a frame that drew translucent casters
+    it still filters the tint, at 1.5 texels.
+  - The blockers' mean depth gives the half width. Sixteen comparison taps on the same disc at
+    that width give the visibility, and each tap reads the tint as Step 5's taps do.
+  - Every read is clamped inside its tile by Step 3's inset.
+
+**Where implementation sharpened the design:**
+- **One formula for both kinds of tile.** §10 gives the width in linear depth: for a
+  perspective tile `(d_r − d_b)·radius/d_b` metres, and for a cascade the gap times the sun's
+  tangent, both converted to texels. Reversed-Z perspective depth is `A/d − near/(far − near)`,
+  with `A = near·far/(far − near)`, so `1/d_b − 1/d_r` is `(z_b − z_r)/A`. The perspective width
+  in the receiver's texels is therefore `(z_b − z_r)` times the scale
+  `radius·side/(2·tangent·A)`. A cascade's depth is linear, so its width is `(z_b − z_r)` times
+  `depth_range·tan(angle)/texel`. Each shader then needs one multiply, with no reconstruction
+  of linear depth, and the result is §10's formula exactly, not an approximation of it.
+- **The search radius** is "the light's size projected through the receiver into the tile".
+  That is the penumbra a blocker at the tile's near end (depth 1) would cast,
+  `(1 − z_r)·scale`, clamped from 1.5 texels to the limit. A cascade has no near plane, so
+  its near end is its depth range's end toward the sun.
+- **The widest penumbra lives in `ambient.w`.** §8's table left no lane for it. `ambient.w`
+  was zero and read by no shader. It is a frame value, not a tile's, so it does not take one
+  of the tile's four parameters.
+- **The readback is a plate, not a post.** §13 asked for a vertical post whose shadow widens
+  from its foot. The test asks the same question of one straight edge at several gaps, which
+  the CPU can filter exactly:
+  - a spot of radius 0.9 m, 6 m from a wall, throws a plate's edge onto it;
+  - the plate stands 0.2, 1.5 and 3 m before the wall;
+  - a fourth frame repeats the widest gap at radius 0.
+  The atlas then holds one depth on one side of a known column, so `edgeVisibility` rebuilds
+  each frame's blocker search, width and bilinear taps from the light's own matrix and checks
+  every pixel of a row against it.
+  The camera stands to one side, so it sees the wall past the plate's edge. Pixels where it
+  sees the plate are skipped.
+- **The disc test is in f64.** The last Vogel point is turned about 36 radians, where f32's
+  trig loses the sixth place.
+
+**Tests:**
+- **No GPU:**
+  - the disc is the Vogel formula, and both lit shaders' source text holds the same sixteen
+    points;
+  - a perspective width equals `(d_r − d_b)·radius/d_b` over the receiver's texel at three
+    depths, and is clamped to 1.5 at contact and to the limit;
+  - a cascade's width is the gap times the sun's tangent over its texel;
+  - the search radius is the near plane's penumbra;
+  - a sun, a spot and a point light, each with a size, carry their scales in all nine tiles,
+    with zero for every tile at radius 0, and `ambient.w` holds the configured limit.
+- **Metal, the penumbra:**
+  - every pixel of the row matches the oracle at ±2/255 in all four frames;
+  - the oracle's half width at contact is exactly 1.5 texels;
+  - the measured transition widens with the gap. Counting pixels that read neither their own
+    unlit nor their own lit value, it is 0, 4 and 11 pixels at 0.2, 1.5 and 3 m, and 1 pixel at
+    radius 0, M39's filter. At contact the penumbra, about 0.09 m, is narrower than one camera
+    pixel, 0.125 m on the wall.
+- Every earlier readback holds unchanged, since all of them light at radius 0.
+
+**Each guard was broken once:**
+- inverting the width's distance ratio (16 over the gap times the scale) failed the penumbra
+  readback;
+- dropping the radius-0 branch, so a zero scale runs the disc at 1.5 texels, failed the
+  penumbra readback's radius-0 frame. No earlier readback failed: the 1.5-texel disc and
+  M39's nine taps agree within ±2/255 on their scenes, so the radius-0 frame is what holds
+  the branch;
+- taking the search radius as the width, ignoring the blockers' depth, failed the penumbra
+  readback;
+- not writing a tile's scale into the uniform failed the scale test and the penumbra readback.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,024/3,034 (ten skips) and Metal 3,035/3,056 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, which compile the GLSL
+  penumbra.
