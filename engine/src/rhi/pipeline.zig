@@ -267,6 +267,17 @@ pub const DepthBias = struct {
     constant: f32 = 0,
     slope: f32 = 0,
     clamp: f32 = 0,
+
+    /// A pipeline built with any non-zero bias has bias enabled, and only such a pipeline's bias
+    /// may be changed in a pass by `RenderPass.setDepthBias` (`shadows-local.md` §3): Vulkan
+    /// ignores a dynamic bias on a pipeline whose bias is disabled, so the contract does too.
+    pub fn enabled(self: DepthBias) bool {
+        return self.constant != 0 or self.slope != 0 or self.clamp != 0;
+    }
+
+    pub fn isFinite(self: DepthBias) bool {
+        return std.math.isFinite(self.constant) and std.math.isFinite(self.slope) and std.math.isFinite(self.clamp);
+    }
 };
 
 pub const DepthStencilState = struct {

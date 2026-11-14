@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40's design is proposed** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080 and ADR-0081); awaiting the owner's acceptance of §16. Stop before Step 1 (the RHI's per-pass depth-bias command). No M40 code exists. M39 is complete (tag `m39`, pushed). The PC holds no Foundry clone.
+**Current handoff: M40 Step 1 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081, accepted). Stop before Step 2: the allocator, priority, sizes and the spot and face matrices, as maths, with the cascades placed through the allocator on pages. No allocator, local caster or new uniform exists yet. The PC holds no Foundry clone.
+
+**M40 Step 1 is done (2026-11-14): depth bias per pass.**
+- The design and ADR-0080/0081 are accepted, and `CLAUDE.md` §4.1 gains their rows.
+- `RenderPass.setDepthBias` on null, Metal and Vulkan. It lasts until the next `setPipeline`, which restores the pipeline's own. Only a pipeline built with bias may have it changed, since Vulkan ignores a dynamic bias otherwise; null refuses that, a non-finite value, no pipeline, and a call after the pass ended. Vulkan's biased pipelines declare the bias dynamic and set it when bound.
+- A Metal readback moves one of three tiles by the command alone.
+- M22's Metal comparison test never stored its depth (`store` defaults to `.discard`), so it proved nothing. It now stores and expects reversed-Z's answer.
+- Three guards broken, each failing its test. Bar: null 2,999/3,009 (ten skips), Metal 3,010/3,031 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40's design (2026-11-14): Shadows III, proposed.** Spot and point lights cast into tiles a per-frame buddy allocator hands out from M39's atlas, now a row of pages whose first grants are the cascades, on M39's tiles. A point light is six widened face tiles, not a cubemap. Depth bias becomes a per-pass RHI command. Blended casters filter light through a transmittance atlas that keeps the nearest translucent depth. A light's `source_radius` gives contact-hardening penumbrae, zero being M39's filter. Ten steps: bias, maths, spots, points, glass, penumbrae, the room, the court, Windows, the close.
 

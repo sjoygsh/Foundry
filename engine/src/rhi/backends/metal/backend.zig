@@ -1536,6 +1536,14 @@ pub const RenderPass = struct {
         c.fd_mtl_render_encoder_set_fragment_bytes(enc, bytes.ptr, bytes.len, inline_constant_buffer_index);
     }
 
+    /// Metal's bias is encoder state, which `setPipeline` sets from the pipeline; this sets it
+    /// again for the draws that follow, until the next pipeline (`shadows-local.md` §3).
+    pub fn setDepthBias(self: *RenderPass, bias: pipeline.DepthBias) void {
+        const enc = self.enc orelse return;
+        if (!bias.isFinite()) return;
+        c.fd_mtl_render_encoder_set_depth_bias(enc, bias.constant, bias.slope, bias.clamp);
+    }
+
     pub fn setViewport(self: *RenderPass, viewport: command.Viewport) void {
         const enc = self.enc orelse return;
         c.fd_mtl_render_encoder_set_viewport(
@@ -2411,6 +2419,111 @@ const m22_shadow_msl =
     \\}
 ;
 
+test "M40: a pass's depth bias moves one tile's depth, and rebinding the pipeline restores its own" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const tile = 8;
+    const extent: resource.Extent2D = .{ .width = 3 * tile, .height = tile };
+    const shader = try dev.createShaderModuleFromSource(.{ .label = "bias proof", .source = m40_bias_msl });
+    defer dev.destroyShaderModule(shader);
+    const empty_layout = try dev.createPipelineLayout(.{});
+    defer dev.destroyPipelineLayout(empty_layout);
+    // The pipeline's own bias is one unit, far too small to cross the reference.
+    const depth_pipeline = try dev.createRenderPipeline(.{
+        .label = "biased depth",
+        .layout = empty_layout,
+        .vertex_shader = shader,
+        .vertex_entry = "depthVertex",
+        .fragment_shader = .none,
+        .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .always, .bias = .{ .constant = -1 } },
+    });
+    defer dev.destroyRenderPipeline(depth_pipeline);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .texture = .depth },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true }, .sampler = .comparison },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const sample_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    defer dev.destroyPipelineLayout(sample_layout);
+    const sample_pipeline = try dev.createRenderPipeline(.{
+        .label = "sample biased depth",
+        .layout = sample_layout,
+        .vertex_shader = shader,
+        .vertex_entry = "sampleVertex",
+        .fragment_shader = shader,
+        .fragment_entry = "sampleFragment",
+        .color_targets = &.{.{ .format = .rgba8_unorm }},
+    });
+    defer dev.destroyRenderPipeline(sample_pipeline);
+    const depth = try dev.createTexture(.{ .label = "biased atlas", .size = extent, .format = .depth32_float, .usage = .{ .depth_stencil = true, .sampled = true } });
+    defer dev.destroyTexture(depth);
+    const comparison = try dev.createSampler(.{ .compare = .greater_equal });
+    defer dev.destroySampler(comparison);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = depth } },
+        .{ .binding = 1, .resource = .{ .sampler = comparison } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const target = try dev.createTexture(.{ .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    defer dev.destroyTexture(target);
+    const readback = try dev.createBuffer(.{ .size = 3 * tile * tile * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    var cmd = try dev.beginCommandBuffer();
+    var depth_pass = try cmd.beginRenderPass(.{ .depth = .{
+        .texture = depth,
+        .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } },
+        .store = .store,
+        .final_state = .shader_read,
+    } });
+    depth_pass.setPipeline(depth_pipeline);
+    for (0..3) |i| {
+        depth_pass.setViewport(.{ .x = @floatFromInt(i * tile), .width = tile, .height = tile });
+        depth_pass.setScissor(.{ .x = @intCast(i * tile), .width = tile, .height = tile });
+        // Tile 1: 2^17 units at a depth of 0.5 (2^-24 each) moves it 2^-7 nearer zero. Tile 2:
+        // the same pipeline bound again, which restores its own bias.
+        if (i == 1) depth_pass.setDepthBias(.{ .constant = -131072 });
+        if (i == 2) depth_pass.setPipeline(depth_pipeline);
+        depth_pass.draw(.{ .vertex_count = 3 });
+    }
+    depth_pass.end();
+    var sample_pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = target, .final_state = .copy_src }} });
+    sample_pass.setPipeline(sample_pipeline);
+    sample_pass.setBindGroup(0, group);
+    sample_pass.draw(.{ .vertex_count = 3 });
+    sample_pass.end();
+    try cmd.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try cmd.submit();
+    dev.waitIdle();
+    const pixels = try dev.mapBuffer(readback);
+    defer dev.unmapBuffer(readback);
+    // `greater_equal` passes where the reference is at or nearer than the stored depth
+    // (reversed-Z). The reference, 0.496, lies between 0.5 and 0.5 - 2^-7, so only the biased
+    // tile passes.
+    for (0..tile) |y| for (0..3 * tile) |x| {
+        const want: u8 = if (x / tile == 1) 255 else 0;
+        try testing.expectEqual(want, pixels[(y * 3 * tile + x) * 4]);
+    };
+}
+
+const m40_bias_msl =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\struct VOut { float4 pos [[position]]; float2 uv; };
+    \\vertex VOut depthVertex(uint vid [[vertex_id]]) {
+    \\    float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+    \\    VOut o; o.pos = float4(p[vid], 0.5, 1); o.uv = p[vid] * 0.5 + 0.5; return o;
+    \\}
+    \\vertex VOut sampleVertex(uint vid [[vertex_id]]) {
+    \\    float2 p[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
+    \\    VOut o; o.pos = float4(p[vid], 0, 1); o.uv = p[vid] * 0.5 + 0.5; return o;
+    \\}
+    \\fragment float4 sampleFragment(VOut in [[stage_in]], depth2d<float> shadow [[texture(0)]],
+    \\                               sampler comparison [[sampler(0)]]) {
+    \\    float lit = shadow.sample_compare(comparison, in.uv, 0.496); return float4(lit, 0, 0, 1);
+    \\}
+;
+
 test "M24: staged vertex data rewritten every frame draws across two frames in flight" {
     try @import("../../frame_vertices.zig").drawProof(@This(), true);
 }
@@ -2465,11 +2578,16 @@ test "M22: a depth-only pass is sampled through a comparison sampler" {
     defer dev.destroyBuffer(readback);
 
     var cmd = try dev.beginCommandBuffer();
-    var depth_pass = try cmd.beginRenderPass(.{ .depth = .{
-        .texture = depth,
-        .load = .{ .clear = .{ .depth_stencil = .{ .depth = 1 } } },
-        .final_state = .shader_read,
-    } });
+    var depth_pass = try cmd.beginRenderPass(.{
+        .depth = .{
+            .texture = depth,
+            .load = .{ .clear = .{ .depth_stencil = .{ .depth = 1 } } },
+            // Stored, or the comparison reads a discarded attachment and passes whatever it holds
+            // (M40 Step 1 found this test proved nothing without it).
+            .store = .store,
+            .final_state = .shader_read,
+        },
+    });
     depth_pass.setPipeline(depth_pipeline);
     depth_pass.draw(.{ .vertex_count = 3 });
     depth_pass.end();
@@ -2483,7 +2601,8 @@ test "M22: a depth-only pass is sampled through a comparison sampler" {
     dev.waitIdle();
     const pixels = try dev.mapBuffer(readback);
     defer dev.unmapBuffer(readback);
-    for (0..64) |i| try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, pixels[i * 4 ..][0..4].*);
+    // The reference, 0.4, is farther than the stored 0.5 in reversed-Z, so it fails everywhere.
+    for (0..64) |i| try testing.expectEqual([4]u8{ 0, 0, 0, 255 }, pixels[i * 4 ..][0..4].*);
 }
 
 const m22_fp16_msl =

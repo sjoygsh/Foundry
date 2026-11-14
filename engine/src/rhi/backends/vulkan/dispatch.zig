@@ -147,6 +147,7 @@ pub const Device = struct {
     vkCmdPushConstants: Fn(c.PFN_vkCmdPushConstants),
     vkCmdSetViewport: Fn(c.PFN_vkCmdSetViewport),
     vkCmdSetScissor: Fn(c.PFN_vkCmdSetScissor),
+    vkCmdSetDepthBias: Fn(c.PFN_vkCmdSetDepthBias),
     vkCmdDraw: Fn(c.PFN_vkCmdDraw),
     vkCmdDrawIndexed: Fn(c.PFN_vkCmdDrawIndexed),
     vkCmdPipelineBarrier2: Fn(c.PFN_vkCmdPipelineBarrier2),

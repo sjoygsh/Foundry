@@ -260,6 +260,8 @@ const RenderPipelineState = struct {
     native: c.VkPipeline,
     layout: *PipelineLayoutBacking,
     primitive: pipeline.PrimitiveState,
+    /// Enabled bias is dynamic state (`shadows-local.md` §3), so binding the pipeline sets this.
+    depth_bias: ?pipeline.DepthBias,
 };
 
 /// What a destroyed resource leaves behind until the recordings that could use it finish. The
@@ -1397,6 +1399,7 @@ pub const Device = struct {
             .viewportCount = 1,
             .scissorCount = 1,
         };
+        const biased = if (desc.depth_stencil) |depth| depth.bias.enabled() else false;
         const raster: c.VkPipelineRasterizationStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .polygonMode = c.VK_POLYGON_MODE_FILL,
@@ -1405,10 +1408,7 @@ pub const Device = struct {
             // viewport (§6) already turns Foundry's y-up winding into the same winding there, so the
             // descriptor's front face maps directly (Step 6 Resolution).
             .frontFace = frontFace(desc.primitive.front_face),
-            .depthBiasEnable = if (desc.depth_stencil) |depth|
-                if (depth.bias.constant != 0 or depth.bias.slope != 0 or depth.bias.clamp != 0) c.VK_TRUE else c.VK_FALSE
-            else
-                c.VK_FALSE,
+            .depthBiasEnable = if (biased) c.VK_TRUE else c.VK_FALSE,
             .depthBiasConstantFactor = if (desc.depth_stencil) |depth| depth.bias.constant else 0,
             .depthBiasClamp = if (desc.depth_stencil) |depth| depth.bias.clamp else 0,
             .depthBiasSlopeFactor = if (desc.depth_stencil) |depth| depth.bias.slope else 0,
@@ -1449,10 +1449,11 @@ pub const Device = struct {
             .attachmentCount = @intCast(targets.len),
             .pAttachments = targets.ptr,
         };
-        const dynamic_states = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR };
+        // A biased pipeline's bias is dynamic, so a pass can change it per tile; core 1.0.
+        const dynamic_states = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR, c.VK_DYNAMIC_STATE_DEPTH_BIAS };
         const dynamic: c.VkPipelineDynamicStateCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .dynamicStateCount = dynamic_states.len,
+            .dynamicStateCount = if (biased) dynamic_states.len else dynamic_states.len - 1,
             .pDynamicStates = &dynamic_states,
         };
         const depth_format = if (desc.depth_stencil) |depth| vkFormat(depth.format) else c.VK_FORMAT_UNDEFINED;
@@ -1492,6 +1493,7 @@ pub const Device = struct {
             .native = native,
             .layout = layout_backing,
             .primitive = desc.primitive,
+            .depth_bias = if (biased) desc.depth_stencil.?.bias else null,
         }) catch |err| {
             layout_backing.refs -= 1;
             return err;
@@ -3285,6 +3287,8 @@ pub const RenderPass = struct {
     constants: [pipeline.max_inline_constant_bytes]u8 = @splat(0),
     constant_bytes: u32 = 0,
     constants_dirty: bool = false,
+    /// Whether the bound pipeline's depth bias is dynamic state a pass may change.
+    biased: bool = false,
 
     fn addFinal(self: *RenderPass, texture: resource.TextureHandle, from: resource.ResourceState, to: resource.ResourceState) void {
         self.finals[self.final_count] = .{ .texture = texture, .from = from, .to = to };
@@ -3303,6 +3307,16 @@ pub const RenderPass = struct {
             self.constants_dirty = false;
         }
         self.device.device_fns.vkCmdBindPipeline(self.cmd.native, c.VK_PIPELINE_BIND_POINT_GRAPHICS, state.native);
+        // Dynamic state must be set before a draw; the pipeline's own is what Metal restores too.
+        self.biased = state.depth_bias != null;
+        if (state.depth_bias) |bias| self.device.device_fns.vkCmdSetDepthBias(self.cmd.native, bias.constant, bias.clamp, bias.slope);
+    }
+
+    /// Only after a biased pipeline: Vulkan ignores a dynamic bias where bias is disabled, which
+    /// the null backend refuses (`shadows-local.md` §3).
+    pub fn setDepthBias(self: *RenderPass, bias: pipeline.DepthBias) void {
+        if (!self.live or !self.biased or !bias.isFinite()) return;
+        self.device.device_fns.vkCmdSetDepthBias(self.cmd.native, bias.constant, bias.clamp, bias.slope);
     }
 
     /// Remembered, and bound at the next draw against whichever layout is bound then.

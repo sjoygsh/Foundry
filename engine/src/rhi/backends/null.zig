@@ -190,6 +190,7 @@ const RenderPipelineState = struct {
     depth_format: ?format.TextureFormat,
     vertex_buffer_mask: u8,
     sample_count: u32,
+    depth_bias: pipeline.DepthBias,
 };
 
 /// What a destroyed resource leaves behind until the recordings that could use it finish.
@@ -793,7 +794,7 @@ pub const Device = struct {
                 self.violate(.attachment_format, "pipeline '{s}' uses colour format {t} as a depth target", .{ desc.label, d.format });
                 return error.InvalidDescriptor;
             }
-            if (!std.math.isFinite(d.bias.constant) or !std.math.isFinite(d.bias.slope) or !std.math.isFinite(d.bias.clamp)) {
+            if (!d.bias.isFinite()) {
                 self.violate(.limits, "pipeline '{s}' has a non-finite depth bias", .{desc.label});
                 return error.InvalidDescriptor;
             }
@@ -824,6 +825,7 @@ pub const Device = struct {
             .depth_format = if (desc.depth_stencil) |d| d.format else null,
             .vertex_buffer_mask = vertex_buffer_mask,
             .sample_count = desc.sample_count,
+            .depth_bias = if (desc.depth_stencil) |d| d.bias else .{},
         });
     }
 
@@ -1343,6 +1345,8 @@ pub const RenderPass = struct {
     index_buffer: resource.BufferHandle = .none,
     inline_constants_set: bool = false,
     inline_constant_bytes: u32 = 0,
+    /// The bias the next draw rasterises with: the bound pipeline's, until `setDepthBias`.
+    depth_bias: pipeline.DepthBias = .{},
 
     /// Rule 7: every attachment of a pass has the same sample count.
     fn noteSamples(self: *RenderPass, tex: *const TextureState, what: []const u8) void {
@@ -1370,6 +1374,7 @@ pub const RenderPass = struct {
             self.inline_constants_set = false;
         }
         self.pipeline_handle = handle;
+        self.depth_bias = if (dev.pipelines.getConst(handle)) |p| p.depth_bias else .{};
     }
 
     pub fn setBindGroup(self: *RenderPass, index: u32, group: pipeline.BindGroupHandle) void {
@@ -1472,6 +1477,30 @@ pub const RenderPass = struct {
     pub fn setScissor(self: *RenderPass, rect: command.ScissorRect) void {
         _ = self;
         _ = rect;
+    }
+
+    /// `shadows-local.md` §3: finite, inside an open pass, after a pipeline built with bias
+    /// enabled, since Vulkan ignores a dynamic bias on one whose bias is disabled. Lasts until
+    /// the next `setPipeline`, which restores that pipeline's own.
+    pub fn setDepthBias(self: *RenderPass, bias: pipeline.DepthBias) void {
+        const dev = self.device;
+        if (self.ended) {
+            dev.violate(.encoder_discipline, "depth bias recorded into pass '{s}' after it ended", .{self.label});
+            return;
+        }
+        if (!bias.isFinite()) {
+            dev.violate(.limits, "pass '{s}' sets a non-finite depth bias", .{self.label});
+            return;
+        }
+        const pipe = dev.pipelines.getConst(self.pipeline_handle) orelse {
+            dev.violate(.incomplete_bindings, "pass '{s}' sets a depth bias with no pipeline bound", .{self.label});
+            return;
+        };
+        if (!pipe.depth_bias.enabled()) {
+            dev.violate(.usage, "pass '{s}' sets a depth bias on a pipeline built without one", .{self.label});
+            return;
+        }
+        self.depth_bias = bias;
     }
 
     pub fn draw(self: *RenderPass, params: command.Draw) void {
@@ -2632,6 +2661,72 @@ test "M22: sampled depth and depth bias descriptors are bounded" {
         .depth_stencil = .{ .format = .depth32_float, .bias = .{ .constant = std.math.inf(f32) } },
     }));
     try testing.expect(dev.hasViolation(.limits));
+}
+
+test "M40: a pass changes a biased pipeline's depth bias until the next pipeline restores its own" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const depth = try dev.createTexture(.{
+        .label = "atlas",
+        .size = .{ .width = 64, .height = 64 },
+        .format = .depth32_float,
+        .usage = .{ .depth_stencil = true, .sampled = true },
+    });
+    const own: pipeline.DepthBias = .{ .constant = -1, .slope = -1 };
+    const biased = try dev.createRenderPipeline(.{
+        .label = "biased",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = .none,
+        .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .greater_equal, .bias = own },
+    });
+    const unbiased = try dev.createRenderPipeline(.{
+        .label = "unbiased",
+        .layout = fx.layout,
+        .vertex_shader = fx.vs,
+        .fragment_shader = .none,
+        .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = true, .depth_compare = .greater_equal },
+    });
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .label = "atlas", .depth = .{ .texture = depth, .final_state = .shader_read } });
+
+    // Before any pipeline there is nothing to change.
+    pass.setDepthBias(.{ .constant = -4 });
+    try testing.expect(dev.hasViolation(.incomplete_bindings));
+    dev.clearViolations();
+
+    pass.setPipeline(biased);
+    try testing.expectEqual(own, pass.depth_bias);
+    const tile: pipeline.DepthBias = .{ .constant = -8, .slope = -2, .clamp = 0.01 };
+    pass.setDepthBias(tile);
+    try testing.expectEqual(tile, pass.depth_bias);
+    pass.draw(.{ .vertex_count = 3 });
+
+    // Non-finite is refused and changes nothing.
+    pass.setDepthBias(.{ .slope = std.math.nan(f32) });
+    try testing.expect(dev.hasViolation(.limits));
+    try testing.expectEqual(tile, pass.depth_bias);
+    dev.clearViolations();
+
+    // Binding a pipeline restores its own, even the same one.
+    pass.setPipeline(biased);
+    try testing.expectEqual(own, pass.depth_bias);
+
+    // A pipeline built without bias cannot have one set: Vulkan would ignore it.
+    pass.setPipeline(unbiased);
+    try testing.expectEqual(pipeline.DepthBias{}, pass.depth_bias);
+    pass.setDepthBias(tile);
+    try testing.expect(dev.hasViolation(.usage));
+    try testing.expectEqual(pipeline.DepthBias{}, pass.depth_bias);
+    dev.clearViolations();
+
+    pass.end();
+    pass.setDepthBias(tile);
+    try testing.expect(dev.hasViolation(.encoder_discipline));
+    dev.clearViolations();
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
 }
 
 // -- rule 8: encoder discipline ------------------------------------------------------

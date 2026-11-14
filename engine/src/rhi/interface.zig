@@ -168,6 +168,10 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(R, label, "setInlineConstants", &.{ *R, []const u8 }, void);
         expectFn(R, label, "setViewport", &.{ *R, command.Viewport }, void);
         expectFn(R, label, "setScissor", &.{ *R, command.ScissorRect }, void);
+        // Replaces the bound pipeline's depth bias for the draws after it, until the next
+        // `setPipeline`, which restores that pipeline's own. Only a pipeline built with bias
+        // enabled may have it changed (`shadows-local.md` §3).
+        expectFn(R, label, "setDepthBias", &.{ *R, pipeline.DepthBias }, void);
         expectFn(R, label, "draw", &.{ *R, command.Draw }, void);
         expectFn(R, label, "drawIndexed", &.{ *R, command.DrawIndexed }, void);
         expectFn(R, label, "end", &.{*R}, void);

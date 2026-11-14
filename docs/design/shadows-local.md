@@ -1,6 +1,7 @@
 # Design: M40 — Shadows III: spot, point and translucent shadows in tiles of one allocated atlas
 
-**Status:** Proposed 2026-11-14; awaiting the owner's acceptance of §16. No step has begun.
+**Status:** Accepted 2026-11-14, when the owner asked for Step 1, with §16 as written. Each step's
+Resolution follows §16.
 **Date:** 2026-11-14
 **Baseline:** `7490d18`, tag `m39`. M0–M39 are complete.
 **Decisions:**
@@ -10,11 +11,11 @@
 - ADR-0079 (accepted, M39): the directional light's cascades are tiles of one depth atlas, and
   "M40's spot and point shadows take tiles of the same atlas. M39 builds a fixed table of tiles;
   M40 replaces it with an allocator." This design does that.
-- [ADR-0080](../adr/0080-local-shadows-are-allocated-tiles-of-the-atlas.md) (proposed): spot and
+- [ADR-0080](../adr/0080-local-shadows-are-allocated-tiles-of-the-atlas.md) (accepted 2026-11-14): spot and
   point lights cast into tiles a per-frame buddy allocator hands out from the same atlas, in a
   deterministic priority order. A point light is six tiles, one per cube face, not a cubemap. Depth
   bias becomes a per-tile command in the RHI.
-- [ADR-0081](../adr/0081-translucent-shadows-are-a-transmittance-atlas.md) (proposed): blended
+- [ADR-0081](../adr/0081-translucent-shadows-are-a-transmittance-atlas.md) (accepted 2026-11-14): blended
   casters filter light through a colour atlas beside the depth atlas, which also holds the nearest
   translucent depth, so a receiver in front of the glass is not tinted.
 
@@ -717,3 +718,66 @@ Each is recommended as written.
 
 Once these are accepted nothing blocks Step 1: it is one RHI command on three backends, on the
 code as it is.
+
+## Resolution — Step 1: depth bias per pass command (2026-11-14)
+
+The design was accepted when the owner asked for Step 1. Its status line, ADR-0080, ADR-0081 and
+`CLAUDE.md` §4.1's two new rows record that.
+
+**What the step pinned:**
+- `RenderPass.setDepthBias(DepthBias)` is in the interface every backend must satisfy. It replaces
+  the bound pipeline's bias for the draws after it, until the next `setPipeline`, which restores
+  that pipeline's own, even when the same pipeline is bound again.
+- **Only a pipeline built with bias enabled may have it changed.** `DepthBias.enabled()` (any
+  non-zero member) and `DepthBias.isFinite()` are new. §3 did not say this, and it is the
+  contract's sharpest edge: Vulkan ignores a dynamic bias on a pipeline whose
+  `depthBiasEnable` is false, while Metal would apply it. The contract follows Vulkan, and the
+  null backend enforces it, so no caller can write code that works on Metal and not on the Arc.
+- **Null** records the bias on the pass. It refuses a call after the pass ended
+  (`encoder_discipline`), a non-finite value (`limits`), a call with no pipeline bound
+  (`incomplete_bindings`) and a call on a pipeline built without bias (`usage`). A refused call
+  changes nothing. A null pipeline now keeps its bias, and `setPipeline` copies it to the pass.
+- **Metal** calls the encoder's `setDepthBias` that `setPipeline` already used.
+- **Vulkan:** a biased pipeline also declares `VK_DYNAMIC_STATE_DEPTH_BIAS` and keeps its bias.
+  Binding it records `vkCmdSetDepthBias` with that bias, since dynamic state must be set before
+  a draw. A pipeline without bias declares only viewport and scissor, as before.
+  `vkCmdSetDepthBias` joins the dispatch table.
+- `render3d` calls nothing new yet: its shadow pipelines are biased (−1, −1), so Step 3 can use
+  the command without changing them.
+
+**A Metal test proves the command.** Three 8-texel tiles of one depth texture are drawn at
+depth 0.5 by a pipeline whose own bias is one unit. The middle tile sets −2^17 units, which is
+2^−7 at that depth. The third binds the same pipeline again. A comparison at 0.496 passes in the
+middle tile only.
+
+**A weak M22 test found and repaired.** `DepthAttachment.store` defaults to `.discard`.
+- The first version of the new test omitted `.store = .store`, as M22's "a depth-only pass is
+  sampled through a comparison sampler" does. Every comparison passed, at references of 0.25,
+  0.75 and 0.496 alike, because the sampled attachment had been discarded.
+- So M22's test had never proved its comparison. It now stores its depth and expects what
+  reversed-Z gives: a reference of 0.4 lies behind the stored 0.5, so it fails everywhere.
+- The comparison's sense is confirmed: `greater_equal` passes where the reference is at or
+  nearer than the stored depth, as `render3d`'s shadows assume.
+- The null backend does not flag sampling an attachment whose contents a pass discarded. Making
+  it do so is a validation rule outside this step; it is recorded here and left alone.
+
+**Vulkan** compiles for Windows and Linux, and the five Vulkan checks pass. No Vulkan readback
+was added: the backend's sprite pipeline writes depth 0, where a constant bias's size is not
+portable. Step 9 runs the Vulkan suites under required validation, whose shadow readbacks bind
+biased pipelines. Without the bind's `vkCmdSetDepthBias`, validation would refuse those draws,
+and from Step 3 they use the command per tile.
+
+**Each guard was broken once, and each failed its test:**
+- `setPipeline` not restoring the pipeline's bias failed the null test;
+- the null refusal of an unbiased pipeline removed failed the null test;
+- Metal's `setDepthBias` made a no-op failed the Metal readback.
+
+**Step 10's list gains `rhi.md`,** whose command list gains `setDepthBias` and its contract.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 2,999/3,009 (ten skips) and Metal 3,010/3,031 (21 skips), one and two more than M39 for
+  the new tests;
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.
+`zig fmt` failed once, on the Metal file as restored after the mutations, and passed once it was
+formatted. Only whitespace changed, and the Metal build was checked again.
