@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40 Step 1 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081, accepted). Stop before Step 2: the allocator, priority, sizes and the spot and face matrices, as maths, with the cascades placed through the allocator on pages. No allocator, local caster or new uniform exists yet. The PC holds no Foundry clone.
+**Current handoff: M40 Step 2 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 3: the third uniform layout (4,256 bytes) in Zig, MSL and GLSL, and spot shadows allocated, culled, drawn with their own bias and looked up. No local tile is granted or drawn yet, and `addLight` still refuses a casting point or spot. The PC holds no Foundry clone.
+
+**M40 Step 2 is done (2026-11-14): the allocator and local matrices, as maths.**
+- `render3d/shadow_atlas.zig`: a buddy allocator over a row of pages, rebuilt each frame, with its fixed walk; requests nearest sphere first, sized by screen coverage, halved then dropped when full, at most 32 tiles.
+- `lighting.zig`: `Light.source_radius` and its validation, the widened spot and face projections with reversed-Z, `chooseFace`.
+- `Config` gains every local field, validated. The atlas is now `pages × 2s` by `2s` (default 8,192 × 4,096), and the cascades are placed through the allocator on M39's texels. Every M39 readback holds. A one-cascade host now pays a whole page.
+- Coverage is the sphere's angular size, since M20 has no bounds projection. A light with range no farther than the local near plane casts nothing.
+- Three guards broken, each failing. Bar: null 3,012/3,022 (ten skips), Metal 3,023/3,044 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 1 is done (2026-11-14): depth bias per pass.**
 - The design and ADR-0080/0081 are accepted, and `CLAUDE.md` §4.1 gains their rows.

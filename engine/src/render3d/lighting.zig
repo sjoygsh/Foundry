@@ -13,6 +13,10 @@ pub const Light = struct {
     inner_cone: f32 = 0,
     outer_cone: f32 = std.math.pi / 4.0,
     casts_shadow: bool = false,
+    /// The emitter's size, for contact-hardening penumbrae (`shadows-local.md` §10): its radius
+    /// in metres for a point or spot, its angular radius in radians for the directional light
+    /// (the sun's is about 0.0047). Zero is M39's filter exactly.
+    source_radius: f32 = 0,
     world: Mat4,
 };
 
@@ -65,7 +69,15 @@ pub fn valid(light: Light) bool {
         std.math.isFinite(light.range) and light.range >= 0 and
         std.math.isFinite(light.inner_cone) and std.math.isFinite(light.outer_cone) and
         light.inner_cone >= 0 and light.inner_cone < light.outer_cone and
-        light.outer_cone <= std.math.pi / 2.0 and !direction(light.world).eql(.zero);
+        light.outer_cone <= std.math.pi / 2.0 and !direction(light.world).eql(.zero) and
+        validSourceRadius(light);
+}
+
+/// Finite and non-negative; the sun's at most pi/8; a bounded local light's inside its range.
+fn validSourceRadius(light: Light) bool {
+    if (!std.math.isFinite(light.source_radius) or light.source_radius < 0) return false;
+    if (light.kind == .directional) return light.source_radius <= std.math.pi / 8.0;
+    return light.range == 0 or light.source_radius < light.range;
 }
 
 pub fn packLight(light: Light) PackedLight {
@@ -241,6 +253,85 @@ pub fn chooseCascade(depth: f32, far_splits: [max_cascades]f32, count: u32, blen
         start = end;
     }
     return .{ .index = count, .next = 0 };
+}
+
+/// The clamp's inset, in texels: every filter tap stays this far inside its tile (§5 of
+/// `shadows-cascaded.md`).
+pub const shadow_clamp_inset: f32 = 2;
+
+/// The tangent of a local tile's half field of view, widened from `tangent` so that the tile,
+/// inset by the clamp and by `footprint` texels of filter, still covers `tangent`
+/// (`shadows-local.md` §6, §7): `tangent / (1 - 2 (inset + footprint) / size)`.
+pub fn widenedTangent(tangent: f32, size: u32, footprint: f32) f32 {
+    return tangent / (1 - 2 * (shadow_clamp_inset + footprint) / @as(f32, @floatFromInt(size)));
+}
+
+/// A square perspective projection with reversed-Z: depth 1 at `near`, 0 at `far`, the form
+/// `Camera.projectionMatrix` takes.
+pub fn localProjection(tangent: f32, near: f32, far: f32) Mat4 {
+    const f = 1 / tangent;
+    const range = far - near;
+    return .{ .cols = .{
+        .{ f, 0, 0, 0 },
+        .{ 0, f, 0, 0 },
+        .{ 0, 0, near / range, -1 },
+        .{ 0, 0, near * far / range, 0 },
+    } };
+}
+
+/// World to view for an eye at `eye` looking down `forward` with `up` as near its +Y as an
+/// orthonormal basis allows; a camera's convention, looking down its own -Z.
+pub fn lookAlong(eye: Vec3, forward_in: Vec3, up_in: Vec3) Mat4 {
+    const forward = forward_in.normalize();
+    var right = Vec3.cross(forward, up_in);
+    if (right.length() < 1e-6) right = Vec3.cross(forward, if (@abs(forward.y) > 0.99) Vec3.init(1, 0, 0) else Vec3.up);
+    right = right.normalize();
+    const up = Vec3.cross(right, forward);
+    return .{ .cols = .{
+        .{ right.x, up.x, -forward.x, 0 },
+        .{ right.y, up.y, -forward.y, 0 },
+        .{ right.z, up.z, -forward.z, 0 },
+        .{ -Vec3.dot(right, eye), -Vec3.dot(up, eye), Vec3.dot(forward, eye), 1 },
+    } };
+}
+
+/// Where a local light's shadow starts and ends: its range, or `far_default` when unbounded.
+pub fn localFar(light: Light, far_default: f32) f32 {
+    return if (light.range > 0) light.range else far_default;
+}
+
+/// A spot's one tile (`shadows-local.md` §6): world to clip down its -Z, up its local +Y, its
+/// outer cone widened by the clamp and the filter's footprint.
+pub fn spotMatrix(light: Light, near: f32, far: f32, size: u32, footprint: f32) Mat4 {
+    const eye = Vec3.init(light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2]);
+    const up = Vec3.init(light.world.cols[1][0], light.world.cols[1][1], light.world.cols[1][2]);
+    const projection = localProjection(widenedTangent(@tan(light.outer_cone), size, footprint), near, far);
+    return projection.mul(lookAlong(eye, direction(light.world), up));
+}
+
+/// The six faces in order, +X, -X, +Y, -Y, +Z, -Z, with the usual cube-map up axes.
+pub const face_axes = [6][2]Vec3{
+    .{ .init(1, 0, 0), .init(0, -1, 0) }, .{ .init(-1, 0, 0), .init(0, -1, 0) },
+    .{ .init(0, 1, 0), .init(0, 0, 1) },  .{ .init(0, -1, 0), .init(0, 0, -1) },
+    .{ .init(0, 0, 1), .init(0, -1, 0) }, .{ .init(0, 0, -1), .init(0, -1, 0) },
+};
+
+/// One face of a point light (`shadows-local.md` §7): a 90-degree view down the face's axis,
+/// widened so its inset tile still covers the full 90 degrees.
+pub fn faceMatrix(eye: Vec3, face: u32, near: f32, far: f32, size: u32, footprint: f32) Mat4 {
+    const axes = face_axes[face];
+    return localProjection(widenedTangent(1, size, footprint), near, far).mul(lookAlong(eye, axes[0], axes[1]));
+}
+
+/// The face a light-to-receiver vector reads: its largest absolute component, ties broken in
+/// face order, a zero component counting as positive. The lit shaders mirror this.
+pub fn chooseFace(v: Vec3) u32 {
+    const ax = @abs(v.x);
+    const ay = @abs(v.y);
+    const az = @abs(v.z);
+    if (ax >= ay and ax >= az) return if (v.x >= 0) 0 else 1;
+    if (ay >= az) return if (v.y >= 0) 2 else 3;
+    return if (v.z >= 0) 4 else 5;
 }
 
 /// The debug tint's colours (`shadows-cascaded.md` §5): red, green, blue and yellow, softened so
@@ -611,4 +702,100 @@ test "Neutral toe compression and desaturation match reference values" {
     };
     for (cases) |case| for (toneMap(case.input), case.output) |actual, expected|
         try t.expectApproxEqAbs(expected, actual, 1e-6);
+}
+
+const testing = std.testing;
+
+/// Clip to NDC, for the local-tile tests.
+fn ndc(m: Mat4, p: Vec3) [3]f32 {
+    const c = m.mulVec4(core.math.Vec4.fromPoint(p));
+    return .{ c.x / c.w, c.y / c.w, c.z / c.w };
+}
+
+test "a spot's tile holds its cone inside the inset, and its depth runs from near to far" {
+    const size: u32 = 512;
+    const footprint: f32 = 12;
+    // A spot at (1, 3, -2) looking down, its local +Y along world -Z.
+    const world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, -1, 0), .init(0, 0, -1)).?).mul(Mat4.identity);
+    var placed = world;
+    placed.cols[3] = .{ 1, 3, -2, 1 };
+    const light: Light = .{ .kind = .spot, .intensity = 1, .range = 10, .outer_cone = 0.6, .casts_shadow = true, .world = placed };
+    const m = spotMatrix(light, 0.05, 10, size, footprint);
+    const eye = Vec3.init(1, 3, -2);
+    const inner = 1 - 2 * (shadow_clamp_inset + footprint) / @as(f32, @floatFromInt(size));
+    // Along the cone's edge, in four directions, at several distances.
+    for ([_]Vec3{ .init(1, 0, 0), .init(-1, 0, 0), .init(0, 0, 1), .init(0, 0, -1) }) |side| for ([_]f32{ 0.5, 3, 9 }) |d| {
+        const edge = Vec3.init(0, -@cos(light.outer_cone), 0).add(side.scale(@sin(light.outer_cone)));
+        const q = ndc(m, eye.add(edge.scale(d)));
+        try testing.expect(@abs(q[0]) <= inner + 1e-5 and @abs(q[1]) <= inner + 1e-5);
+        try testing.expect(@abs(q[0]) >= inner - 1e-4 or @abs(q[1]) >= inner - 1e-4);
+    };
+    // Reversed-Z: 1 at near, 0 at far, on the axis.
+    try testing.expectApproxEqAbs(@as(f32, 1), ndc(m, eye.add(.init(0, -0.05, 0)))[2], 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0), ndc(m, eye.add(.init(0, -10, 0)))[2], 1e-5);
+    // The tile's up is the light's +Y: a point toward world -Z lands toward clip +y.
+    try testing.expect(ndc(m, eye.add(.init(0, -2, -0.5)))[1] > 0);
+}
+
+test "each widened face, inset, still covers its 90 degrees, and the six cover the sphere" {
+    const size: u32 = 256;
+    const footprint: f32 = 12;
+    const eye = Vec3.init(-3, 1, 4);
+    const inner = 1 - 2 * (shadow_clamp_inset + footprint) / @as(f32, @floatFromInt(size));
+    // A face's corners, (1, +-1, +-1) in its own axes, meet the inset's corner exactly.
+    for (0..6) |f| {
+        const m = faceMatrix(eye, @intCast(f), 0.05, 20, size, footprint);
+        const forward = face_axes[f][0];
+        const up = face_axes[f][1];
+        const right = Vec3.cross(forward, up);
+        for ([_]f32{ -1, 1 }) |a| for ([_]f32{ -1, 1 }) |b| {
+            const q = ndc(m, eye.add(forward.add(right.scale(a)).add(up.scale(b)).scale(2)));
+            try testing.expectApproxEqAbs(inner, @abs(q[0]), 1e-5);
+            try testing.expectApproxEqAbs(inner, @abs(q[1]), 1e-5);
+        };
+        // Its up axis is clip +y.
+        try testing.expect(ndc(m, eye.add(forward.add(up.scale(0.5))))[1] > 0);
+    }
+    var rng = core.rng.Pcg32.init(40, 7);
+    for (0..1000) |_| {
+        const v = Vec3.init(rng.float01() * 2 - 1, rng.float01() * 2 - 1, rng.float01() * 2 - 1);
+        if (v.length() < 1e-3) continue;
+        const face = chooseFace(v);
+        const q = ndc(faceMatrix(eye, face, 0.05, 20, size, footprint), eye.add(v.normalize().scale(5)));
+        try testing.expect(@abs(q[0]) <= inner + 1e-5 and @abs(q[1]) <= inner + 1e-5 and q[2] > 0 and q[2] < 1);
+    }
+}
+
+test "a face is chosen by the largest component, ties in face order, zero counting as positive" {
+    try testing.expectEqual(@as(u32, 0), chooseFace(.init(2, 1, -1)));
+    try testing.expectEqual(@as(u32, 1), chooseFace(.init(-2, 1, 1)));
+    try testing.expectEqual(@as(u32, 2), chooseFace(.init(0, 3, 1)));
+    try testing.expectEqual(@as(u32, 3), chooseFace(.init(1, -3, 1)));
+    try testing.expectEqual(@as(u32, 4), chooseFace(.init(1, 1, 3)));
+    try testing.expectEqual(@as(u32, 5), chooseFace(.init(1, 1, -3)));
+    try testing.expectEqual(@as(u32, 0), chooseFace(.init(1, 1, 0)));
+    try testing.expectEqual(@as(u32, 1), chooseFace(.init(-1, 1, 1)));
+    try testing.expectEqual(@as(u32, 2), chooseFace(.init(0, 1, -1)));
+    try testing.expectEqual(@as(u32, 0), chooseFace(.zero));
+}
+
+test "a source radius is finite and non-negative, the sun's at most pi/8, a lamp's inside its range" {
+    const sun: Light = .{ .kind = .directional, .intensity = 1, .world = .identity };
+    const lamp: Light = .{ .kind = .point, .intensity = 1, .range = 2, .world = .identity };
+    for ([_]struct { light: Light, radius: f32, ok: bool }{
+        .{ .light = sun, .radius = 0, .ok = true },                   .{ .light = sun, .radius = 0.0047, .ok = true },
+        .{ .light = sun, .radius = std.math.pi / 8.0, .ok = true },   .{ .light = sun, .radius = 0.4, .ok = false },
+        .{ .light = lamp, .radius = 0.05, .ok = true },               .{ .light = lamp, .radius = 2, .ok = false },
+        .{ .light = lamp, .radius = -0.01, .ok = false },             .{ .light = lamp, .radius = std.math.nan(f32), .ok = false },
+        .{ .light = lamp, .radius = std.math.inf(f32), .ok = false },
+    }) |case| {
+        var light = case.light;
+        light.source_radius = case.radius;
+        try testing.expectEqual(case.ok, valid(light));
+    }
+    // An unbounded lamp may be any finite size.
+    var unbounded = lamp;
+    unbounded.range = 0;
+    unbounded.source_radius = 5;
+    try testing.expect(valid(unbounded));
 }

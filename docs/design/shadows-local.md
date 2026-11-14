@@ -781,3 +781,79 @@ and from Step 3 they use the command per tile.
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.
 `zig fmt` failed once, on the Metal file as restored after the mutations, and passed once it was
 formatted. Only whitespace changed, and the Metal build was checked again.
+
+## Resolution — Step 2: the allocator, priority, sizes and matrices, as maths (2026-11-14)
+
+**What the step pinned:**
+- **`render3d/shadow_atlas.zig`,** pure and its own oracle:
+  - `Atlas` is a row of 1 to 4 pages, each one quadtree of up to seven levels, from 8,192 down
+    to 128. Its node states are fixed arrays, about 21 KB, with no allocation.
+  - `allocate` walks as §4 says. It first looks for a free square of the size asked under
+    squares already split. Only then does it split the smallest free larger square, down
+    through first quadrants.
+  - `allocateGroup` takes all of a group's tiles at one side, or restores the nodes and takes
+    none.
+  - `requestFor`, `order` and `place` are §5: unseen lights skipped, nearest sphere first with
+    ties by submission, sides from coverage, halving down to the minimum, dropping counted.
+    `max_tiles = 32` is enforced by `place`.
+- **`lighting.zig`:**
+  - `Light.source_radius`, validated (§10);
+  - `widenedTangent`, `localProjection` (reversed-Z, `Camera.projectionMatrix`'s form) and
+    `lookAlong`;
+  - `spotMatrix`, `faceMatrix` over `face_axes`, `chooseFace` and `localFar`;
+  - `shadow_clamp_inset = 2` as a named constant.
+- **`Config`** gains §11's fields, refused out of range as `InvalidConfig` (`validShadows`
+  replaces `validCascades`).
+- **The renderer** makes its atlas `pages × 2s` by `2s` and places the cascades through the
+  allocator each frame, keeping the grants in `shadow_tiles`. Nothing local is granted or
+  drawn, and `addLight` still refuses a casting point or spot.
+
+**Where implementation sharpened the design:**
+- **Coverage.** §5 said "as M20's bounds projection computes it", but M20 has no projection of
+  bounds, only frustum exclusion. Coverage is the sphere's angular radius, `r / √(d² − r²)`,
+  over the camera's half-field tangent, times the target's height, capped at its larger side.
+  A sphere holding the camera, or an unbounded light, covers the whole target.
+- **Seen.** A light is unseen when the cube around its range sphere is excluded by the camera's
+  frustum: conservative, so a seen light may still light nothing on screen.
+- **A light whose range is no farther than `shadow_local_near` casts nothing,** and is counted
+  as unseen, because its tile would have no depth range. §5 did not say.
+- **A spot's up axis** is the light's +Y made orthogonal to its axis. When the two are
+  parallel, it falls back to world +Y, or +X when the axis is vertical, as `fitShadowSlice`
+  does.
+- **A host with one cascade now pays for a page,** `2s × 2s`: four times M22's single map, where
+  M39 sized its atlas `s × s` at one cascade. The picture is unchanged, since every tile's
+  texels are where they were. §4's table already showed one page as the minimum, and §16 row 3
+  accepted it; this records the cost for a one-cascade host. A device whose limit is 4,096 now
+  refuses the default (8,192 wide) and must set one page.
+- **The widening's footprint** is `shadow_penumbra_max` (12 texels by default), which also
+  covers M39's 1.5-texel filter, so `max(1.5, penumbra_max)` is just `penumbra_max`.
+
+**Every M39 readback holds through the paged atlas,** on Metal: the cascades land on M39's texel
+rectangles, and only their UV rectangles narrow with the atlas's width. The uniform test now
+expects a 4,096 × 2,048 atlas at `s = 1024`.
+
+**Tests:**
+- the allocator: M39's tiles for one to four cascades; a pinned mixed walk run twice; a refusal
+  that changes nothing; a group all or none; a thousand seeded lists with no overlap, every tile
+  inside the atlas and aligned to its side;
+- priority and size: six lights, one unseen, one holding the camera, one unbounded and a tie,
+  ordered and sized; a near-plane range refused; the spot's face count at π/3; `sideFor`'s
+  powers;
+- placement: halving twice to fit six faces, a 256 granted where it fits, a drop when two
+  128s remain, and the 32-tile limit dropping a fifth point after four cascades and four points;
+- matrices: a spot's cone edge meets the inset in four directions at three distances, its depth
+  runs 1 to 0, and its up is the light's +Y; each face's corners meet the inset's corner, its up
+  is clip +y, and a thousand seeded directions each land inside their chosen face's inset;
+  `chooseFace`'s ties;
+- `source_radius`'s refusals, and every new `Config` field's.
+
+**Each guard was broken once, and each failed its tests:**
+- the allocator granting a node without checking it is free failed eight tests, the overlap
+  sweep among them;
+- swapping +X and −X in `chooseFace` failed the face-choice and coverage tests;
+- removing the widening failed the spot and face tests.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,012/3,022 (ten skips) and Metal 3,023/3,044 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.

@@ -11,6 +11,7 @@ const skinning = @import("skinning.zig");
 const camera_mod = @import("camera.zig");
 const frustum_mod = @import("frustum.zig");
 const lighting = @import("lighting.zig");
+const shadow_atlas = @import("shadow_atlas.zig");
 pub const Light = lighting.Light;
 pub const max_lights = lighting.max_lights;
 const Allocator = std.mem.Allocator;
@@ -275,6 +276,23 @@ pub const Config = struct {
     shadow_split_lambda: f32 = 0.75,
     /// The fraction of each cascade's depth range blended with the next, 0 to 0.5.
     shadow_cascade_blend: f32 = 0.1,
+    /// The atlas's square pages, each `2 * shadow_size` a side, 1 to 4 (`shadows-local.md` §4):
+    /// one holds the four cascades, the rest local tiles. Its width must fit the device.
+    shadow_atlas_pages: u32 = 2,
+    /// A local light's tile side, powers of two from 128 to a page's side, min at most max (§5).
+    shadow_local_min: u32 = 256,
+    shadow_local_max: u32 = 1024,
+    /// A local tile's near plane, and its far plane when the light's range is 0, metres (§6).
+    shadow_local_near: f32 = 0.05,
+    shadow_local_far: f32 = 50,
+    /// The depth bias of spot tiles and point faces, beside the cascades' (§3).
+    shadow_local_bias_constant: f32 = -1,
+    shadow_local_bias_slope: f32 = -1,
+    shadow_local_bias_clamp: f32 = 0,
+    /// Blended materials cast coloured shadows through a colour atlas made on first need (§9).
+    shadow_translucent: bool = true,
+    /// The widest penumbra, in texels, 1.5 to 32 (§10); local tiles widen by it.
+    shadow_penumbra_max: f32 = 12,
     /// Anisotropic filtering for linear, mipmapped material textures, 1 (none) to 16: a floor
     /// seen at a grazing angle stays sharp instead of blurring to its smallest level. A device
     /// that has less samples with what it has (`rhi.resource.SamplerDesc.max_anisotropy`).
@@ -606,42 +624,49 @@ fn unitValue(value: f32) bool {
     return std.math.isFinite(value) and value >= 0 and value <= 1;
 }
 
-/// The atlas's larger side: one tile, two side by side, or a 2 x 2 grid (`shadows-cascaded.md` §4).
+/// A page's side: two cascade tiles, so page 0 holds M39's four (`shadows-local.md` §4).
+fn shadowPageSide(config: Config) u32 {
+    return 2 * config.shadow_size;
+}
+
+/// The atlas's larger side, its width: `shadow_atlas_pages` pages in a row.
 fn shadowAtlasSide(config: Config) u64 {
-    return @as(u64, config.shadow_size) * @as(u64, if (config.shadow_cascades == 1) 1 else 2);
+    return @as(u64, shadowPageSide(config)) * config.shadow_atlas_pages;
 }
 
-/// The atlas: one tile, two side by side, or a 2 x 2 grid with one unused at three.
 fn shadowAtlasExtent(config: Config) Extent2D {
-    return .{
-        .width = config.shadow_size * @as(u32, if (config.shadow_cascades == 1) 1 else 2),
-        .height = config.shadow_size * @as(u32, if (config.shadow_cascades <= 2) 1 else 2),
-    };
+    return .{ .width = shadowPageSide(config) * config.shadow_atlas_pages, .height = shadowPageSide(config) };
 }
 
-/// Cascade `i`'s tile at column `i mod 2`, row `i / 2`, in texels from the top-left.
-fn shadowTileOrigin(config: Config, i: u32) [2]u32 {
-    return .{ (i % 2) * config.shadow_size, (i / 2) * config.shadow_size };
-}
-
-/// Cascade `i`'s tile in atlas UV: origin xy, far corner zw.
-fn shadowTileRect(config: Config, i: u32) [4]f32 {
+/// A granted tile in atlas UV: origin xy, far corner zw.
+fn shadowTileRect(config: Config, tile: shadow_atlas.Tile) [4]f32 {
     const atlas = shadowAtlasExtent(config);
-    const origin = shadowTileOrigin(config, i);
     const w: f32 = @floatFromInt(atlas.width);
     const h: f32 = @floatFromInt(atlas.height);
-    const size: f32 = @floatFromInt(config.shadow_size);
-    const x: f32 = @floatFromInt(origin[0]);
-    const y: f32 = @floatFromInt(origin[1]);
-    return .{ x / w, y / h, (x + size) / w, (y + size) / h };
+    const x: f32 = @floatFromInt(tile.x);
+    const y: f32 = @floatFromInt(tile.y);
+    const side: f32 = @floatFromInt(tile.side);
+    return .{ x / w, y / h, (x + side) / w, (y + side) / h };
 }
 
-/// The cascade fields are in range, and the atlas they imply fits the device.
-fn validCascades(config: Config, max_texture_dimension: u32) bool {
+/// The cascade and local fields are in range, and the atlas they imply fits the device.
+fn validShadows(config: Config, max_texture_dimension: u32) bool {
     if (config.shadow_cascades < 1 or config.shadow_cascades > lighting.max_cascades) return false;
     if (!(config.shadow_split_lambda >= 0 and config.shadow_split_lambda <= 1)) return false;
     if (!(config.shadow_cascade_blend >= 0 and config.shadow_cascade_blend <= 0.5)) return false;
-    return shadowAtlasSide(config) <= max_texture_dimension;
+    if (config.shadow_atlas_pages < 1 or config.shadow_atlas_pages > shadow_atlas.max_pages) return false;
+    for ([_]u32{ config.shadow_local_min, config.shadow_local_max }) |side| {
+        if (side < shadow_atlas.min_side or !std.math.isPowerOfTwo(side)) return false;
+        if (config.shadow_size != 0 and side > shadowPageSide(config)) return false;
+    }
+    if (config.shadow_local_min > config.shadow_local_max) return false;
+    if (!std.math.isFinite(config.shadow_local_near) or !std.math.isFinite(config.shadow_local_far)) return false;
+    if (!(config.shadow_local_near > 0 and config.shadow_local_near < config.shadow_local_far)) return false;
+    for ([_]f32{ config.shadow_local_bias_constant, config.shadow_local_bias_slope, config.shadow_local_bias_clamp }) |value| {
+        if (!std.math.isFinite(value)) return false;
+    }
+    if (!(config.shadow_penumbra_max >= 1.5 and config.shadow_penumbra_max <= 32)) return false;
+    return config.shadow_size == 0 or shadowAtlasSide(config) <= max_texture_dimension;
 }
 
 fn drawConstants(world: Mat4) DrawConstants {
@@ -692,6 +717,11 @@ pub const Renderer = struct {
     shadow_fragment: [2]rhi.ShaderModuleHandle = @splat(.none),
     /// This frame's cascades, cascade 0 nearest; null when nothing casts.
     shadow_fit: ?lighting.CascadeFit = null,
+    /// The atlas's allocator, rebuilt each frame, and this frame's grants in order: the cascades
+    /// first (`shadows-local.md` §4).
+    shadow_atlas: shadow_atlas.Atlas,
+    shadow_tiles: [shadow_atlas.max_tiles]shadow_atlas.Tile = undefined,
+    shadow_tile_count: u32 = 0,
     shadow_order: std.ArrayList(u32) = .empty,
     tone_layout: rhi.BindGroupLayoutHandle,
     tone_pipeline_layout: rhi.PipelineLayoutHandle,
@@ -776,7 +806,7 @@ pub const Renderer = struct {
         for ([_]f32{ config.shadow_bias_constant, config.shadow_bias_slope, config.shadow_bias_clamp, config.shadow_normal_offset }) |value| {
             if (!std.math.isFinite(value)) return error.InvalidConfig;
         }
-        if (!validCascades(config, device.capabilities().max_texture_dimension)) return error.InvalidConfig;
+        if (!validShadows(config, device.capabilities().max_texture_dimension)) return error.InvalidConfig;
         const surface_format = device.capabilities().surface_format;
 
         const frame_layout = try device.createBindGroupLayout(.{
@@ -908,6 +938,8 @@ pub const Renderer = struct {
             .slots = slots,
             .shadow_fallback = shadow_fallback,
             .shadow_sampler = shadow_sampler,
+            // With shadows off nothing is granted, but the allocator still has a valid shape.
+            .shadow_atlas = .init(@max(shadowPageSide(config), 2 * shadow_atlas.min_side), config.shadow_atlas_pages),
             .tone_layout = tone_layout,
             .tone_pipeline_layout = tone_pipeline_layout,
             .tone_vertex = tone_vertex,
@@ -1873,6 +1905,8 @@ pub const Renderer = struct {
         self.shadow_order.clearRetainingCapacity();
         self.stats.shadow_culled = 0;
         self.stats.shadow_cascades = 0;
+        self.shadow_atlas.reset();
+        self.shadow_tile_count = 0;
         if (self.config.shadow_size != 0) for (self.lights[0..self.light_count]) |light| {
             if (!light.casts_shadow) continue;
             var cascades = lighting.fitCascades(self.view.camera, @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height)), self.view.shadow_distance, light.world, self.config.shadow_size, self.config.shadow_cascades, self.config.shadow_split_lambda);
@@ -1903,6 +1937,10 @@ pub const Renderer = struct {
                 item.shadow_cascades = mask;
                 if (mask != 0) self.shadow_order.appendAssumeCapacity(@intCast(i));
             }
+            // The cascades are the allocator's first requests, so on an empty page 0 they are
+            // granted M39's tiles: column `c mod 2`, row `c / 2` (`shadows-local.md` §4).
+            for (0..cascades.count) |c| self.shadow_tiles[c] = self.shadow_atlas.allocate(self.config.shadow_size).?;
+            self.shadow_tile_count = cascades.count;
             self.shadow_fit = cascades;
             self.stats.shadow_cascades = cascades.count;
         };
@@ -2031,7 +2069,7 @@ pub const Renderer = struct {
             const texel_v = 1 / @as(f32, @floatFromInt(atlas.height));
             uniform.shadow_parameters = .{ texel_u, texel_v, 2 * texel_u, 2 * texel_v };
             for (cascades.fits[0..cascades.count], 0..) |fit, c| {
-                const rect = shadowTileRect(self.config, @intCast(c));
+                const rect = shadowTileRect(self.config, self.shadow_tiles[c]);
                 uniform.shadow_splits[c] = cascades.splits[c + 1];
                 uniform.shadow_offsets[c] = self.config.shadow_normal_offset * fit.texel;
                 uniform.shadow_tiles[c] = rect;
@@ -2221,9 +2259,10 @@ pub const Renderer = struct {
         const cascades = self.shadow_fit orelse return;
         const size = self.config.shadow_size;
         for (cascades.fits[0..cascades.count], 0..) |fit, c| {
-            const origin = shadowTileOrigin(self.config, @intCast(c));
-            pass.setViewport(.{ .x = @floatFromInt(origin[0]), .y = @floatFromInt(origin[1]), .width = @floatFromInt(size), .height = @floatFromInt(size) });
-            pass.setScissor(.{ .x = origin[0], .y = origin[1], .width = size, .height = size });
+            const tile = self.shadow_tiles[c];
+            std.debug.assert(tile.side == size);
+            pass.setViewport(.{ .x = @floatFromInt(tile.x), .y = @floatFromInt(tile.y), .width = @floatFromInt(size), .height = @floatFromInt(size) });
+            pass.setScissor(.{ .x = tile.x, .y = tile.y, .width = size, .height = size });
             const light = fit.matrix();
             for (self.shadow_order.items) |i| {
                 const item = self.draws.items[i];
@@ -3134,19 +3173,21 @@ test "light direction packing survives finite extreme scales" {
     }
 }
 
-test "the shadow atlas holds one tile, two side by side, or a 2 x 2 grid, and each tile's UV rectangle" {
-    const Case = struct { cascades: u32, width: u32, height: u32, rects: []const [4]f32 };
-    for ([_]Case{
-        .{ .cascades = 1, .width = 1024, .height = 1024, .rects = &.{.{ 0, 0, 1, 1 }} },
-        .{ .cascades = 2, .width = 2048, .height = 1024, .rects = &.{ .{ 0, 0, 0.5, 1 }, .{ 0.5, 0, 1, 1 } } },
-        .{ .cascades = 3, .width = 2048, .height = 2048, .rects = &.{ .{ 0, 0, 0.5, 0.5 }, .{ 0.5, 0, 1, 0.5 }, .{ 0, 0.5, 0.5, 1 } } },
-        .{ .cascades = 4, .width = 2048, .height = 2048, .rects = &.{ .{ 0, 0, 0.5, 0.5 }, .{ 0.5, 0, 1, 0.5 }, .{ 0, 0.5, 0.5, 1 }, .{ 0.5, 0.5, 1, 1 } } },
-    }) |case| {
-        const config: Config = .{ .shadow_size = 1024, .shadow_cascades = case.cascades };
-        try testing.expectEqual(Extent2D{ .width = case.width, .height = case.height }, shadowAtlasExtent(config));
-        try testing.expectEqual(@as(u64, @max(case.width, case.height)), shadowAtlasSide(config));
-        for (case.rects, 0..) |rect, i| try testing.expectEqual(rect, shadowTileRect(config, @intCast(i)));
-    }
+test "the shadow atlas is a row of pages, and the cascades land on M39's tiles, by texel" {
+    for (1..5) |cascades| for (1..5) |pages| {
+        const config: Config = .{ .shadow_size = 1024, .shadow_cascades = @intCast(cascades), .shadow_atlas_pages = @intCast(pages) };
+        const extent = shadowAtlasExtent(config);
+        try testing.expectEqual(Extent2D{ .width = 2048 * @as(u32, @intCast(pages)), .height = 2048 }, extent);
+        try testing.expectEqual(@as(u64, extent.width), shadowAtlasSide(config));
+        var atlas = shadow_atlas.Atlas.init(shadowPageSide(config), config.shadow_atlas_pages);
+        for (0..cascades) |c| {
+            const tile = atlas.allocate(config.shadow_size).?;
+            // M39's table: column c mod 2, row c / 2, in texels.
+            try testing.expectEqual(shadow_atlas.Tile{ .x = @as(u32, @intCast(c % 2)) * 1024, .y = @as(u32, @intCast(c / 2)) * 1024, .side = 1024 }, tile);
+            const w: f32 = @floatFromInt(extent.width);
+            try testing.expectEqual([4]f32{ @as(f32, @floatFromInt(tile.x)) / w, @as(f32, @floatFromInt(tile.y)) / 2048, @as(f32, @floatFromInt(tile.x + 1024)) / w, @as(f32, @floatFromInt(tile.y + 1024)) / 2048 }, shadowTileRect(config, tile));
+        }
+    };
 }
 
 test "a shadowed frame uploads every cascade's tile, folded matrix, offset, split and the tint switch" {
@@ -3173,9 +3214,9 @@ test "a shadowed frame uploads every cascade's tile, folded matrix, offset, spli
     try testing.expectEqual(@as(u32, 1), uniform.counts[2]);
     try testing.expectEqual([4]f32{ 0, 0, -1, 0.1 }, uniform.camera_forward);
     // The reciprocal atlas, then the clamp's two-texel inset.
-    try testing.expectEqual([4]f32{ 1.0 / 2048.0, 1.0 / 2048.0, 2.0 / 2048.0, 2.0 / 2048.0 }, uniform.shadow_parameters);
+    try testing.expectEqual([4]f32{ 1.0 / 4096.0, 1.0 / 2048.0, 2.0 / 4096.0, 2.0 / 2048.0 }, uniform.shadow_parameters);
     for (0..4) |c| {
-        const rect = shadowTileRect(fx.renderer.config, @intCast(c));
+        const rect = shadowTileRect(fx.renderer.config, fx.renderer.shadow_tiles[c]);
         try testing.expectEqual(rect, uniform.shadow_tiles[c]);
         try testing.expectEqual(cascades.splits[c + 1], uniform.shadow_splits[c]);
         try testing.expectEqual(1.5 * cascades.fits[c].texel, uniform.shadow_offsets[c]);
@@ -3186,10 +3227,10 @@ test "a shadowed frame uploads every cascade's tile, folded matrix, offset, spli
         }
     }
     try testing.expectEqual(@as(f32, 6), uniform.shadow_splits[3]);
-    try testing.expectEqual([4]f32{ 0.5, 0.5, 1, 1 }, uniform.shadow_tiles[3]);
+    try testing.expectEqual([4]f32{ 0.25, 0.5, 0.5, 1 }, uniform.shadow_tiles[3]);
     if (rhi.backend == .null) {
         const atlas = fx.device.textures.getConst(fx.renderer.shadow_target).?.desc.size;
-        try testing.expectEqual(@as(u32, 2048), atlas.width);
+        try testing.expectEqual(@as(u32, 4096), atlas.width);
         try testing.expectEqual(@as(u32, 2048), atlas.height);
     }
 }
@@ -3507,13 +3548,42 @@ test "cascade configuration accepts 1 to 4 cascades, a weight in [0, 1], a band 
         var renderer = try Renderer.init(testing.allocator, fx.device, .{ .shadow_cascades = count, .shadow_split_lambda = lambda, .shadow_cascade_blend = blend });
         renderer.deinit();
     };
-    // The atlas's side against a device's limit: Vulkan guarantees only 4,096.
-    try testing.expect(validCascades(.{ .shadow_size = 4096, .shadow_cascades = 1 }, 4096));
-    try testing.expect(validCascades(.{ .shadow_size = 2048, .shadow_cascades = 4 }, 4096));
-    try testing.expect(!validCascades(.{ .shadow_size = 4096, .shadow_cascades = 2 }, 4096));
-    try testing.expect(!validCascades(.{ .shadow_size = 4096, .shadow_cascades = 4 }, 8191));
-    try testing.expect(validCascades(.{ .shadow_size = 4096, .shadow_cascades = 4 }, 8192));
-    try testing.expect(validCascades(.{ .shadow_size = 0, .shadow_cascades = 4 }, 1));
+    // The atlas's width against a device's limit: pages of 2 s, whatever the cascade count.
+    try testing.expect(validShadows(.{ .shadow_size = 2048, .shadow_atlas_pages = 1 }, 4096));
+    try testing.expect(!validShadows(.{ .shadow_size = 2048, .shadow_atlas_pages = 2 }, 4096));
+    try testing.expect(!validShadows(.{ .shadow_size = 2048, .shadow_cascades = 1, .shadow_atlas_pages = 2 }, 4096));
+    try testing.expect(validShadows(.{ .shadow_size = 2048, .shadow_atlas_pages = 2 }, 8192));
+    try testing.expect(validShadows(.{ .shadow_size = 4096, .shadow_atlas_pages = 2 }, 16384));
+    try testing.expect(!validShadows(.{ .shadow_size = 4096, .shadow_atlas_pages = 4 }, 16384));
+    try testing.expect(validShadows(.{ .shadow_size = 0, .shadow_atlas_pages = 4 }, 1));
+}
+
+test "local shadow configuration refuses pages, sides, planes, biases and penumbrae out of range" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    const nan = std.math.nan(f32);
+    const inf = std.math.inf(f32);
+    for ([_]Config{
+        .{ .shadow_atlas_pages = 0 },                       .{ .shadow_atlas_pages = 5 },
+        .{ .shadow_local_min = 64 },                        .{ .shadow_local_min = 300 },
+        .{ .shadow_local_max = 8192 },                      .{ .shadow_local_min = 1024, .shadow_local_max = 512 },
+        .{ .shadow_size = 1024, .shadow_local_max = 4096 }, .{ .shadow_local_near = 0 },
+        .{ .shadow_local_near = -1 },                       .{ .shadow_local_near = nan },
+        .{ .shadow_local_far = 0.05 },                      .{ .shadow_local_far = inf },
+        .{ .shadow_local_bias_constant = nan },             .{ .shadow_local_bias_slope = inf },
+        .{ .shadow_local_bias_clamp = nan },                .{ .shadow_penumbra_max = 1.4 },
+        .{ .shadow_penumbra_max = 32.5 },                   .{ .shadow_penumbra_max = nan },
+    }) |config| try testing.expectError(error.InvalidConfig, Renderer.init(testing.allocator, fx.device, config));
+    for ([_]Config{
+        .{},                                                   .{ .shadow_atlas_pages = 1 },
+        .{ .shadow_atlas_pages = 4, .shadow_size = 1024 },     .{ .shadow_local_min = 128, .shadow_local_max = 4096 },
+        .{ .shadow_local_min = 512, .shadow_local_max = 512 }, .{ .shadow_penumbra_max = 1.5 },
+        .{ .shadow_penumbra_max = 32 },                        .{ .shadow_translucent = false },
+        .{ .shadow_size = 0, .shadow_local_max = 8192 },
+    }) |config| {
+        var renderer = try Renderer.init(testing.allocator, fx.device, config);
+        renderer.deinit();
+    }
 }
 
 test "anisotropy is configured 1 to 16 and asked for only by linear mipmapped textures" {

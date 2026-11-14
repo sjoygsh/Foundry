@@ -13,6 +13,7 @@ pub const loader = @import("loader.zig");
 pub const particles = @import("particles.zig");
 pub const lighting = @import("lighting.zig");
 pub const renderer = @import("renderer.zig");
+pub const shadow_atlas = @import("shadow_atlas.zig");
 pub const uploads = @import("uploads.zig");
 
 pub const Camera = camera.Camera;
@@ -77,5 +78,6 @@ test {
     _ = particles;
     _ = lighting;
     _ = renderer;
+    _ = shadow_atlas;
     _ = uploads;
 }
