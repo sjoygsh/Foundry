@@ -1,7 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M39 is complete** (2026-11-14, tag `m39`, pushed; [`docs/design/shadows-cascaded.md`](docs/design/shadows-cascaded.md), ADR-0079). Stop before M40's design (Shadows III: point, spot and translucent shadows in tiles of M39's atlas). The PC holds no Foundry clone.
+**Current handoff: M40's design is proposed** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080 and ADR-0081); awaiting the owner's acceptance of §16. Stop before Step 1 (the RHI's per-pass depth-bias command). No M40 code exists. M39 is complete (tag `m39`, pushed). The PC holds no Foundry clone.
+
+**M40's design (2026-11-14): Shadows III, proposed.** Spot and point lights cast into tiles a per-frame buddy allocator hands out from M39's atlas, now a row of pages whose first grants are the cascades, on M39's tiles. A point light is six widened face tiles, not a cubemap. Depth bias becomes a per-pass RHI command. Blended casters filter light through a transmittance atlas that keeps the nearest translucent depth. A light's `source_radius` gives contact-hardening penumbrae, zero being M39's filter. Ten steps: bias, maths, spots, points, glass, penumbrae, the room, the court, Windows, the close.
 
 **M39 Step 7 is done (2026-11-14): M39 closed.**
 - Every document names M39 complete: `CLAUDE.md` §4.1, §4.3 and §9, ADR-0079, the roadmap, the design index and the README.

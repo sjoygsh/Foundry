@@ -489,7 +489,7 @@ Then:
 ## 13. What stays open, deliberately
 
 Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
-- **Point and spot shadows, and translucent shadows:** M40. It allocates tiles of this atlas,
+- **Point and spot shadows, and translucent shadows:** M40 ([`shadows-local.md`](shadows-local.md), proposed 2026-11-14). It allocates tiles of this atlas,
   which needs a tile allocator in place of §4's fixed table. M39 builds only the table.
 - **Texture arrays and cubemaps in the RHI:** M41, unchanged.
 - **Per-cascade depth bias:** M40, which must add bias per tile anyway for spot maps of different

@@ -946,7 +946,7 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   sky. It is M41's.
 - **Point and spot shadows,** ~~cascades~~: `3d.md` §11. **Cascades done in M39** (2026-11-14,
   [`shadows-cascaded.md`](shadows-cascaded.md)): the trigger was measured in the yard, where one 2048
-  map over 80 m had 8.5 cm texels and four cascades give 0.58 cm nearest. Point and spot shadows
+  map over 80 m had 8.5 cm texels and four cascades give 0.58 cm nearest. *(2026-11-14: M40's design, [`shadows-local.md`](shadows-local.md), is proposed for point, spot and translucent shadows.)* Point and spot shadows
   are M40's.
 - **An engine `foundry:light` record, and glTF light import (`KHR_lights_punctual`):** when an
   imported scene carries lights someone wants, or M25 publishes lights through the ABI, whichever is
