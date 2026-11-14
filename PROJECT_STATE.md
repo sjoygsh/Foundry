@@ -1,7 +1,26 @@
 # Foundry Project State
 
-**Last updated:** 2026-11-14
-**Current handoff: M40 Step 6 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 7: `sandbox3d`'s room with every light casting, on Metal, with `source_radius` in the light schema, the flags and the J key. None of that exists yet. The PC holds no Foundry clone.
+**Last updated:** 2026-11-15
+**Current handoff: M40 Step 7 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 8: the court's beacon record gains `light_casts_shadow`, `court-test`'s four digests hold, a relocated run of each ending, and the owner plays it. None of that exists yet. The PC holds no Foundry clone.
+
+**M40 Step 7 is done (2026-11-15): the room, every light casting, on Metal.**
+- Content:
+  - `sandbox3d:config.main`'s two lamps cast at `source_radius` 0.05 and the sun has 0.0047;
+  - a 60° spot over the glass pane throws its tint on the floor;
+  - the light schema gains `source_radius`;
+  - the dusk mod's lamps and a spot of its own cast too.
+- The sample:
+  - `light_settings.zig` reads the radius, and lets every lamp cast but only one sun;
+  - `--local-shadows=off`, `--penumbra=off` and **J** (`j@frame`);
+  - the exit report logs each local tile and the local counts;
+  - `--shadow-tint`, which M39 parsed but never applied, now reaches the sample.
+- Headless: 17 tiles of 1,024 (6 + 6 + 1 local), 260 local and 8 translucent draws. Off is M39's 459 shadow draws exactly. The tour holds every pin with local shadows on and off.
+- Relocated, read-only ReleaseSafe on the M5, windowed, 900 frames:
+  - every light casting: frame work p95 **4.10 ms**, `render.world` p95 2.28 ms;
+  - local shadows off: 3.45 ms and 1.52 ms;
+  - nothing skipped, and Application Support untouched;
+  - one 40 ms frame in the casting run is unexplained.
+- Three guards broken, each failing. Bar: null 3,024/3,034 (ten skips), Metal 3,035/3,056 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 6 is done (2026-11-14): contact-hardening penumbrae.**
 - `lighting.zig`:

@@ -66,7 +66,10 @@
 //! EV100 come from the config; `--shadows=off` disables the shadow map. Since M39 the shadow
 //! is four cascades over the config's `shadow_distance` (80 m), `--shadow-cascades=1|2|3|4`
 //! chooses how many, and `--shadow-tint` or **H** colours the ground by cascade
-//! (`shadows-cascaded.md` §8). Player mods live
+//! (`shadows-cascaded.md` §8). Since M40 the two lamps and a spot over the glass cast too,
+//! each light with its content's `source_radius`: `--local-shadows=off` or **J** draws the room
+//! as M39 did, and `--penumbra=off` submits every light with radius 0 (`shadows-local.md` §12).
+//! Player mods live
 //! under `foundry-sandbox3d/mods`, selected by comma-separated content IDs in
 //! `FOUNDRY_SANDBOX3D_PACKAGES`. The ordinary `testdata/mods/dusk` package changes the
 //! complete config and floor/wall materials without code. Headless runs discover user
@@ -313,7 +316,7 @@ pub fn main(init: std.process.Init) !void {
         if (!options.parse(arg)) {
             var buffer: [256]u8 = undefined;
             var err = std.Io.File.stderr().writer(init.io, &buffer);
-            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadows=off] [--shadow-cascades=1|2|3|4] [--shadow-tint] [--shadow-proof]\n") catch {};
+            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadows=off] [--shadow-cascades=1|2|3|4] [--shadow-tint] [--shadow-proof] [--local-shadows=off] [--penumbra=off]\n") catch {};
             err.interface.flush() catch {};
             // A mistyped command line is the operator's to fix, not a crash to trace.
             std.process.exit(2);
@@ -335,6 +338,10 @@ const Options = struct {
     shadow_cascades: u32 = 4,
     /// Start with receivers coloured by cascade, which H toggles.
     shadow_tint: bool = false,
+    /// Spot and point lights cast, M40 (`shadows-local.md` §12); J toggles it while walking.
+    local_shadows: bool = true,
+    /// Lights keep their content's `source_radius`; off submits every light with 0, M39's filter.
+    penumbra: bool = true,
 
     /// False for anything this sample does not take.
     fn parse(self: *Options, arg: []const u8) bool {
@@ -354,6 +361,10 @@ const Options = struct {
             self.shadow_cascades = arg[arg.len - 1] - '0';
         } else if (std.mem.eql(u8, arg, "--shadow-tint")) {
             self.shadow_tint = true;
+        } else if (std.mem.eql(u8, arg, "--local-shadows=off")) {
+            self.local_shadows = false;
+        } else if (std.mem.eql(u8, arg, "--penumbra=off")) {
+            self.penumbra = false;
         } else return false;
         return true;
     }
@@ -726,6 +737,11 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *Sample, skipped_
     if (sample.world.shadowCascades()) |cascades| for (cascades.fits[0..cascades.count], 0..) |fit, c| {
         log.info("shadow cascade {d}: {d:.2} to {d:.2} m, texel {d:.2} cm, {d} draws", .{ c, cascades.splits[c], cascades.splits[c + 1], fit.texel * 100, stats.shadow_cascade_draws[c] });
     };
+    // M40's (`shadows-local.md` §12): each local tile granted, and what the local passes drew.
+    for (sample.world.shadowTiles()) |tile| if (tile.kind != .cascade) {
+        log.info("shadow tile: light {d} {s} {d}, {d} texels at ({d}, {d})", .{ tile.light, @tagName(tile.kind), tile.index, tile.tile.side, tile.tile.x, tile.tile.y });
+    };
+    log.info("local shadows: {d} lights, {d} tiles, {d} local draws, {d} translucent, {d} unseen, {d} dropped", .{ stats.shadow_local_lights, stats.shadow_tiles, stats.shadow_local_draws, stats.shadow_translucent_draws, stats.shadow_lights_unseen, stats.shadow_lights_dropped });
     log.info("stopped after {d} frames ({d} skipped), {d} ticks; last frame {d} draws, {d} culled, {d} blended, {d} triangles", .{
         engine.frame_index, skipped_frames, engine.stepper.tick, stats.draws, stats.culled, stats.blended, stats.triangles,
     });
@@ -1109,6 +1125,10 @@ const Sample = struct {
     panels_open: bool = false,
     /// Receivers coloured by the cascade they read (`shadows-cascaded.md` §5), H.
     shadow_tint: bool = false,
+    /// Spot and point lights cast (`shadows-local.md` §12), J.
+    local_shadows: bool = true,
+    /// Lights are submitted with their content's size, or with 0 under `--penumbra=off`.
+    penumbra: bool = true,
     /// Whether the overlay's open panels are kept between runs: a person's session only,
     /// never one bounded, keyed or touring, which must write nothing of a player's.
     remembers_panels: bool = false,
@@ -1171,6 +1191,9 @@ const Sample = struct {
             .orrery = orrery,
             .ui = .init(gpa, overlayStyle(.{ .font = placeholderFont() })),
             .panels = panels,
+            .shadow_tint = options.shadow_tint,
+            .local_shadows = options.local_shadows,
+            .penumbra = options.penumbra,
         };
     }
 
@@ -1227,7 +1250,7 @@ const Sample = struct {
         self.panels.toggle("log");
         self.panels.entities.selected = self.orrery.role(.sheared);
         self.panels_open = engine.os.envVar("FOUNDRY_SANDBOX3D_PANELS") != null;
-        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, m slide the crate, l go to the M37 corner, y go to the M38 yard, h tint the shadow cascades, space jump, r reload content, escape quit", .{});
+        log.info("keys: WASD walk, arrows/right mouse look, f4 capture the pointer to look, f3 walk/orbit, f1 overlay, f5 save, f9 load, f6 move the orbiting crate, f7 try the sheared one, g load or release the gallery, t go to the generated corner, c clear its canvas, p face the effects, b fire the sparks, n show the navigation mesh, m slide the crate, l go to the M37 corner, y go to the M38 yard, h tint the shadow cascades, j switch local shadows, space jump, r reload content, escape quit", .{});
     }
 
     /// The user data directory, made if it is not there yet. The file beneath it is opened
@@ -1632,6 +1655,10 @@ const Sample = struct {
             self.shadow_tint = !self.shadow_tint;
             log.info("h: shadow cascades {s}", .{if (self.shadow_tint) "tinted" else "untinted"});
         }
+        if ((in.wasPressed(.j) and !typing) or scripted.j) {
+            self.local_shadows = !self.local_shadows;
+            log.info("j: local shadows {s}", .{if (self.local_shadows) "on" else "off"});
+        }
         if ((in.wasPressed(.y) and !typing) or scripted.y) {
             if (self.yard.settings) |ys| {
                 const lane = yard_mod.laneZ(yard_mod.middleLane(ys.rows), ys.rows);
@@ -1842,6 +1869,7 @@ const Sample = struct {
             // M22's proof keeps its 20 m; the room and the yard take the config's.
             .shadow_distance = if (!self.shadow_ground.isNone()) 20 else self.settings.shadow_distance,
             .shadow_tint = self.shadow_tint,
+            .local_shadows = self.local_shadows,
         };
         // Particle meshes are written here, outside the window, for this frame's camera.
         if (self.effects) |effects| effects.prepare(engine, view);
@@ -1859,7 +1887,12 @@ const Sample = struct {
 
         // Lights are content values, submitted in authored order. The reader refused
         // an invalid list as a whole before it can reach this frame.
-        for (self.settings.lighting.lights[0..self.settings.lighting.len]) |light| try self.world.addLight(light);
+        // `--penumbra=off` submits each with radius 0, M39's filter (`shadows-local.md` §12).
+        for (self.settings.lighting.lights[0..self.settings.lighting.len]) |light| {
+            var submitted = light;
+            if (!self.penumbra) submitted.source_radius = 0;
+            try self.world.addLight(submitted);
+        }
 
         self.drawModel(.{ .model = self.room, .world = Mat4.identity });
         self.drawModel(.{ .model = self.course, .world = Mat4.identity });
@@ -2099,13 +2132,13 @@ const Script = struct {
 
     const max = 32;
     const Press = struct { key: Key, frame: u64 };
-    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n, m, k, l, h, y };
-    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false, m: bool = false, k: bool = false, l: bool = false, h: bool = false, y: bool = false };
+    const Key = enum { f1, f3, f4, f5, f6, f7, f9, g, c, r, t, b, p, n, m, k, l, h, j, y };
+    const Keys = struct { f1: bool = false, f3: bool = false, f4: bool = false, f5: bool = false, f6: bool = false, f7: bool = false, f9: bool = false, g: bool = false, c: bool = false, r: bool = false, t: bool = false, b: bool = false, p: bool = false, n: bool = false, m: bool = false, k: bool = false, l: bool = false, h: bool = false, j: bool = false, y: bool = false };
 
     fn fromEnv(engine: *app.Engine) Script {
         const text = engine.os.envVar("FOUNDRY_SANDBOX3D_KEYS") orelse return .{};
         return parse(text) orelse blk: {
-            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n m k l h y); ignoring it", .{});
+            log.warn("FOUNDRY_SANDBOX3D_KEYS is not a list of key@frame (f1 f3 f4 f5 f6 f7 f9 g c r t b p n m k l h j y); ignoring it", .{});
             break :blk .{};
         };
     }
@@ -2329,6 +2362,14 @@ test "sample proof switches are explicit and the last setting given wins" {
     }
     try testing.expect(options.parse("--shadow-tint"));
     try testing.expect(options.shadow_tint);
+    try testing.expect(options.local_shadows and options.penumbra);
+    try testing.expect(options.parse("--local-shadows=off"));
+    try testing.expect(!options.local_shadows);
+    try testing.expect(options.parse("--penumbra=off"));
+    try testing.expect(!options.penumbra);
+    for ([_][]const u8{ "--local-shadows", "--local-shadows=on", "--local-shadows=OFF", "--penumbra", "--penumbra=on" }) |bad| {
+        try testing.expect(!options.parse(bad));
+    }
     for ([_][]const u8{ "--shadow-cascades=0", "--shadow-cascades=5", "--shadow-cascades=", "--shadow-cascades=12", "--shadow-cascades" }) |bad| {
         try testing.expect(!options.parse(bad));
     }

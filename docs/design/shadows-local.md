@@ -1172,3 +1172,89 @@ checks had passed regardless: they validate the RHI's own stages, not render3d's
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, which compile the GLSL
   penumbra.
+
+## Resolution — Step 7: the room, every light casting, on Metal (2026-11-15)
+
+**What the step pinned:**
+- **`sandbox3d:config.main`:**
+  - its two point lights set `casts_shadow true` and `source_radius 0.05`;
+  - the sun gets `source_radius 0.0047`;
+  - a spot joins them over the glass pane: at (0, 1.8, 2.4), aimed through the pane's upper
+    half at the floor beyond it, outer cone 0.5236 rad (60° across), inner 0.35, 150 cd,
+    range 8, radius 0.05.
+  The schema's light entry gains `source_radius f32 (default 0)`.
+- **The dusk mod** restates the whole config, so its lamps now cast too, at radius 0.08, and
+  it adds an orange spot of its own in the same place. That change is content only. It
+  compiles with `fpack` against the base package. `docs/modding/content-mods.md` says so.
+- **`light_settings.zig`** reads `source_radius` and lets every spot and point light cast. It
+  still refuses a second casting directional light, and `lighting.valid` refuses a radius out
+  of range.
+- **The flags.** `--local-shadows=off` sets `FrameView.local_shadows` false.
+  `--penumbra=off` submits every light with radius 0. Anything else near them is the usage
+  error, and the options test pins both. **J** toggles local shadows, logging `j: local
+  shadows on|off`, and `j@frame` joins the scripted keys.
+- **The exit report** logs each granted local tile (light, kind, face, side, origin) and a line
+  of local counts: lights, tiles, local draws, translucent draws, unseen, dropped. The
+  overlay's second profiler line is Step 3's, read from the same `Stats`.
+
+**Where implementation sharpened the design:**
+- **`--shadow-tint` had never reached the sample.** M39 parsed it into `Options`, but
+  `Sample.init` did not copy it, so the run started untinted and only H tinted it. With the
+  flag, the run now starts tinted, and the two new flags take the same path.
+- **The test light without a colour.** The schema's nested `color` record must be present even
+  though its fields have defaults. The test's lamps say so, as the content's do.
+- **M39's refusal of a casting point light** in the lighting test now has to pass, so that case
+  is gone. A list of the sun, two casting lamps and a casting spot reads as four lights, each
+  lamp with its radius.
+
+**The room, headless, at the default:** the three local lights take 17 tiles of 1,024:
+- each lamp takes six faces on page 1;
+- the spot takes one;
+- none is unseen and none dropped.
+Thirty frames draw 260 local and 8 translucent shadow draws. With `--local-shadows=off` the
+frame draws M39's 459 shadow draws exactly, with 4 translucent draws into the cascades.
+`--penumbra=off` draws the same counts as the default.
+
+**The tour,** 2,400 frames, held every pin with local shadows on (the bar's run) and off:
+- the player `b85b52c97d259db4`;
+- the walker `655e865f98779129`;
+- the pacer's three replays and M34's save;
+- the corner `e2992f93e5323345`;
+- the yard `1052a9ae891b0d27`.
+
+**The budget, from a relocated, read-only ReleaseSafe install, windowed on the M5:**
+- the install was made with `zig build install -Drhi=metal -Doptimize=ReleaseSafe` to a staging
+  prefix, then moved and made read-only;
+- each run was 900 frames of the orbiting room, with saves redirected to scratch;
+- nothing under Application Support changed.
+
+| Run | Shadow draws (local, translucent) | Frame work, median / p95 (max) | `render.world`, median / p95 | Skipped |
+| --- | --- | --- | --- | --- |
+| Every light casting | 840 (318, 8) | 3.727 / **4.103 ms** (40.013) | 2.095 / 2.276 ms | 0 |
+| `--local-shadows=off` | 522 (0, 4) | 3.073 / 3.445 ms (4.073) | 1.449 / 1.523 ms | 0 |
+| `--penumbra=off` | 840 (318, 8) | 2.952 / 4.233 ms (4.730) | 1.557 / 2.237 ms | 0 |
+
+- **What local shadows cost:** about 0.65 ms of CPU a frame at the median, nearly all of it
+  `render.world` recording 318 more caster draws.
+- **What the penumbra costs:** the CPU difference between the first and third runs is within
+  run-to-run noise. The penumbra is GPU work, and GPU timing of the shadow passes is M73's.
+- **The exit holds:** the frame works for 4.1 ms of its 16.67 at p95.
+- **One frame took 40 ms** in the casting run's last 240. Only that run had one, and no frame
+  was skipped. This step does not explain it, and Step 9's Windows run measures the same scene
+  again.
+
+**What this step leaves to the owner's eye.** Step 4's loose end, a point light's face offset
+scaled by distance, is the kind of fault that shows as acne in this room, where every surface
+casts. This step's runs measure counts and time and capture no image, so the room's look is
+first seen when the owner plays at Step 8 or watches Step 9's Windows run.
+
+**Each guard was broken once:**
+- a parser taking anything starting with `--local-shadows` failed the options test;
+- removing the second-sun refusal failed the lighting test;
+- leaving `source_radius` unread failed the lighting test.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,024/3,034 (ten skips) and Metal 3,035/3,056 (21 skips), the sample's own tests among
+  them (`sandbox3d-test` 75/76, one skip);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks.

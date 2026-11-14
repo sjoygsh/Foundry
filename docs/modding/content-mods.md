@@ -146,8 +146,9 @@ what that means in general.
 `sandbox3d` uses the same package path, with application identity `foundry-sandbox3d` and
 selection variable `FOUNDRY_SANDBOX3D_PACKAGES`. Its reference content-only mod is
 `samples/sandbox3d/testdata/mods/dusk/`. It replaces the complete lighting config and two
-materials: EV100 exposure, ambient luminance, directional/point intensities, colour, roughness
-and emission. No code, shader or mesh is added by the mod.
+materials: EV100 exposure, ambient luminance, directional, point and spot intensities, colour,
+roughness and emission. Since M40 its lamps and spot cast shadows too, each with its own
+`source_radius`, which softens them. No code, shader or mesh is added by the mod.
 
 On macOS, after building the sample and compiler once:
 

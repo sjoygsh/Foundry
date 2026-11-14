@@ -51,11 +51,15 @@ pub const LightSettings = struct {
                 .inner_cone = try namedNumber(entry, "inner_cone"),
                 .outer_cone = try namedNumber(entry, "outer_cone"),
                 .casts_shadow = shadow,
+                // The emitter's size (`shadows-local.md` §12): metres for a lamp, radians for
+                // the sun; the schema's default is 0, M39's filter.
+                .source_radius = if (index(entry, "source_radius")) |r| try number(entry, r) else 0,
                 .world = Mat4.trs(position, rotation, .one),
             };
             if (!render3d.lighting.valid(light)) return error.InvalidLighting;
-            if (shadow) {
-                if (kind != .directional or caster) return error.InvalidLighting;
+            // Every spot and point light may cast since M40; still one directional caster.
+            if (shadow and kind == .directional) {
+                if (caster) return error.InvalidLighting;
                 caster = true;
             }
             out.lights[n] = light;
@@ -116,6 +120,11 @@ fn checkSource(source: []const u8, expected: ?usize) !void {
         if (len > 0) {
             try std.testing.expectApproxEqAbs(@as(f32, 300), settings.lights[0].intensity, 1e-6);
             try std.testing.expect(settings.lights[0].casts_shadow);
+            try std.testing.expectEqual(@as(f32, 0), settings.lights[0].source_radius);
+        }
+        if (len == 4) {
+            try std.testing.expect(settings.lights[1].casts_shadow and settings.lights[2].casts_shadow);
+            try std.testing.expectApproxEqAbs(@as(f32, 0.05), settings.lights[1].source_radius, 1e-6);
         }
     } else try std.testing.expectError(error.InvalidLighting, LightSettings.read(fields));
 }
@@ -126,7 +135,7 @@ const schema =
     \\ ambient { r f32 g f32 b f32 }
     \\ lights [{ kind string color { r f32 (default 1) g f32 (default 1) b f32 (default 1) } intensity f32 (default 300) range f32 (default 0)
     \\ inner_cone f32 (default 0) outer_cone f32 (default 0.785398)
-    \\ casts_shadow bool (default false) position { x f32 y f32 z f32 }
+    \\ casts_shadow bool (default false) source_radius f32 (default 0) position { x f32 y f32 z f32 }
     \\ direction { x f32 (default -1) y f32 (default -2) z f32 (default -1) } }]
     \\}
 ;
@@ -136,6 +145,10 @@ test "lighting content copies ordered bounded photometric values and refuses uns
     try checkSource(schema ++ "config sandbox3d:config.main { ambient { r 2 g 3 b 4 } lights [" ++ good_light ++ "] }", 1);
     try checkSource(schema ++ "config sandbox3d:config.main { ambient { r 0 g 0 b 0 } lights [] }", 0);
     try checkSource(schema ++ "config sandbox3d:config.main { ambient { r 0 g 0 b 0 } lights [" ++ good_light ++ good_light ++ "] }", null);
+    // Lamps cast beside the sun, each with a size (`shadows-local.md` §12).
+    const lamp = "{ kind \"point\" intensity 120 range 8 color { r 1 g 0.7 b 0.4 } casts_shadow true source_radius 0.05 position { x 1 y 2 z 0 } direction { x -1 y -2 z -1 } }";
+    const spot = "{ kind \"spot\" intensity 120 range 8 inner_cone 0.3 outer_cone 0.5 color { r 1 g 1 b 1 } casts_shadow true source_radius 0.05 position { x 0 y 2 z 2 } direction { x 0 y -1 z -1 } }";
+    try checkSource(schema ++ "config sandbox3d:config.main { ambient { r 0 g 0 b 0 } lights [" ++ good_light ++ lamp ++ spot ++ lamp ++ "] }", 4);
     try checkSource(schema ++ "config sandbox3d:config.main { ambient { r -1 g 0 b 0 } lights [] }", null);
     try checkSource(schema ++ "config sandbox3d:config.main { ambient { r 0 g 0 b 0 } exposure_ev100 -200 lights [] }", null);
     const base = schema ++ "config sandbox3d:config.main { ambient { r 0 g 0 b 0 } lights [" ++ good_light ++ "] }";
@@ -143,10 +156,14 @@ test "lighting content copies ordered bounded photometric values and refuses uns
     defer std.testing.allocator.free(vertical);
     try checkSource(vertical, 1);
     const changes = [_][2][]const u8{
-        .{ "\"directional\"", "\"unknown\"" },                             .{ "\"directional\"", "\"point\"" },
-        .{ "intensity 300", "intensity -1" },                              .{ "intensity 300", "intensity 300 range -1" },
-        .{ "r 1 g 0.9", "r 2 g 0.9" },                                     .{ "x -1 y -2 z -1", "x 0 y 0 z 0" },
+        .{ "\"directional\"", "\"unknown\"" },
+        .{ "intensity 300", "intensity -1" },
+        .{ "intensity 300", "intensity 300 range -1" },
+        .{ "r 1 g 0.9", "r 2 g 0.9" },
+        .{ "x -1 y -2 z -1", "x 0 y 0 z 0" },
         .{ "intensity 300", "intensity 300 inner_cone 1 outer_cone 0.5" },
+        .{ "intensity 300", "intensity 300 source_radius -0.1" },
+        .{ "intensity 300", "intensity 300 source_radius 0.5" },
     };
     for (changes) |change| {
         const bad = try std.mem.replaceOwned(u8, std.testing.allocator, base, change[0], change[1]);

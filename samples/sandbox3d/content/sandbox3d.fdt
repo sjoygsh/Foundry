@@ -433,7 +433,10 @@ foundry:particle_emitter sandbox3d:effects.trail {
     shadow_distance f32 (default 80)
 
     # Photometric units (ADR-0056): EV100, cd/m² ambient; lux for directional,
-    # candela for point/spot. Direction is the light's local −Z, not Euler angles.
+    # candela for point/spot. Direction is the light's local −Z, not Euler angles. Every light
+    # may cast since M40, one directional at most; `source_radius` is its size, metres for a
+    # lamp and radians for the sun, which softens its shadows with distance from the caster
+    # (`shadows-local.md` §10, §12).
     exposure_ev100 f32 (default 6)
     ambient { r f32 (default 8) g f32 (default 8) b f32 (default 8) }
     lights [{
@@ -444,6 +447,7 @@ foundry:particle_emitter sandbox3d:effects.trail {
         inner_cone f32 (default 0)
         outer_cone f32 (default 0.785398)
         casts_shadow bool (default false)
+        source_radius f32 (default 0)
         position { x f32 y f32 z f32 }
         direction { x f32 (default -1) y f32 (default -2) z f32 (default -1) }
     }]
@@ -468,11 +472,19 @@ config sandbox3d:config.main {
     ambient { r 8 g 10 b 14 }
     lights [
         { kind "directional" intensity 700 color { r 1 g 0.94 b 0.8 }
-            position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } casts_shadow true }
+            position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } casts_shadow true
+            source_radius 0.0047 }
         { kind "point" intensity 120 range 8 position { x -1.5 y 2 z 1.5 }
-            color { r 1 g 0.72 b 0.45 } direction { x -1 y -2 z -1 } }
+            color { r 1 g 0.72 b 0.45 } direction { x -1 y -2 z -1 } casts_shadow true
+            source_radius 0.05 }
         { kind "point" intensity 80 range 8 position { x 1.5 y 2 z -1.5 }
-            color { r 0.5 g 0.7 b 1 } direction { x -1 y -2 z -1 } }
+            color { r 0.5 g 0.7 b 1 } direction { x -1 y -2 z -1 } casts_shadow true
+            source_radius 0.05 }
+        # M40: over the glass pane (z = 1.3, 1.2 m wide, 1 m tall), aimed through its top
+        # half at the floor beyond it, 60 degrees across, so the pane's tint lands there.
+        { kind "spot" intensity 150 range 8 inner_cone 0.35 outer_cone 0.5236
+            position { x 0 y 1.8 z 2.4 } direction { x 0 y -1.8 z -2.4 }
+            color { r 1 g 0.96 b 0.9 } casts_shadow true source_radius 0.05 }
     ]
 }
 
