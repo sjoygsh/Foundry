@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40 Step 3 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 4: point shadows, six widened faces chosen in the shaders, and wide spots cast through faces. `addLight` still refuses casting point lights and spots wider than π/3. The PC holds no Foundry clone.
+**Current handoff: M40 Step 4 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 5: translucent shadows, the `rgba16_float` transmittance twin of the atlas (ADR-0081); blended casters still cast nothing. The PC holds no Foundry clone.
+
+**M40 Step 4 is done (2026-11-14): point shadows.**
+- `addLight` accepts every casting spot and point light; only a second casting sun is refused.
+- A point light, or a spot wider than π/3, gets six consecutive face tiles in face order, each `lighting.faceMatrix`, one side and one per-metre offset. Its `cone_shadow.w` is 6, and `shadowTiles()` reports `.face` with the face index.
+- `lit.metal` and `lit.frag.glsl` choose the face in the shader: the offset is scaled by the largest component of the light-to-receiver vector, then the face is chosen from the offset vector by `chooseFace`'s rule.
+- Tests: null placement and per-face culling of a point and a wide spot; Metal readbacks of a point's shadow through each of its six faces (the scene turned about the camera) and of a bar's shadow across the −Z/+X seam with no step.
+- Face order and face matrices broken, each failing; without widening only Step 2's maths test fails, and an unscaled face offset fails nothing (the walls do not cast), which Step 7's room must show. Bar: null 3,018/3,028 (ten skips), Metal 3,029/3,050 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 3 is done (2026-11-14): the third uniform and spot shadows.**
 - `FrameUniform` is 4,256 bytes, with 32 tiles' rectangles, parameters and matrices, in Zig, three Metal and seven GLSL files, and the SPIR-V agreement check. Each light finds its own tiles in `cone_shadow.z/w`.

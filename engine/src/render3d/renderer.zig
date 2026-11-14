@@ -1853,13 +1853,9 @@ pub const Renderer = struct {
     pub fn addLight(self: *Self, light: Light) Error!void {
         if (!self.recording or self.planned_draws != null or self.frame != null or self.skin_frame != null) return error.NotRecording;
         if (!lighting.valid(light)) return error.InvalidLight;
-        // One casting directional light; casting spots to `max_spot_cone`. Point lights and wider
-        // spots cast through six faces, which Step 4 of `shadows-local.md` adds.
-        if (light.casts_shadow) switch (light.kind) {
-            .directional => if (self.has_shadow_caster) return error.InvalidShadowCaster,
-            .spot => if (light.outer_cone > shadow_atlas.max_spot_cone) return error.InvalidShadowCaster,
-            .point => return error.InvalidShadowCaster,
-        };
+        // One casting directional light; any number of casting spots and point lights, which
+        // the frame's tiles are shared among (`shadows-local.md` §5).
+        if (light.casts_shadow and light.kind == .directional and self.has_shadow_caster) return error.InvalidShadowCaster;
         if (self.light_count == max_lights) return error.TooManyLights;
         self.lights[self.light_count] = light;
         self.light_count += 1;
@@ -2286,7 +2282,8 @@ pub const Renderer = struct {
     }
 
     /// This frame's tiles (`shadows-local.md` §4, §5): the directional light's cascades first,
-    /// on M39's tiles, then each seen casting spot, nearest first, sized by its coverage.
+    /// on M39's tiles, then each seen casting spot or point light, nearest first, sized by its
+    /// coverage: one tile for a spot to `max_spot_cone`, six faces otherwise.
     fn placeShadowTiles(self: *Self) Error!void {
         const aspect = @as(f32, @floatFromInt(self.view.target_size.width)) / @as(f32, @floatFromInt(self.view.target_size.height));
         for (self.lights[0..self.light_count], 0..) |light, li| {
@@ -2332,15 +2329,29 @@ pub const Renderer = struct {
         for (placement.placed[0..placement.count]) |placed| {
             const light = self.lights[placed.request.light];
             const far = lighting.localFar(light, self.config.shadow_local_far);
-            // Spots only, until point lights' faces (Step 4): `addLight` refuses the rest.
-            std.debug.assert(placed.request.faces == 1);
-            const t = placed.first_tile;
-            const tangent = lighting.widenedTangent(@tan(light.outer_cone), placed.side, self.config.shadow_penumbra_max);
-            self.shadow_clip[t] = lighting.spotMatrix(light, self.config.shadow_local_near, far, placed.side, self.config.shadow_penumbra_max);
-            // The texel at one metre along the axis, so the shader scales it by axial depth (§6).
-            self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / @as(f32, @floatFromInt(placed.side)), 1 };
-            self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .spot, .index = 0, .tile = self.shadow_tiles[t] };
-            self.light_tiles[placed.request.light] = .{ t, placed.request.faces };
+            const near = self.config.shadow_local_near;
+            const footprint = self.config.shadow_penumbra_max;
+            const side: f32 = @floatFromInt(placed.side);
+            if (placed.request.faces == 1) {
+                const t = placed.first_tile;
+                const tangent = lighting.widenedTangent(@tan(light.outer_cone), placed.side, footprint);
+                self.shadow_clip[t] = lighting.spotMatrix(light, near, far, placed.side, footprint);
+                // The texel at one metre along the axis, so the shader scales it by axial depth (§6).
+                self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1 };
+                self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .spot, .index = 0, .tile = self.shadow_tiles[t] };
+            } else {
+                // A point light, or a spot wider than `max_spot_cone`: six widened faces in
+                // face order, each its own tile, the same side and offset (§7).
+                const eye = Vec3.init(light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2]);
+                const tangent = lighting.widenedTangent(1, placed.side, footprint);
+                for (0..shadow_atlas.face_count) |f| {
+                    const t = placed.first_tile + @as(u32, @intCast(f));
+                    self.shadow_clip[t] = lighting.faceMatrix(eye, @intCast(f), near, far, placed.side, footprint);
+                    self.shadow_tile_offset[t] = .{ self.config.shadow_normal_offset * 2 * tangent / side, 1 };
+                    self.shadow_tile_info[t] = .{ .light = placed.request.light, .kind = .face, .index = @intCast(f), .tile = self.shadow_tiles[t] };
+                }
+            }
+            self.light_tiles[placed.request.light] = .{ placed.first_tile, placed.request.faces };
         }
     }
 
@@ -3237,26 +3248,28 @@ test "light refusals leave the submitted frame unchanged" {
     }
     var shadow = good;
     shadow.casts_shadow = true;
-    // Point lights and spots wider than pi/3 cast through six faces, which Step 4 adds.
+    // Casting point lights and spots of any width are accepted, and set no directional
+    // caster; a second casting directional light is still refused.
     shadow.kind = .point;
-    try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    try fx.renderer.addLight(shadow);
     shadow.kind = .spot;
     shadow.outer_cone = 1.2;
-    try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
+    try fx.renderer.addLight(shadow);
     shadow.outer_cone = good.outer_cone;
-    try testing.expectEqual(@as(u32, 1), fx.renderer.light_count);
+    try testing.expect(!fx.renderer.has_shadow_caster);
+    try testing.expectEqual(@as(u32, 3), fx.renderer.light_count);
     shadow.kind = .directional;
     try fx.renderer.addLight(shadow);
     try testing.expectError(error.InvalidShadowCaster, fx.renderer.addLight(shadow));
-    try testing.expectEqual(@as(u32, 2), fx.renderer.light_count);
-    for (2..max_lights) |i| {
+    try testing.expectEqual(@as(u32, 4), fx.renderer.light_count);
+    for (4..max_lights) |i| {
         var light = good;
         light.intensity = @floatFromInt(i);
         try fx.renderer.addLight(light);
     }
     try testing.expectError(error.TooManyLights, fx.renderer.addLight(good));
     try testing.expectEqual(@as(u32, max_lights), fx.renderer.light_count);
-    for (2..max_lights) |i| try testing.expectEqual(@as(f32, @floatFromInt(i)), fx.renderer.lights[i].intensity);
+    for (4..max_lights) |i| try testing.expectEqual(@as(f32, @floatFromInt(i)), fx.renderer.lights[i].intensity);
     try fx.renderer.plan();
     try testing.expectError(error.NotRecording, fx.renderer.addLight(good));
     try finishTestFrame(&fx);
@@ -4209,6 +4222,157 @@ test "a spot shadows a wall where the oracle says, lights it beside the shadow, 
         try testing.expect(Vec3.dot(outside.sub(eye).normalize(), axis) < @cos(spot.outer_cone));
         try expectDisplayTexel(displayTexel(format, lighting.shade(surface, outside, n, .zero, &.{}, ambient, null)), readTexel(&bytes, 0, 16));
     }
+}
+
+test "a casting point light and a wide spot take six face tiles each, culled per face, and the uniform points each at its faces" {
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024 }, 32);
+    defer fx.deinit();
+    const cube = try litCube(&fx.renderer, .zero, 0.15);
+    try fx.renderer.begin(testView(32));
+    // A point light whose sphere holds the camera, and a spot wider than pi/3 farther off.
+    const eye = Vec3.init(0, 1, -3);
+    const point: Light = .{ .kind = .point, .intensity = 50, .range = 6, .casts_shadow = true, .world = Mat4.translation(eye) };
+    try fx.renderer.addLight(point);
+    var wide_world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, -1, 0), .init(0, 0, -1)).?);
+    wide_world.cols[3] = .{ 0, 1, -10, 1 };
+    const wide: Light = .{ .kind = .spot, .intensity = 50, .range = 4, .inner_cone = 1, .outer_cone = 1.2, .casts_shadow = true, .world = wide_world };
+    try fx.renderer.addLight(wide);
+    // A crate on the point light's +X axis, and one on the diagonal between +X and +Y.
+    try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = Mat4.translation(eye.add(.init(2, 0, 0))) });
+    try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = Mat4.translation(eye.add(.init(1.5, 1.5, 0))) });
+    const frame = try fx.device.beginFrame();
+    var cmd = try fx.device.beginCommandBuffer();
+    try fx.renderer.prepare(cmd, frame);
+    const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+    var uniform: lighting.FrameUniform = undefined;
+    @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+    fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+    try fx.renderer.recordFrame(cmd, frame, false);
+    try cmd.submit();
+    try fx.device.endFrame();
+    const tiles = fx.renderer.shadowTiles();
+    try testing.expectEqual(@as(usize, 12), tiles.len);
+    // Nearest sphere first: the point light's faces are tiles 0 to 5, the spot's 6 to 11.
+    for (tiles, 0..) |tile, t| {
+        try testing.expect(tile.kind == .face);
+        try testing.expectEqual(@as(u32, @intCast(t / 6)), tile.light);
+        try testing.expectEqual(@as(u32, @intCast(t % 6)), tile.index);
+        try testing.expectEqual(@as(u32, 256), tile.tile.side);
+        for (tiles[0..t]) |other| try testing.expect(!other.tile.overlaps(tile.tile));
+    }
+    try testing.expectEqualDeep([2]f32{ 1, 6 }, uniform.lights[0].cone_shadow[2..4].*);
+    try testing.expectEqualDeep([2]f32{ 7, 6 }, uniform.lights[1].cone_shadow[2..4].*);
+    const tangent = lighting.widenedTangent(1, 256, 12);
+    for (0..12) |t| {
+        const light = if (t < 6) point else wide;
+        const at = Vec3.init(light.world.cols[3][0], light.world.cols[3][1], light.world.cols[3][2]);
+        const rect = shadowTileRect(fx.renderer.config, tiles[t].tile);
+        try testing.expectEqual(rect, uniform.shadow_tiles[t]);
+        const clip = lighting.faceMatrix(at, @intCast(t % 6), 0.05, light.range, 256, 12);
+        try testing.expectEqual(lighting.tileMatrix(clip, rect), uniform.shadow_matrices[t]);
+        try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, 0 }, uniform.shadow_tile_parameters[t]);
+    }
+    // The axis crate is in the +X face alone, the diagonal one in +X and +Y; neither reaches
+    // the spot's faces, out of its range. Every face bit is one local draw.
+    const items = fx.renderer.draws.items;
+    try testing.expectEqual(@as(u32, 1 << 0), items[0].shadow_tiles);
+    try testing.expectEqual(@as(u32, (1 << 0) | (1 << 2)), items[1].shadow_tiles);
+    const stats = fx.renderer.frameStats();
+    try testing.expectEqual(@as(u32, 2), stats.shadow_local_lights);
+    try testing.expectEqual(@as(u32, 12), stats.shadow_tiles);
+    try testing.expectEqual(@as(u32, @popCount(items[0].shadow_tiles) + @popCount(items[1].shadow_tiles)), stats.shadow_local_draws);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a point light shadows a wall through each of its six faces where the oracle says, and lights it beside the shadow" {
+    if (rhi.backend == .null) return;
+    // One scene, turned about the camera so the light-to-wall axis is each face's in turn: a
+    // point light 1.5 m before a wall and to one side, so the camera sees past the cube halfway
+    // to the point pixel (16, 13) sees. The cube is inside that face's widened frustum alone,
+    // so reading any other face reads the point lit.
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1 }, material_test_size);
+    defer fx.deinit();
+    const quad = try litQuad(&fx.renderer, 0);
+    const cube = try litCube(&fx.renderer, .zero, 0.1);
+    const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+    const wall = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .casts_shadow = false }, "wall");
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    const format = fx.device.capabilities().surface_format;
+    const tangent: f32 = @tan(cascade_fov * 0.5);
+    const eye = Vec3.init(-0.8, 0, -2.5);
+    const shadowed = shadowWallPoint(16, 13, tangent);
+    const beside = shadowWallPoint(16, 20, tangent);
+    const caster = eye.add(shadowed.sub(eye).scale(0.5));
+    for (lighting.face_axes, 0..) |axes, f| {
+        const hint: Vec3 = if (@abs(axes[0].y) == 1) .init(0, 0, 1) else .up;
+        const turn = core.math.Quat.lookRotation(axes[0], hint).?;
+        const rotation = Mat4.fromQuat(turn);
+        const light: Light = .{ .kind = .point, .intensity = 10, .range = 10, .casts_shadow = true, .world = Mat4.translation(rotation.mulPoint(eye)) };
+        var view = cascadeView(80, false);
+        view.camera.rotation = turn;
+        try fx.renderer.begin(view);
+        try fx.renderer.addLight(light);
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = rotation.mul(Mat4.translation(.init(0, 0, -2))).mul(Mat4.scaling(.init(4, 4, 1))) });
+        try fx.renderer.drawMesh(.{ .mesh = cube, .material = fx.material, .world = rotation.mul(Mat4.translation(caster)) });
+        const bytes = try cascadeReadback(&fx, readback, null);
+        try testing.expectEqual(@as(u32, 1), fx.renderer.stats.shadow_local_lights);
+        try testing.expectEqual(lighting.chooseFace(rotation.mulPoint(shadowed).sub(rotation.mulPoint(eye))), @as(u32, @intCast(f)));
+        try testing.expectEqual(@as(u32, 1) << @intCast(f), fx.renderer.draws.items[1].shadow_tiles);
+        const n = rotation.mulPoint(.init(0, 0, 1));
+        const ambient = fx.renderer.view.ambient;
+        const p = rotation.mulPoint(shadowed);
+        const dark = displayTexel(format, lighting.shade(surface, p, n, .zero, &.{}, ambient, null));
+        const lit = displayTexel(format, lighting.shade(surface, p, n, .zero, &.{light}, ambient, null));
+        try testing.expect(!texelMatches(dark, lit));
+        try expectDisplayTexel(dark, readTexel(&bytes, 16, 13));
+        try expectDisplayTexel(displayTexel(format, lighting.shade(surface, rotation.mulPoint(beside), n, .zero, &.{light}, ambient, null)), readTexel(&bytes, 16, 20));
+    }
+}
+
+test "a bar's shadow crossing from a point light's -Z face to its +X face has no step at the seam" {
+    if (rhi.backend == .null) return;
+    // The light is 1 m before the wall and 1.5 m up, so the seam between -Z and +X falls on the
+    // wall at x = 1, pixel column 23. A thin bar halfway casts a band along row 9 from x = 0 to
+    // past 2, below where the camera sees the bar itself.
+    var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1 }, material_test_size);
+    defer fx.deinit();
+    const quad = try litQuad(&fx.renderer, 0);
+    const bar = try litCube(&fx.renderer, .zero, 0.5);
+    const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+    const wall = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .casts_shadow = false }, "wall");
+    const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer fx.device.destroyBuffer(readback);
+    const format = fx.device.capabilities().surface_format;
+    const tangent: f32 = @tan(cascade_fov * 0.5);
+    const eye = Vec3.init(0, 1.5, -3);
+    const light: Light = .{ .kind = .point, .intensity = 4, .range = 10, .casts_shadow = true, .world = Mat4.translation(eye) };
+    try fx.renderer.begin(cascadeView(80, false));
+    try fx.renderer.addLight(light);
+    try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(.init(0, 0, -2)).mul(Mat4.scaling(.init(4, 4, 1))) });
+    try fx.renderer.drawMesh(.{ .mesh = bar, .material = fx.material, .world = Mat4.translation(.init(0.55, 1.185, -3.5)).mul(Mat4.scaling(.init(1.1, 0.3, 0.04))) });
+    const bytes = try cascadeReadback(&fx, readback, null);
+    try testing.expect(fx.renderer.draws.items[1].shadow_tiles & 1 != 0);
+    try testing.expect(fx.renderer.draws.items[1].shadow_tiles & (1 << 5) != 0);
+    const n = Vec3.init(0, 0, 1);
+    const ambient = fx.renderer.view.ambient;
+    try testing.expectEqual(@as(u32, 5), lighting.chooseFace(shadowWallPoint(22, 9, tangent).sub(eye)));
+    try testing.expectEqual(@as(u32, 0), lighting.chooseFace(shadowWallPoint(23, 9, tangent).sub(eye)));
+    for (17..30) |x| {
+        // In the band, on both faces and at the seam, every pixel is the oracle's ambient;
+        // above and below it, every pixel is lit as the oracle says.
+        const p = shadowWallPoint(@floatFromInt(x), 9, tangent);
+        try expectDisplayTexel(displayTexel(format, lighting.shade(surface, p, n, .zero, &.{}, ambient, null)), readTexel(&bytes, x, 9));
+        for ([_]usize{ 2, 14 }) |y| {
+            const q = shadowWallPoint(@floatFromInt(x), @floatFromInt(y), tangent);
+            try expectDisplayTexel(displayTexel(format, lighting.shade(surface, q, n, .zero, &.{light}, ambient, null)), readTexel(&bytes, x, y));
+        }
+    }
+}
+
+/// The point pixel (x, y) sees on `cascadeView`'s wall at z = -4.
+fn shadowWallPoint(x: f32, y: f32, tangent: f32) Vec3 {
+    return .init(((x + 0.5) / 16 - 1) * tangent * 4, (1 - (y + 0.5) / 16) * tangent * 4, -4);
 }
 
 fn litBox(renderer: *Renderer) !MeshHandle {

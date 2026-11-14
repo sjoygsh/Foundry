@@ -180,9 +180,22 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
                 if (next >= 0) visibility=mix(visibility,next,next_weight);
             }
             falloff*=visibility;
-        } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0 && light.cone_shadow.w == 1) {
-            float axial=max(dot(in.world-light.position_kind.xyz,light.direction_range.xyz),0.0f);
-            float visibility=tileVisibility(frame,first,in.world,geometric_normal,axial,shadow_image,shadow_sampler);
+        } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0) {
+            // One tile for a spot to pi/3, its offset scaled by depth along its axis; six faces
+            // otherwise, the face the offset light-to-receiver vector's largest component names,
+            // ties in face order, as lighting.chooseFace (shadows-local.md §7).
+            float3 from=in.world-light.position_kind.xyz;
+            uint t=first;
+            float axial;
+            if (light.cone_shadow.w == 1) axial=max(dot(from,light.direction_range.xyz),0.0f);
+            else {
+                float3 a=abs(from);
+                axial=max(a.x,max(a.y,a.z));
+                float3 o=from+geometric_normal*frame.shadow_tile_parameters[first].x*axial;
+                float3 b=abs(o);
+                t+=(b.x>=b.y && b.x>=b.z) ? (o.x>=0 ? 0u : 1u) : (b.y>=b.z) ? (o.y>=0 ? 2u : 3u) : (o.z>=0 ? 4u : 5u);
+            }
+            float visibility=tileVisibility(frame,t,in.world,geometric_normal,axial,shadow_image,shadow_sampler);
             if (visibility >= 0) falloff*=visibility;
         }
         result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;

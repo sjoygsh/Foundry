@@ -926,3 +926,70 @@ inside tile 0's new right edge. Removing the clamp fails it again.
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, whose SPIR-V agreement
   check now pins the third layout.
+
+## Resolution — Step 4: point shadows (2026-11-14)
+
+**What the step pinned:**
+- **`addLight`** accepts any casting spot or point light. Only a second casting directional
+  light is still `InvalidShadowCaster`.
+- **`placeShadowTiles`** gives a request with six faces six consecutive tiles in face order
+  (+X, −X, +Y, −Y, +Z, −Z), each `lighting.faceMatrix` from the light's position. A point light
+  and a spot wider than π/3 take the same path, so a wide spot's cone only limits its light,
+  not its tiles. Each tile is `ShadowTile.kind = .face` with its face as `index`. The light's
+  `cone_shadow.w` is 6.
+- **All six faces share one side and one normal offset,** the texel at one metre of the face's
+  axis, `shadow_normal_offset · 2·widenedTangent(1, side, penumbra_max) / side`.
+- **The lit shaders** (`lit.metal`, `lit.frag.glsl`) read a light with one tile as a spot and
+  any other local light as six faces. For faces:
+  - `axial` is the largest absolute component of the light-to-receiver vector, which is the
+    distance along whichever face is read;
+  - the receiver is offset along its normal by the first tile's offset times `axial`;
+  - the face is chosen from the offset vector by `lighting.chooseFace`'s rule, ties in face
+    order and zero counting as positive;
+  - that face's tile is read by Step 3's `tileVisibility`.
+
+**Where implementation sharpened the design:**
+- **Which vector chooses the face.** §7 chooses from "the receiver's offset position", but the
+  offset is scaled by distance along the face, which depends on the face. The scale is taken
+  from the largest component of the unoffset vector, which is the same for every face a
+  receiver near a seam could read. The face is then chosen from the offset position, as §7
+  says, so the shader needs no second pass.
+- **A face test that turns the scene, not the light.** §13 asked for a cube with a crate on
+  each side of a point light. The camera of a 32-pixel readback sees one wall, so the readback
+  turns the whole scene, camera included, about the camera six times, once per face axis. The
+  light-to-wall axis is each face's in turn, only that face's tile holds the caster, and the
+  oracle is unchanged by the turn.
+
+**Tests:**
+- **Null:** a point light whose sphere holds the camera, and a spot at 1.2 rad farther off.
+  - They take tiles 0–5 and 6–11, nearest first, all 256, none overlapping.
+  - The uniform points them at `(1, 6)` and `(7, 6)`, with each face's folded matrix and offset.
+  - A crate on the point light's +X axis is drawn into +X alone, and one on the +X/+Y diagonal
+    into those two faces.
+  - The local draws are the sum of the face bits, and there are no violations.
+- **Metal, every face:** turned to each face axis in turn, a point light's cube shadows the
+  wall to the oracle's ambient and lights the wall beside it to the oracle. The caster is in
+  that face's tile alone, and `chooseFace` agrees.
+- **Metal, a seam:** a thin bar's shadow runs across the −Z/+X seam at pixel column 23.
+  `chooseFace` puts column 22 on −Z and column 23 on +X. Every pixel of the band, columns 17 to
+  29, reads the oracle's ambient, and every pixel above and below it reads lit.
+- **The refusal test** now accepts casting points and wide spots and still refuses a second
+  casting sun.
+
+**Each guard was broken once:**
+- swapping +X and −X in `lit.metal`'s face choice failed the every-face and seam readbacks;
+- placing the faces' matrices in reverse order failed the null placement test and both
+  readbacks;
+- removing a face's widening failed Step 2's coverage test, but no readback. At a 256 side the
+  widening moves a seam by about fourteen texels, and the clamp keeps the taps on the caster's
+  own depth, so the seam reads the same either way. Step 2's maths test is what guards it;
+- leaving a face's normal offset unscaled (`axial = 1`) failed nothing. The readbacks' walls
+  do not cast, so they have no acne for the offset to remove. Step 7's room, where every
+  surface casts, is where the offset's scale shows, and Step 4 records that it is unproved
+  until then.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,018/3,028 (ten skips) and Metal 3,029/3,050 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, which compile the
+  GLSL face choice.
