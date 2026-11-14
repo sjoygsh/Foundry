@@ -22,6 +22,8 @@ layout(set=0,binding=0,std140) uniform Frame {
 } frame;
 layout(set=0,binding=1) uniform texture2D shadow_image;
 layout(set=0,binding=2) uniform samplerShadow shadow_sampler;
+layout(set=0,binding=3) uniform texture2D tint_image;
+layout(set=0,binding=4) uniform sampler tint_sampler;
 layout(set=2,binding=0,std140) uniform Material {
     layout(offset=0) vec4 base_color;
     layout(offset=16) float alpha_cutoff;
@@ -69,21 +71,32 @@ vec2 ambient_dfg(float rough, float nv) {
 }
 const vec3 TINTS[4]=vec3[4](vec3(1,.25,.25),vec3(.25,1,.25),vec3(.25,.25,1),vec3(1,1,.25));
 // One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
-// clamped two texels inside its tile so none reads a neighbour's depth; -1 when the point
+// clamped two texels inside its tile so none reads a neighbour's depth; w is -1 when the point
 // leaves the tile. A perspective tile divides by w, and its normal offset grows with `axial`,
 // the receiver's depth along the light's axis; a cascade's is in metres, `axial` 1.
-float tileVisibility(uint t, vec3 normal, float axial) {
+// rgb is the light's transmittance (shadows-local.md §9): each tap whose receiver lies beyond
+// the translucent depth by more than the tile's relative bias takes the atlas's colour, any
+// other white, and only in a frame that drew translucent casters (counts.w).
+vec4 tileShadow(uint t, vec3 normal, float axial) {
     vec4 p=frame.shadow_tile_parameters[t];
     vec4 h=frame.shadow_matrices[t]*vec4(world_position+normal*p.x*axial,1);
-    if (p.y != 0) { if (h.w <= 0) return -1; h.xyz/=h.w; }
+    if (p.y != 0) { if (h.w <= 0) return vec4(1,1,1,-1); h.xyz/=h.w; }
     vec3 q=h.xyz;
     vec4 tile=frame.shadow_tiles[t];
-    if (any(lessThan(q.xy,tile.xy)) || any(greaterThan(q.xy,tile.zw)) || q.z < 0 || q.z > 1) return -1;
+    if (any(lessThan(q.xy,tile.xy)) || any(greaterThan(q.xy,tile.zw)) || q.z < 0 || q.z > 1) return vec4(1,1,1,-1);
     vec2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
+    bool tinted=frame.counts.w != 0;
     float visibility=0;
-    for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
-        visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(clamp(q.xy+vec2(x,y)*frame.shadow_parameters.xy,lo,hi),q.z));
-    return visibility/9;
+    vec3 transmit=vec3(0);
+    for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++) {
+        vec2 c=clamp(q.xy+vec2(x,y)*frame.shadow_parameters.xy,lo,hi);
+        visibility+=texture(sampler2DShadow(shadow_image,shadow_sampler),vec3(c,q.z));
+        if (tinted) {
+            vec4 f=texture(sampler2D(tint_image,tint_sampler),c);
+            transmit+=q.z < f.a*(1-p.w) ? f.rgb : vec3(1);
+        }
+    }
+    return vec4(tinted ? transmit/9 : vec3(1),visibility/9);
 }
 void main() {
     vec4 base=texture(sampler2D(base_image,base_sampler),uv)*material.base_color*color;
@@ -139,14 +152,16 @@ void main() {
         }
         // A light's tiles start at cone_shadow.z - 1, cone_shadow.w of them (shadows-local.md §8).
         uint first=uint(light.cone_shadow.z)-1;
+        vec3 tint=vec3(1);
         if (light.cone_shadow.z != 0 && light.position_kind.w == 0 && cascade < frame.counts.y) {
-            float visibility=tileVisibility(first+cascade,geometric_normal,1);
-            if (visibility < 0) visibility=1;
+            vec4 shadow=tileShadow(first+cascade,geometric_normal,1);
+            if (shadow.w < 0) shadow=vec4(1);
             if (next_weight > 0) {
-                float next=cascade+1 < frame.counts.y ? tileVisibility(first+cascade+1,geometric_normal,1) : 1;
-                if (next >= 0) visibility=mix(visibility,next,next_weight);
+                vec4 next=cascade+1 < frame.counts.y ? tileShadow(first+cascade+1,geometric_normal,1) : vec4(1);
+                if (next.w >= 0) shadow=mix(shadow,next,next_weight);
             }
-            falloff*=visibility;
+            falloff*=shadow.w;
+            tint=shadow.rgb;
         } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0) {
             // One tile for a spot to pi/3, its offset scaled by depth along its axis; six faces
             // otherwise, the face the offset light-to-receiver vector's largest component names,
@@ -162,10 +177,10 @@ void main() {
                 vec3 b=abs(o);
                 t+=(b.x>=b.y && b.x>=b.z) ? (o.x>=0 ? 0u : 1u) : (b.y>=b.z) ? (o.y>=0 ? 2u : 3u) : (o.z>=0 ? 4u : 5u);
             }
-            float visibility=tileVisibility(t,geometric_normal,axial);
-            if (visibility >= 0) falloff*=visibility;
+            vec4 shadow=tileShadow(t,geometric_normal,axial);
+            if (shadow.w >= 0) { falloff*=shadow.w; tint=shadow.rgb; }
         }
-        result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
+        result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff*tint;
     }
     float ao=1+material.surface.w*(texture(sampler2D(ao_image,ao_sampler),uv).r-1);
     vec2 ab=ambient_dfg(rough,max(dot(n,v),0));

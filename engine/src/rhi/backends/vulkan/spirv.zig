@@ -55,6 +55,7 @@ pub const Profile = enum {
     shadow_vertex_3,
     shadow_fragment_0,
     shadow_fragment_1,
+    shadow_fragment_2,
     tone_fragment,
     particle_fragment,
     particle_mask_fragment,
@@ -383,7 +384,7 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     try validate(bytes);
     const stage: Stage = switch (profile) {
         .shadow_vertex_0, .shadow_vertex_1, .shadow_vertex_2, .shadow_vertex_3 => .vertex,
-        .shadow_fragment_0, .shadow_fragment_1 => .fragment,
+        .shadow_fragment_0, .shadow_fragment_1, .shadow_fragment_2 => .fragment,
         .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex => .vertex,
         .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment, .particle_fragment, .particle_mask_fragment => .fragment,
     };
@@ -424,8 +425,10 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
         .shadow_vertex_2 => try requireShadowVertex(bytes, true, false),
         .shadow_vertex_3 => try requireShadowVertex(bytes, true, true),
         .shadow_fragment_0 => {},
-        .shadow_fragment_1 => {
+        .shadow_fragment_1, .shadow_fragment_2 => {
             inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
+            // A translucent caster writes its filter colour and depth (`shadows-local.md` §9).
+            if (profile == .shadow_fragment_2) try require(try hasLocatedVariable(bytes, 0, Storage.output));
             const material = try namedId(bytes, "Material") orelse return error.DecorationMismatch;
             try require(try hasMemberDecoration(bytes, material, 0, Decoration.offset, 0));
             try require(try hasMemberDecoration(bytes, material, 1, Decoration.offset, 16));
@@ -493,6 +496,9 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             try requireLightFrame(bytes);
             try require(try bindingHasType(bytes, 0, 1, Storage.uniform_constant, Op.type_image));
             try require(try bindingHasType(bytes, 0, 2, Storage.uniform_constant, Op.type_sampler));
+            // The transmittance atlas and its point sampler (`shadows-local.md` §9).
+            try require(try bindingHasType(bytes, 0, 3, Storage.uniform_constant, Op.type_image));
+            try require(try bindingHasType(bytes, 0, 4, Storage.uniform_constant, Op.type_sampler));
             inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
             const material = try namedId(bytes, "Material") orelse return error.DecorationMismatch;
             try require(try hasMemberDecoration(bytes, material, 2, Decoration.offset, 32));

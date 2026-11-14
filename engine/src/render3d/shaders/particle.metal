@@ -46,15 +46,15 @@ static float4 shade(VertexOut in, constant Frame &frame, constant Material &mate
 fragment float4 fragmentParticle(VertexOut in [[stage_in]],
                                  constant Frame &frame [[buffer(9)]],
                                  constant Material &material [[buffer(10)]],
-                                 texture2d<float> image [[texture(1)]],
-                                 sampler image_sampler [[sampler(1)]])
+                                 texture2d<float> image [[texture(2)]],
+                                 sampler image_sampler [[sampler(2)]])
 { return shade(in, frame, material, image, image_sampler); }
 
 fragment float4 fragmentParticleMask(VertexOut in [[stage_in]],
                                      constant Frame &frame [[buffer(9)]],
                                      constant Material &material [[buffer(10)]],
-                                     texture2d<float> image [[texture(1)]],
-                                     sampler image_sampler [[sampler(1)]])
+                                     texture2d<float> image [[texture(2)]],
+                                     sampler image_sampler [[sampler(2)]])
 {
     float4 value = shade(in, frame, material, image, image_sampler);
     if (value.a < material.alpha_cutoff) discard_fragment();

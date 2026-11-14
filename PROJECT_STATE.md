@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-14
-**Current handoff: M40 Step 4 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 5: translucent shadows, the `rgba16_float` transmittance twin of the atlas (ADR-0081); blended casters still cast nothing. The PC holds no Foundry clone.
+**Current handoff: M40 Step 5 of 10 is complete** (2026-11-14; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 6: contact-hardening penumbrae from `Light.source_radius`, which exists and is validated but does not yet widen any shadow. The PC holds no Foundry clone.
+
+**M40 Step 5 is done (2026-11-14): translucent shadows.**
+- Blend materials that cast are culled per tile into `translucent_order` and drawn by a second pass into an `rgba16_float` colour atlas, made the first frame one is drawn: filter `mix(1, base.rgb, base.a)` multiplied in, depth kept in alpha by `max`, tested against the depth atlas without writing. `shadow_translucent = false` keeps M39's behaviour.
+- Frame group 0 gains binding 3 (the colour atlas, or a 1×1 white fallback) and binding 4 (a point sampler). Metal numbers slots in layout order, so every material texture and sampler in the four render3d Metal shaders moved up one.
+- The lit shaders' `tileShadow` returns transmittance and visibility; a tap is tinted when `q.z < a·(1 − 1/512)`, only when `counts.w` says the pass ran.
+- A no-GPU test of first need and the switch; a Metal glass readback: tinted behind, untinted before, the pane unchanged by its own shadow.
+- Four guards broken, each failing; removing the bias fails nothing, since the normal offset lifts the pane off its own depth. `filter` is reserved in GLSL; renamed `tint`. Bar: null 3,020/3,030 (ten skips), Metal 3,031/3,052 (21 skips), every check, sample, the tour, `court-test` 87/89 and the five Vulkan checks.
 
 **M40 Step 4 is done (2026-11-14): point shadows.**
 - `addLight` accepts every casting spot and point light; only a second casting sun is refused.

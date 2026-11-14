@@ -1912,8 +1912,8 @@ fn vulkanGraph(
         const stage = vulkanShaderStageDefines(b, checker, b.fmt("shadow-vertex-{d}", .{i}), "engine/src/render3d/shaders/shadow.vert.glsl", "vert", b.fmt("shadow_vertex_{d}", .{i}), &.{ if (i & 1 != 0) "-DCOLOR=1" else "-DNO_COLOR=1", if (i & 2 != 0) "-DUV=1" else "-DNO_UV=1" });
         render3d_module.addAnonymousImport(b.fmt("shadow_vertex_{d}_spirv", .{i}), .{ .root_source_file = stage });
     }
-    for (0..2) |i| {
-        const stage = vulkanShaderStageDefines(b, checker, b.fmt("shadow-fragment-{d}", .{i}), "engine/src/render3d/shaders/shadow.frag.glsl", "frag", b.fmt("shadow_fragment_{d}", .{i}), &.{if (i == 1) "-DMASK=1" else "-DNO_MASK=1"});
+    for (0..3) |i| {
+        const stage = vulkanShaderStageDefines(b, checker, b.fmt("shadow-fragment-{d}", .{i}), "engine/src/render3d/shaders/shadow.frag.glsl", "frag", b.fmt("shadow_fragment_{d}", .{i}), &.{ if (i == 1) "-DMASK=1" else "-DNO_MASK=1", if (i == 2) "-DTRANSLUCENT=1" else "-DNO_TRANSLUCENT=1" });
         render3d_module.addAnonymousImport(b.fmt("shadow_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });
     }
     render3d_module.addAnonymousImport("tone_fragment_spirv", .{ .root_source_file = tone_fragment });

@@ -208,8 +208,8 @@ fn shadowStage(comptime name: []const u8, comptime entry: []const u8) ShaderStag
 fn shadowVertexStages() [4]ShaderStage {
     return .{ shadowStage("shadow_vertex_0_spirv", "vertexMain"), shadowStage("shadow_vertex_1_spirv", "vertexColor"), shadowStage("shadow_vertex_2_spirv", "vertexUv"), shadowStage("shadow_vertex_3_spirv", "vertexUvColor") };
 }
-fn shadowFragmentStages() [2]ShaderStage {
-    return .{ shadowStage("shadow_fragment_0_spirv", "fragmentMain"), shadowStage("shadow_fragment_1_spirv", "fragmentMask") };
+fn shadowFragmentStages() [3]ShaderStage {
+    return .{ shadowStage("shadow_fragment_0_spirv", "fragmentMain"), shadowStage("shadow_fragment_1_spirv", "fragmentMask"), shadowStage("shadow_fragment_2_spirv", "fragmentTranslucent") };
 }
 
 fn litModel() ShadingModel {
@@ -633,6 +633,13 @@ const PipelineKey = struct {
 
 const PipelineState = struct { key: PipelineKey, pipeline: rhi.RenderPipelineHandle };
 
+/// The transmittance atlas's blend (`shadows-local.md` §9): colour `src·0 + dst·src`, a
+/// multiply, and alpha `max`, the translucent depth nearest the light in reversed-Z.
+const translucent_blend: rhi.pipeline.BlendState = .{
+    .color = .{ .src = .zero, .dst = .src_color, .op = .add },
+    .alpha = .{ .src = .one, .dst = .one, .op = .max },
+};
+
 const FrameSlot = struct {
     uniform: rhi.BufferHandle,
     group: rhi.BindGroupHandle,
@@ -738,7 +745,14 @@ pub const Renderer = struct {
     shadow_sampler: rhi.SamplerHandle,
     shadow_target: rhi.TextureHandle = .none,
     shadow_vertex: [4]rhi.ShaderModuleHandle = @splat(.none),
-    shadow_fragment: [2]rhi.ShaderModuleHandle = @splat(.none),
+    shadow_fragment: [3]rhi.ShaderModuleHandle = @splat(.none),
+    /// The transmittance twin of the atlas (`shadows-local.md` §9, ADR-0081), made the first
+    /// frame a translucent caster is drawn; its 1x1 white fallback, alpha 0; its point sampler.
+    translucent_target: rhi.TextureHandle = .none,
+    translucent_fallback: rhi.TextureHandle,
+    translucent_sampler: rhi.SamplerHandle,
+    /// This frame's translucent casters, which a second pass draws into the colour atlas.
+    translucent_order: std.ArrayList(u32) = .empty,
     /// This frame's cascades, cascade 0 nearest; null when nothing casts.
     shadow_fit: ?lighting.CascadeFit = null,
     /// The atlas's allocator, rebuilt each frame, and this frame's grants in order: the cascades
@@ -846,6 +860,9 @@ pub const Renderer = struct {
                 .{ .binding = 0, .type = .uniform_buffer, .visibility = .{ .vertex = true, .fragment = true } },
                 .{ .binding = 1, .type = .sampled_texture, .texture = .depth, .visibility = .{ .fragment = true } },
                 .{ .binding = 2, .type = .sampler, .sampler = .comparison, .visibility = .{ .fragment = true } },
+                // The transmittance atlas and its point sampler (`shadows-local.md` §9).
+                .{ .binding = 3, .type = .sampled_texture, .visibility = .{ .fragment = true } },
+                .{ .binding = 4, .type = .sampler, .visibility = .{ .fragment = true } },
             },
         });
         errdefer device.destroyBindGroupLayout(frame_layout);
@@ -884,13 +901,23 @@ pub const Renderer = struct {
         errdefer device.destroyTexture(shadow_fallback);
         const shadow_sampler = try device.createSampler(.{ .label = "render3d shadow comparison", .compare = .greater_equal, .min_filter = .linear, .mag_filter = .linear });
         errdefer device.destroySampler(shadow_sampler);
+        // White and alpha 0, the cleared atlas: full transmittance, and no translucent depth.
+        const translucent_fallback = try device.createTexture(.{
+            .label = "render3d empty transmittance",
+            .size = .{ .width = 1, .height = 1 },
+            .format = .rgba16_float,
+            .usage = .{ .render_target = true, .sampled = true },
+        });
+        errdefer device.destroyTexture(translucent_fallback);
+        const translucent_sampler = try device.createSampler(.{ .label = "render3d transmittance" });
+        errdefer device.destroySampler(translucent_sampler);
         // Initialise even though Step 3's uniform always disables shadow lookup.
         const shadow_cmd = try device.beginCommandBuffer();
         var shadow_consumed = false;
         errdefer if (!shadow_consumed) shadow_cmd.discard();
         const shadow_pass = try shadow_cmd.beginRenderPass(.{
             .label = "render3d empty shadow",
-            .color = &.{},
+            .color = &.{.{ .texture = translucent_fallback, .load = .{ .clear = .{ .color = .{ 1, 1, 1, 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read }},
             .depth = .{ .texture = shadow_fallback, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read },
         });
         shadow_pass.end();
@@ -951,6 +978,8 @@ pub const Renderer = struct {
                     .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(lighting.FrameUniform) } } },
                     .{ .binding = 1, .resource = .{ .sampled_texture = shadow_fallback } },
                     .{ .binding = 2, .resource = .{ .sampler = shadow_sampler } },
+                    .{ .binding = 3, .resource = .{ .sampled_texture = translucent_fallback } },
+                    .{ .binding = 4, .resource = .{ .sampler = translucent_sampler } },
                 },
             });
             slot.* = .{ .uniform = uniform, .group = group };
@@ -969,6 +998,8 @@ pub const Renderer = struct {
             .slots = slots,
             .shadow_fallback = shadow_fallback,
             .shadow_sampler = shadow_sampler,
+            .translucent_fallback = translucent_fallback,
+            .translucent_sampler = translucent_sampler,
             // With shadows off nothing is granted, but the allocator still has a valid shape.
             .shadow_atlas = .init(@max(shadowPageSide(config), 2 * shadow_atlas.min_side), config.shadow_atlas_pages),
             .tone_layout = tone_layout,
@@ -1050,6 +1081,7 @@ pub const Renderer = struct {
         self.draws.deinit(self.gpa);
         self.order.deinit(self.gpa);
         self.shadow_order.deinit(self.gpa);
+        self.translucent_order.deinit(self.gpa);
         for (self.pipelines.items) |entry| self.device.destroyRenderPipeline(entry.pipeline);
         self.pipelines.deinit(self.gpa);
         for (self.models.items) |model| self.destroyModel(model);
@@ -1070,6 +1102,9 @@ pub const Renderer = struct {
         if (!self.shadow_target.isNone()) self.device.destroyTexture(self.shadow_target);
         self.device.destroyTexture(self.shadow_fallback);
         self.device.destroySampler(self.shadow_sampler);
+        if (!self.translucent_target.isNone()) self.device.destroyTexture(self.translucent_target);
+        self.device.destroyTexture(self.translucent_fallback);
+        self.device.destroySampler(self.translucent_sampler);
         self.device.destroyRenderPipeline(self.tone_pipeline);
         self.device.destroyShaderModule(self.tone_vertex);
         self.device.destroyShaderModule(self.tone_fragment);
@@ -1936,6 +1971,7 @@ pub const Renderer = struct {
         self.stats.culled = culled;
         self.shadow_fit = null;
         self.shadow_order.clearRetainingCapacity();
+        self.translucent_order.clearRetainingCapacity();
         self.stats.shadow_culled = 0;
         self.stats.shadow_cascades = 0;
         self.stats.shadow_tiles = 0;
@@ -1953,9 +1989,14 @@ pub const Renderer = struct {
             // `shadows-local.md` §6); a caster in two tiles is drawn into both, and one culled
             // from two is counted twice.
             try self.shadow_order.ensureTotalCapacity(self.gpa, self.draws.items.len);
+            try self.translucent_order.ensureTotalCapacity(self.gpa, self.draws.items.len);
             for (self.draws.items, 0..) |*item, i| {
                 const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha == .blend or !self.castsShadow(material)) continue;
+                if (!self.castsShadow(material)) continue;
+                // A blend caster filters light through the second pass, or casts nothing when
+                // the host turned translucent shadows off (`shadows-local.md` §9).
+                const translucent = item.alpha == .blend;
+                if (translucent and !self.config.shadow_translucent) continue;
                 var mask: u32 = 0;
                 for (light_frusta[0..self.shadow_tile_count], 0..) |light_frustum, t| {
                     if (self.config.cull and light_frustum.excludes(item.bounds)) {
@@ -1963,12 +2004,13 @@ pub const Renderer = struct {
                     } else mask |= @as(u32, 1) << @intCast(t);
                 }
                 item.shadow_tiles = mask;
-                if (mask != 0) self.shadow_order.appendAssumeCapacity(@intCast(i));
+                if (mask != 0) (if (translucent) &self.translucent_order else &self.shadow_order).appendAssumeCapacity(@intCast(i));
             }
             self.stats.shadow_tiles = self.shadow_tile_count;
         }
         for (self.order.items) |i| self.draws.items[i].kept = true;
         for (self.shadow_order.items) |i| self.draws.items[i].kept = true;
+        for (self.translucent_order.items) |i| self.draws.items[i].kept = true;
         self.stats.skinned_draws = 0;
         self.stats.skinned_vertices = 0;
         self.stats.skin_budget_dropped = 0;
@@ -1989,6 +2031,7 @@ pub const Renderer = struct {
         }
         self.removeBudgetDrops(&self.order);
         self.removeBudgetDrops(&self.shadow_order);
+        self.removeBudgetDrops(&self.translucent_order);
         self.planned_draws = @intCast(self.draws.items.len);
     }
 
@@ -2077,6 +2120,10 @@ pub const Renderer = struct {
         if (self.shadow_tile_count != 0) {
             try self.ensureShadowResources();
             for (self.shadow_order.items) |i| _ = try self.ensurePipeline(self.shadowKey(self.draws.items[i]));
+            if (self.translucent_order.items.len != 0) {
+                try self.ensureTranslucentResources();
+                for (self.translucent_order.items) |i| _ = try self.ensurePipeline(self.shadowKey(self.draws.items[i]));
+            }
         }
 
         const slot = self.slots[frame.slot];
@@ -2086,6 +2133,8 @@ pub const Renderer = struct {
             const atlas = shadowAtlasExtent(self.config);
             const forward = Mat4.fromQuat(self.view.camera.rotation).mulPoint(Vec3.forward);
             uniform.counts[2] = @intFromBool(self.view.shadow_tint);
+            // The lit shaders read the transmittance atlas only in a frame that drew into it.
+            uniform.counts[3] = @intFromBool(self.translucent_order.items.len != 0);
             uniform.camera_forward = .{ forward.x, forward.y, forward.z, self.config.shadow_cascade_blend };
             const texel_u = 1 / @as(f32, @floatFromInt(atlas.width));
             const texel_v = 1 / @as(f32, @floatFromInt(atlas.height));
@@ -2097,7 +2146,7 @@ pub const Renderer = struct {
             for (0..self.shadow_tile_count) |t| {
                 const rect = shadowTileRect(self.config, self.shadow_tiles[t]);
                 uniform.shadow_tiles[t] = rect;
-                uniform.shadow_tile_parameters[t] = .{ self.shadow_tile_offset[t][0], self.shadow_tile_offset[t][1], 0, 0 };
+                uniform.shadow_tile_parameters[t] = .{ self.shadow_tile_offset[t][0], self.shadow_tile_offset[t][1], 0, lighting.translucent_bias };
                 uniform.shadow_matrices[t] = lighting.tileMatrix(self.shadow_clip[t], rect);
             }
             for (self.light_tiles[0..self.light_count], 0..) |tiles, li| {
@@ -2157,13 +2206,27 @@ pub const Renderer = struct {
             self.freeDoomed();
         }
         if (self.shadow_tile_count != 0) {
-            const shadow_pass = try cmd.beginRenderPass(.{
-                .label = "render3d shadow",
-                .color = &.{},
-                .depth = .{ .texture = self.shadow_target, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read },
-            });
-            defer shadow_pass.end();
-            try self.recordShadow(shadow_pass);
+            const translucent = self.translucent_order.items.len != 0;
+            {
+                const shadow_pass = try cmd.beginRenderPass(.{
+                    .label = "render3d shadow",
+                    .color = &.{},
+                    .depth = .{ .texture = self.shadow_target, .load = .{ .clear = .{ .depth_stencil = .{ .depth = 0 } } }, .store = .store, .initial_state = .undefined, .final_state = if (translucent) .depth_stencil else .shader_read },
+                });
+                defer shadow_pass.end();
+                try self.recordShadow(shadow_pass);
+            }
+            // The translucent casters, over the depth the first pass left, which they test and
+            // never write (`shadows-local.md` §9).
+            if (translucent) {
+                const pass = try cmd.beginRenderPass(.{
+                    .label = "render3d translucent shadow",
+                    .color = &.{.{ .texture = self.translucent_target, .load = .{ .clear = .{ .color = .{ 1, 1, 1, 0 } } }, .store = .store, .initial_state = .undefined, .final_state = .shader_read }},
+                    .depth = .{ .texture = self.shadow_target, .load = .load, .store = .store, .initial_state = .depth_stencil, .final_state = .shader_read },
+                });
+                defer pass.end();
+                try self.recordTranslucent(pass);
+            }
         }
         {
             const pass = try cmd.beginRenderPass(self.worldPassDesc());
@@ -2236,8 +2299,11 @@ pub const Renderer = struct {
 
     fn shadowKey(self: *const Self, item: DrawItem) PipelineKey {
         const mesh = self.meshes.getConst(item.mesh).?;
-        const color = item.alpha == .mask and mesh.stream_mask & (1 << 5) != 0;
-        const uv = item.alpha == .mask and mesh.stream_mask & (1 << 3) != 0;
+        // A masked caster's alpha and a translucent caster's filter colour read its texture and
+        // vertex colour; an opaque caster reads neither.
+        const reads = item.alpha != .@"opaque";
+        const color = reads and mesh.stream_mask & (1 << 5) != 0;
+        const uv = reads and mesh.stream_mask & (1 << 3) != 0;
         return .{ .model = item.pipeline_key.model, .vertex_layout = @as(u5, @intFromBool(color)) | (@as(u5, @intFromBool(uv)) << 1) | (@as(u5, @intFromBool(color and mesh.formats[5].? == .float32x4)) << 2), .alpha = item.alpha, .cull = item.pipeline_key.cull, .shadow = true };
     }
 
@@ -2258,11 +2324,13 @@ pub const Renderer = struct {
                 .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = slot.uniform, .size = @sizeOf(lighting.FrameUniform) } } },
                 .{ .binding = 1, .resource = .{ .sampled_texture = target } },
                 .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
+                .{ .binding = 3, .resource = .{ .sampled_texture = self.translucent_fallback } },
+                .{ .binding = 4, .resource = .{ .sampler = self.translucent_sampler } },
             } });
             built += 1;
         }
         var vertex: [4]rhi.ShaderModuleHandle = @splat(.none);
-        var fragment: [2]rhi.ShaderModuleHandle = @splat(.none);
+        var fragment: [3]rhi.ShaderModuleHandle = @splat(.none);
         errdefer {
             for (vertex) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
             for (fragment) |shader| if (!shader.isNone()) self.device.destroyShaderModule(shader);
@@ -2272,6 +2340,8 @@ pub const Renderer = struct {
         // (`fragmentMain` was empty), so it has none, and `fragment[0]` stays `.none`. Only a
         // masked caster, whose alpha test discards, keeps one (`light.md` §14).
         fragment[1] = try self.device.createShaderModule(.{ .bytes = shadowFragmentStages()[1].bytes });
+        // A translucent caster's fragment stage writes its filter colour and depth (§9).
+        fragment[2] = try self.device.createShaderModule(.{ .bytes = shadowFragmentStages()[2].bytes });
         for (self.slots, groups) |*slot, group| {
             slot.shadow_group = slot.group;
             slot.group = group;
@@ -2279,6 +2349,36 @@ pub const Renderer = struct {
         self.shadow_vertex = vertex;
         self.shadow_fragment = fragment;
         self.shadow_target = target;
+    }
+
+    /// The transmittance atlas, made the first frame a translucent caster is drawn and kept
+    /// (`shadows-local.md` §9): the atlas's size, `rgba16_float`. Each world group is rebuilt
+    /// to read it; the caster groups keep the fallbacks, so no pass samples what it draws.
+    fn ensureTranslucentResources(self: *Self) Error!void {
+        if (!self.translucent_target.isNone()) return;
+        const atlas = shadowAtlasExtent(self.config);
+        const target = try self.device.createTexture(.{ .label = "render3d transmittance atlas", .size = .{ .width = atlas.width, .height = atlas.height }, .format = .rgba16_float, .usage = .{ .render_target = true, .sampled = true } });
+        errdefer self.device.destroyTexture(target);
+        const groups = try self.gpa.alloc(rhi.BindGroupHandle, self.slots.len);
+        defer self.gpa.free(groups);
+        var built: usize = 0;
+        errdefer for (groups[0..built]) |group| self.device.destroyBindGroup(group);
+        for (self.slots, groups) |slot, *group| {
+            group.* = try self.device.createBindGroup(.{ .layout = self.frame_layout, .entries = &.{
+                .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = slot.uniform, .size = @sizeOf(lighting.FrameUniform) } } },
+                .{ .binding = 1, .resource = .{ .sampled_texture = self.shadow_target } },
+                .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
+                .{ .binding = 3, .resource = .{ .sampled_texture = target } },
+                .{ .binding = 4, .resource = .{ .sampler = self.translucent_sampler } },
+            } });
+            built += 1;
+        }
+        // The replaced groups are retired by the device once no frame in flight reads them.
+        for (self.slots, groups) |*slot, group| {
+            self.device.destroyBindGroup(slot.group);
+            slot.group = group;
+        }
+        self.translucent_target = target;
     }
 
     /// This frame's tiles (`shadows-local.md` §4, §5): the directional light's cascades first,
@@ -2293,7 +2393,7 @@ pub const Renderer = struct {
             // objects above the receiver volume can still cast into it.
             for (self.draws.items) |item| {
                 const material = self.materials.getConst(item.material) orelse continue;
-                if (item.alpha != .blend and self.castsShadow(material)) cascades.includeCaster(item.bounds);
+                if ((item.alpha != .blend or self.config.shadow_translucent) and self.castsShadow(material)) cascades.includeCaster(item.bounds);
             }
             for (cascades.fits[0..cascades.count], 0..) |fit, c| {
                 if (!matrixFinite(fit.matrix()) or !std.math.isFinite(fit.radius) or !std.math.isFinite(fit.max_z - fit.min_z) or !std.math.isFinite(fit.min_z) or !std.math.isFinite(fit.max_z) or !std.math.isFinite(fit.texel) or fit.texel <= 0) return error.InvalidCamera;
@@ -2392,6 +2492,36 @@ pub const Renderer = struct {
         }
     }
 
+    /// Each translucent caster into each tile its frustum meets, multiplying its filter colour
+    /// into the light's transmittance (`shadows-local.md` §9). Its pipeline has no bias: the
+    /// lookup's translucent bias, per tile, answers "behind the glass or not".
+    fn recordTranslucent(self: *Self, pass: *rhi.RenderPass) Error!void {
+        const frame = self.frame orelse return error.NotRecording;
+        for (self.shadow_tiles[0..self.shadow_tile_count], self.shadow_clip[0..self.shadow_tile_count], 0..) |tile, clip, t| {
+            pass.setViewport(.{ .x = @floatFromInt(tile.x), .y = @floatFromInt(tile.y), .width = @floatFromInt(tile.side), .height = @floatFromInt(tile.side) });
+            pass.setScissor(.{ .x = tile.x, .y = tile.y, .width = tile.side, .height = tile.side });
+            for (self.translucent_order.items) |i| {
+                const item = self.draws.items[i];
+                if (item.shadow_tiles & (@as(u32, 1) << @intCast(t)) == 0) continue;
+                const mesh = self.meshes.getConst(item.mesh) orelse continue;
+                const material = self.materials.getConst(item.material) orelse continue;
+                const key = self.shadowKey(item);
+                pass.setPipeline(self.pipelineFor(key).?);
+                pass.setBindGroup(0, self.slots[frame.slot].shadow_group);
+                pass.setBindGroup(2, material.group);
+                const constants: DrawConstants = .{ .world = clip.mul(item.world), .cofactor = std.mem.zeroes([3][4]f32) };
+                pass.setInlineConstants(std.mem.asBytes(&constants));
+                self.bindStream(pass, mesh, item, 0);
+                if (key.vertex_layout & 2 != 0) pass.setVertexBuffer(3, mesh.vertex_buffers[3], 0);
+                if (key.vertex_layout & 1 != 0) pass.setVertexBuffer(5, mesh.vertex_buffers[5], 0);
+                pass.setIndexBuffer(mesh.index_buffer, if (mesh.index_format == .uint16) .uint16 else .uint32, 0);
+                const submesh = mesh.submeshes[item.submesh];
+                pass.drawIndexed(.{ .index_count = submesh.index_count, .first_index = submesh.first_index });
+                self.stats.shadow_translucent_draws += 1;
+            }
+        }
+    }
+
     pub fn frameStats(self: *const Self) Stats {
         return self.last_stats;
     }
@@ -2446,7 +2576,15 @@ pub const Renderer = struct {
             }
         }
         if (key.shadow) variant = @as(usize, key.vertex_layout & 3);
-        const fragment_variant: usize = @as(usize, @intFromBool(key.alpha == .mask)) + 2 * @as(usize, @intFromBool(key.normal_map));
+        const fragment_variant: usize = if (key.shadow) switch (key.alpha) {
+            .@"opaque" => 0,
+            .mask => 1,
+            .blend => 2,
+        } else @as(usize, @intFromBool(key.alpha == .mask)) + 2 * @as(usize, @intFromBool(key.normal_map));
+        // A translucent caster multiplies its filter into the colour atlas and keeps the depth
+        // nearest the light in alpha by `max`, tested against the depth atlas and writing none
+        // (`shadows-local.md` §9).
+        const translucent = key.shadow and key.alpha == .blend;
         var layouts: [5]rhi.pipeline.VertexBufferLayout = undefined;
         var count: usize = 0;
         layouts[count] = .{
@@ -2488,7 +2626,10 @@ pub const Renderer = struct {
             .fragment_shader = if (key.shadow) self.shadow_fragment[fragment_variant] else model.fragment[fragment_variant],
             .fragment_entry = if (key.shadow) shadowFragmentStages()[fragment_variant].entry else model.desc.variants.fragment[fragment_variant].entry,
             .vertex_buffers = layouts[0..count],
-            .color_targets = if (key.shadow) &.{} else &.{.{
+            .color_targets = if (translucent) &.{.{
+                .format = .rgba16_float,
+                .blend = translucent_blend,
+            }} else if (key.shadow) &.{} else &.{.{
                 .format = .rgba16_float,
                 .blend = if (key.alpha == .blend) rhi.pipeline.BlendState.premultiplied_alpha else null,
             }},
@@ -2496,7 +2637,7 @@ pub const Renderer = struct {
                 .format = .depth32_float,
                 .depth_write_enabled = key.alpha != .blend,
                 .depth_compare = .greater_equal,
-                .bias = if (key.shadow) .{ .constant = self.config.shadow_bias_constant, .slope = self.config.shadow_bias_slope, .clamp = self.config.shadow_bias_clamp, .dynamic = true } else .{},
+                .bias = if (key.shadow and !translucent) .{ .constant = self.config.shadow_bias_constant, .slope = self.config.shadow_bias_slope, .clamp = self.config.shadow_bias_clamp, .dynamic = true } else .{},
             },
             .primitive = .{
                 .topology = .triangle_list,
@@ -3334,7 +3475,7 @@ test "a shadowed frame uploads every cascade's tile, folded matrix, offset, spli
         const rect = shadowTileRect(fx.renderer.config, fx.renderer.shadow_tiles[c]);
         try testing.expectEqual(rect, uniform.shadow_tiles[c]);
         try testing.expectEqual(cascades.splits[c + 1], uniform.shadow_splits[c]);
-        try testing.expectEqual([4]f32{ 1.5 * cascades.fits[c].texel, 0, 0, 0 }, uniform.shadow_tile_parameters[c]);
+        try testing.expectEqual([4]f32{ 1.5 * cascades.fits[c].texel, 0, 0, lighting.translucent_bias }, uniform.shadow_tile_parameters[c]);
         try testing.expectEqual(lighting.tileMatrix(cascades.fits[c].matrix(), rect), uniform.shadow_matrices[c]);
         if (c > 0) {
             try testing.expect(uniform.shadow_splits[c] > uniform.shadow_splits[c - 1]);
@@ -3357,7 +3498,7 @@ test "each cascade draws only the casters its own light box holds, and the count
     var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_size = 1024, .shadow_cascades = 4 }, 32);
     defer fx.deinit();
     const mesh = try litQuad(&fx.renderer, 0);
-    const blend = try fx.renderer.createMaterial(.{ .alpha_mode = .blend }, "blend not caster");
+    const blend = try fx.renderer.createMaterial(.{ .alpha_mode = .blend }, "translucent caster");
     const disabled = try fx.renderer.createMaterial(.{ .casts_shadow = false }, "disabled caster");
     var view = testView(32);
     view.camera.vertical_fov = std.math.pi / 3.2;
@@ -3365,7 +3506,8 @@ test "each cascade draws only the casters its own light box holds, and the count
     try fx.renderer.begin(view);
     // Straight down: each cascade's box is a column over its own slice.
     try fx.renderer.addLight(.{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0, -1, 0), .init(0, 0, -1)).?) });
-    // Near the camera; across the 5.4 m split; far out; and two that never cast.
+    // Near the camera; across the 5.4 m split; far out; one translucent, which only the
+    // second pass draws; and one that never casts.
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, -1, 0)) });
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, -1, -3.4)) });
     try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, -1, -70)) });
@@ -3378,9 +3520,10 @@ test "each cascade draws only the casters its own light box holds, and the count
     try testing.expect(items[0].shadow_tiles & 1 != 0 and items[0].shadow_tiles & 8 == 0);
     try testing.expect(items[1].shadow_tiles & 3 == 3);
     try testing.expect(items[2].shadow_tiles & 8 != 0 and items[2].shadow_tiles & 1 == 0);
-    try testing.expectEqual(@as(u32, 0), items[3].shadow_tiles);
+    try testing.expect(items[3].shadow_tiles != 0);
     try testing.expectEqual(@as(u32, 0), items[4].shadow_tiles);
     try testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, fx.renderer.shadow_order.items);
+    try testing.expectEqualSlices(u32, &.{3}, fx.renderer.translucent_order.items);
     try finishTestFrame(&fx);
     const stats = fx.renderer.frameStats();
     try testing.expectEqual(@as(u32, 4), stats.shadow_cascades);
@@ -3394,8 +3537,9 @@ test "each cascade draws only the casters its own light box holds, and the count
         drawn += count;
     }
     try testing.expectEqual(drawn, stats.shadow_draws);
-    // Every cascade culls what it does not draw, once each.
-    try testing.expectEqual(3 * 4 - drawn, stats.shadow_culled);
+    // Every cascade culls what it does not draw, once each, the translucent caster included.
+    try testing.expectEqual(@popCount(items[3].shadow_tiles), stats.shadow_translucent_draws);
+    try testing.expectEqual(4 * 4 - drawn - stats.shadow_translucent_draws, stats.shadow_culled);
     if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
 }
 
@@ -3783,13 +3927,13 @@ test "unrepresentable shadow fit and receiver offset are refused before upload" 
     try testing.expectError(error.InvalidConfig, fx.renderer.plan());
 }
 
-test "shadow selects off-camera opaque and masked casters but never blend or disabled material" {
+test "the depth pass selects off-camera opaque and masked casters but never blend or disabled material" {
     // M22's one map; per-cascade selection has its own test.
     var fx = try TestFixture.initConfig(.{ .sample_count = 1, .shadow_cascades = 1 }, 32);
     defer fx.deinit();
     const mesh = try litQuad(&fx.renderer, 3);
     const mask = try fx.renderer.createMaterial(.{ .alpha_mode = .mask }, "mask caster");
-    const blend = try fx.renderer.createMaterial(.{ .alpha_mode = .blend }, "blend not caster");
+    const blend = try fx.renderer.createMaterial(.{ .alpha_mode = .blend }, "translucent caster");
     const disabled = try fx.renderer.createMaterial(.{ .casts_shadow = false }, "disabled caster");
     try fx.renderer.begin(testView(32));
     // Both are behind the camera; the first reaches the receiver box along light Z.
@@ -3802,6 +3946,8 @@ test "shadow selects off-camera opaque and masked casters but never blend or dis
     try fx.renderer.plan();
     try finishTestFrame(&fx);
     try testing.expectEqualSlices(u32, &.{ 0, 2 }, fx.renderer.shadow_order.items);
+    // The blend material casts through the translucent pass instead (`shadows-local.md` §9).
+    try testing.expectEqualSlices(u32, &.{3}, fx.renderer.translucent_order.items);
     try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().shadow_draws);
     try testing.expectEqual(@as(u32, 1), fx.renderer.frameStats().shadow_culled);
     try testing.expectEqual(@as(u32, 2), fx.renderer.frameStats().culled);
@@ -4131,7 +4277,7 @@ test "a casting spot takes a tile after the cascades, culled per tile, and the u
     const clip = lighting.spotMatrix(spot, 0.05, 6, 256, 12);
     try testing.expectEqual(lighting.tileMatrix(clip, rect), uniform.shadow_matrices[4]);
     const tangent = lighting.widenedTangent(@tan(@as(f32, 0.6)), 256, 12);
-    try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, 0 }, uniform.shadow_tile_parameters[4]);
+    try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, lighting.translucent_bias }, uniform.shadow_tile_parameters[4]);
     // The near caster is in the spot's tile; the far one only in cascades whose boxes hold it.
     const items = fx.renderer.draws.items;
     try testing.expect(items[0].shadow_tiles & (1 << 4) != 0);
@@ -4270,7 +4416,7 @@ test "a casting point light and a wide spot take six face tiles each, culled per
         try testing.expectEqual(rect, uniform.shadow_tiles[t]);
         const clip = lighting.faceMatrix(at, @intCast(t % 6), 0.05, light.range, 256, 12);
         try testing.expectEqual(lighting.tileMatrix(clip, rect), uniform.shadow_matrices[t]);
-        try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, 0 }, uniform.shadow_tile_parameters[t]);
+        try testing.expectEqual([4]f32{ 1.5 * 2 * tangent / 256, 1, 0, lighting.translucent_bias }, uniform.shadow_tile_parameters[t]);
     }
     // The axis crate is in the +X face alone, the diagonal one in +X and +Y; neither reaches
     // the spot's faces, out of its range. Every face bit is one local draw.
@@ -4373,6 +4519,101 @@ test "a bar's shadow crossing from a point light's -Z face to its +X face has no
 /// The point pixel (x, y) sees on `cascadeView`'s wall at z = -4.
 fn shadowWallPoint(x: f32, y: f32, tangent: f32) Vec3 {
     return .init(((x + 0.5) / 16 - 1) * tangent * 4, (1 - (y + 0.5) / 16) * tangent * 4, -4);
+}
+
+test "a translucent caster is drawn by a second pass into a colour atlas made on first need, and the switch turns it off" {
+    for ([_]bool{ true, false }) |enabled| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_size = 1024, .shadow_translucent = enabled }, 32);
+        defer fx.deinit();
+        const mesh = try litQuad(&fx.renderer, 0);
+        const glass = try fx.renderer.createMaterial(.{ .alpha_mode = .blend, .base_color = .{ 0.2, 0.4, 1, 0.6 } }, "glass");
+        const sun: Light = .{ .kind = .directional, .intensity = 1, .casts_shadow = true, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(-1, -2, -1), .up).?) };
+        // An opaque frame first: no colour atlas is made, and the shaders are told not to read it.
+        for ([_]bool{ false, true, false }) |translucent| {
+            try fx.renderer.begin(testView(32));
+            try fx.renderer.addLight(sun);
+            try fx.renderer.drawMesh(.{ .mesh = mesh, .material = fx.material, .world = Mat4.translation(.init(0, -1, 0)) });
+            if (translucent) try fx.renderer.drawMesh(.{ .mesh = mesh, .material = glass, .world = .identity });
+            const frame = try fx.device.beginFrame();
+            var cmd = try fx.device.beginCommandBuffer();
+            try fx.renderer.prepare(cmd, frame);
+            const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+            var uniform: lighting.FrameUniform = undefined;
+            @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+            fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+            try fx.renderer.recordFrame(cmd, frame, false);
+            try cmd.submit();
+            try fx.device.endFrame();
+            const drawn = translucent and enabled;
+            const stats = fx.renderer.frameStats();
+            try testing.expectEqual(@as(u32, @intFromBool(drawn)), uniform.counts[3]);
+            try testing.expectEqual(@as(usize, @intFromBool(drawn)), fx.renderer.translucent_order.items.len);
+            // The glass is drawn into every cascade its box meets; it is never a depth caster.
+            try testing.expectEqual(if (drawn) @as(u32, @popCount(fx.renderer.draws.items[1].shadow_tiles)) else 0, stats.shadow_translucent_draws);
+            if (drawn) try testing.expect(stats.shadow_translucent_draws != 0);
+            try testing.expectEqual(@as(u32, @popCount(fx.renderer.draws.items[0].shadow_tiles)), stats.shadow_draws);
+            for (0..4) |t| try testing.expectEqual(lighting.translucent_bias, uniform.shadow_tile_parameters[t][3]);
+        }
+        // Made once, the first frame it was needed, the atlas's size, and kept.
+        try testing.expectEqual(!enabled, fx.renderer.translucent_target.isNone());
+        if (enabled and rhi.backend == .null) {
+            const desc = fx.device.textures.getConst(fx.renderer.translucent_target).?.desc;
+            try testing.expectEqual(rhi.TextureFormat.rgba16_float, desc.format);
+            try testing.expectEqual(shadowAtlasExtent(fx.renderer.config).width, desc.size.width);
+            try testing.expectEqual(shadowAtlasExtent(fx.renderer.config).height, desc.size.height);
+        }
+        if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+    }
+}
+
+test "glass tints the wall behind it by its filter colour, not a receiver before it, and not itself" {
+    if (rhi.backend == .null) return;
+    // A spot shines through a blue pane, 0.6 of the way to the wall point pixel (12, 16) sees,
+    // and past a small receiver 0.3 of the way, which is between the light and the pane. The
+    // camera sees all three apart. With the switch off, the pane casts nothing.
+    const filter = [3]f32{ 1 - 0.6 * 0.8, 1 - 0.6 * 0.6, 1 };
+    var pane_on: [4]u8 = undefined;
+    for ([_]bool{ true, false }) |enabled| {
+        var fx = try TestFixture.initConfig(.{ .frames_in_flight = 2, .sample_count = 1, .shadow_translucent = enabled }, material_test_size);
+        defer fx.deinit();
+        const quad = try litQuad(&fx.renderer, 0);
+        const surface: lighting.Surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.7 };
+        const wall = try fx.renderer.createMaterial(.{ .shading = lit_id, .base_color = .{ 0.6, 0.3, 0.1, 1 }, .roughness = 0.7, .casts_shadow = false }, "wall");
+        const glass = try fx.renderer.createMaterial(.{ .shading = lit_id, .alpha_mode = .blend, .base_color = .{ 0.2, 0.4, 1, 0.6 }, .roughness = 0.7 }, "glass");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const format = fx.device.capabilities().surface_format;
+        const tangent: f32 = @tan(cascade_fov * 0.5);
+        const eye = Vec3.init(-0.6, 0.5, -1);
+        const behind = shadowWallPoint(12, 16, tangent);
+        const axis = behind.sub(eye).normalize();
+        var world = Mat4.fromQuat(core.math.Quat.lookRotation(axis, .up).?);
+        world.cols[3] = .{ eye.x, eye.y, eye.z, 1 };
+        const spot: Light = .{ .kind = .spot, .intensity = 40, .range = 10, .inner_cone = 0.4, .outer_cone = 0.5, .casts_shadow = true, .world = world };
+        const pane = eye.add(behind.sub(eye).scale(0.6));
+        const before = eye.add(behind.sub(eye).scale(0.3));
+        try fx.renderer.begin(cascadeView(80, false));
+        try fx.renderer.addLight(spot);
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(.init(0, 0, -2)).mul(Mat4.scaling(.init(4, 4, 1))) });
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(before.add(.init(0, 0, 2))).mul(Mat4.scaling(.init(0.1, 0.1, 1))) });
+        try fx.renderer.drawMesh(.{ .mesh = quad, .material = glass, .world = Mat4.translation(pane.add(.init(0, 0, 2))).mul(Mat4.scaling(.init(0.15, 0.15, 1))) });
+        const bytes = try cascadeReadback(&fx, readback, null);
+        try testing.expectEqual(@as(u32, @intFromBool(enabled)), fx.renderer.stats.shadow_translucent_draws);
+        const n = Vec3.init(0, 0, 1);
+        const ambient = fx.renderer.view.ambient;
+        var tinted = spot;
+        tinted.color = filter;
+        // Behind the glass: the light times the filter, and plainly not the untinted light.
+        const lit = displayTexel(format, lighting.shade(surface, behind, n, .zero, &.{spot}, ambient, null));
+        const through = displayTexel(format, lighting.shade(surface, behind, n, .zero, &.{tinted}, ambient, null));
+        try testing.expect(!texelMatches(lit, through));
+        try expectDisplayTexel(if (enabled) through else lit, readTexel(&bytes, 12, 16));
+        // Between the light and the glass: untinted either way.
+        const near = Vec3.init((7.5 / 16.0 - 1) * tangent * -before.z, (1 - 10.5 / 16.0) * tangent * -before.z, before.z);
+        try expectDisplayTexel(displayTexel(format, lighting.shade(surface, near, n, .zero, &.{spot}, ambient, null)), readTexel(&bytes, 7, 10));
+        // The pane itself, where the camera sees it, is the same with its shadow on or off.
+        if (enabled) pane_on = readTexel(&bytes, 10, 14) else try expectDisplayTexel(readTexel(&bytes, 10, 14), pane_on);
+    }
 }
 
 fn litBox(renderer: *Renderer) !MeshHandle {

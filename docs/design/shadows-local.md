@@ -993,3 +993,91 @@ inside tile 0's new right edge. Removing the clamp fails it again.
 - every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, which compile the
   GLSL face choice.
+
+## Resolution — Step 5: translucent shadows (2026-11-14)
+
+**What the step pinned:**
+- **The colour atlas** is `rgba16_float`, the depth atlas's size. It is made by
+  `ensureTranslucentResources` the first frame that draws a translucent caster, and then kept.
+  Each slot's world group is rebuilt to read it, and the replaced groups are retired by the
+  device. A 1×1 fallback, cleared to white with alpha 0 at `init` beside M22's empty depth
+  map, fills binding 3 everywhere else. Binding 4 is a nearest sampler.
+- **The frame layout** gains binding 3 (sampled texture) and binding 4 (sampler). Every frame
+  group carries them, so the layout stays one.
+- **Culling:** a blend material that casts gets a tile mask like any caster, and joins
+  `translucent_order`, never `shadow_order`. With `shadow_translucent` off it gets neither,
+  as before M40. Translucent casters also widen the cascades' depth range, as opaque casters
+  do, so off-camera glass reaches its receivers. They are kept for skinning and budget
+  drops as shadow casters are.
+- **The passes:**
+  - when a frame has translucent casters, the depth pass ends in `depth_stencil`;
+  - the translucent pass then clears the colour atlas to `(1, 1, 1, 0)` and loads the depth
+    atlas, testing `greater_equal` with no write and no bias, and leaves both in `shader_read`;
+  - `recordTranslucent` draws each caster into each tile its mask names, binding the
+    fallback caster group, so nothing samples what it draws;
+  - each draw adds one to `Stats.shadow_translucent_draws`, and none counts in `shadow_draws`.
+- **The pipeline:** a shadow key with `alpha = blend` uses the new fragment stage
+  `fragmentTranslucent`, or `shadow_fragment_2` with `-DTRANSLUCENT`. It writes
+  `mix(1, base.rgb, base.a)` and the fragment's depth to one `rgba16_float` target, with
+  `translucent_blend`: colour zero/`src_color`/add, alpha one/one/`max`. A masked or blended
+  caster's shadow key now reads the uv and colour streams, since the filter needs both.
+- **The lookup:** `tileVisibility` became `tileShadow`, returning the transmittance in rgb
+  and the visibility in w (−1 outside the tile, with white). With `counts.w` set, each of the
+  nine taps reads the colour atlas at its own clamped coordinate. It takes the colour when
+  `q.z < a·(1 − bias)`, and white otherwise. The light is multiplied by the average after the
+  opaque visibility; cascades blend both across a band.
+- **`counts.w`** is 1 only in a frame that drew the translucent pass. **`tile_params.w`** is
+  `lighting.translucent_bias = 1/512` for every tile.
+
+**Where implementation sharpened the design:**
+- **The translucent bias is relative, the same for every tile.** §9 left it per tile, without
+  a value. Half precision keeps depth to about 2⁻¹¹ of itself wherever it lies, and
+  reversed-Z perspective depth falls with distance. A bias relative to the stored depth
+  therefore means the same fraction of distance for every kind of tile: `1/512` is four
+  half-precision steps. It stays in the uniform's per-tile slot, so a later step may vary it.
+- **Metal's texture and sampler indices move.** The Metal backend numbers each kind in layout
+  order, group by group, so group 0's two new entries become texture 1 and sampler 1. Every
+  material texture and sampler in `lit.metal`, `unlit.metal`, `particle.metal` and
+  `shadow.metal` moves up by one. Vulkan names set and binding, so nothing moved there.
+- **`shadow_culled` counts translucent casters' culls too,** since they are culled per tile
+  the same way. M39's per-cascade test now expects that.
+- **The pane's own shadow.** Its lit fragment's normal offset already lifts it off the
+  stored depth, so the bias is a margin, not what keeps the pane from tinting itself. Removing
+  the bias fails no test (below).
+
+**Tests:**
+- **Null and Metal, the switch and first need:**
+  - an opaque frame makes no colour atlas, and sets `counts.w` to 0;
+  - a frame with glass makes one, the atlas's size, sets `counts.w` to 1, and draws the
+    glass once per cascade its mask names, never as a depth caster;
+  - a later opaque frame keeps the atlas and clears `counts.w`;
+  - with `shadow_translucent` off, nothing is made or drawn;
+  - there are no violations.
+- **Metal, glass:** a spot shines through a blue pane (`(0.2, 0.4, 1)`, alpha 0.6). Behind
+  it, the wall reads the oracle's light times the filter `(0.52, 0.64, 1)`, plainly not the
+  untinted light. A receiver between the light and the pane reads untinted. The pane's own
+  pixel is the same with its shadow on and off. With the switch off, the wall behind the pane
+  reads untinted.
+- M39's two caster-selection tests now find the blend material in `translucent_order` and
+  still never in `shadow_order`.
+
+**Each guard was broken once:**
+- inverting the translucent depth comparison failed the glass readback;
+- writing `base.rgb` in place of the filter colour failed it;
+- keeping alpha by `min` in place of `max` failed it, since the clear's 0 then wins;
+- ignoring `shadow_translucent` in culling failed the switch test and the glass readback;
+- removing the bias failed nothing, for the reason above. In this readback the normal offset
+  is what keeps the pane untinted by itself, and no test isolates the bias. A receiver whose
+  offset is small, such as one seen edge-on to the light, is where it would show; Step 7's
+  room is the first scene with one.
+
+**A GLSL reserved word.** The first bar's Vulkan cross-checks refused `lit.frag.glsl`, because
+`filter` is reserved in GLSL. The variable is now `tint` in both shaders. The five Vulkan
+checks had passed regardless: they validate the RHI's own stages, not render3d's, which only
+`zig build check -Drhi=vulkan` compiles.
+
+**Bar:** every line of `AGENTS.md` §3 passes:
+- null 3,020/3,030 (ten skips) and Metal 3,031/3,052 (21 skips);
+- every check, the four thirty-frame samples, `fdt-check`, the tour with every pin held
+  (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks, whose SPIR-V agreement
+  check now pins the lit fragment's bindings 3 and 4 and the translucent caster's output.

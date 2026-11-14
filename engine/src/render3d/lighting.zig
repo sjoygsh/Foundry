@@ -269,6 +269,11 @@ pub fn chooseCascade(depth: f32, far_splits: [max_cascades]f32, count: u32, blen
 /// `shadows-cascaded.md`).
 pub const shadow_clamp_inset: f32 = 2;
 
+/// The translucent lookup's bias, relative to the stored depth (`shadows-local.md` §9): a
+/// receiver is behind the glass when its depth is below `a·(1 − bias)`. Half precision keeps
+/// depth to 2^-11 of itself, so four of its steps leave a pane unshadowed by its own depth.
+pub const translucent_bias: f32 = 1.0 / 512.0;
+
 /// The tangent of a local tile's half field of view, widened from `tangent` so that the tile,
 /// inset by the clamp and by `footprint` texels of filter, still covers `tangent`
 /// (`shadows-local.md` §6, §7): `tangent / (1 - 2 (inset + footprint) / size)`.

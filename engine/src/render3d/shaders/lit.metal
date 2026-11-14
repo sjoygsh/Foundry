@@ -96,22 +96,33 @@ float2 ambient_dfg(float rough, float nv) {
 }
 constant float3 TINTS[4]={float3(1,.25,.25),float3(.25,1,.25),float3(.25,.25,1),float3(1,1,.25)};
 // One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
-// clamped two texels inside its tile so none reads a neighbour's depth; -1 when the point
+// clamped two texels inside its tile so none reads a neighbour's depth; w is -1 when the point
 // leaves the tile. A perspective tile divides by w, and its normal offset grows with `axial`,
 // the receiver's depth along the light's axis; a cascade's is in metres, `axial` 1.
-static float tileVisibility(constant Frame &frame,uint t,float3 world,float3 normal,float axial,
-    depth2d<float> shadow_image,sampler shadow_sampler) {
+// rgb is the light's transmittance (shadows-local.md §9): each tap whose receiver lies beyond
+// the translucent depth by more than the tile's relative bias takes the atlas's colour, any
+// other white, and only in a frame that drew translucent casters (counts.w).
+static float4 tileShadow(constant Frame &frame,uint t,float3 world,float3 normal,float axial,
+    depth2d<float> shadow_image,sampler shadow_sampler,texture2d<float> tint_image,sampler tint_sampler) {
     float4 p=frame.shadow_tile_parameters[t];
     float4 h=frame.shadow_matrices[t]*float4(world+normal*p.x*axial,1);
-    if (p.y != 0) { if (h.w <= 0) return -1; h.xyz/=h.w; }
+    if (p.y != 0) { if (h.w <= 0) return float4(1,1,1,-1); h.xyz/=h.w; }
     float3 q=h.xyz;
     float4 tile=frame.shadow_tiles[t];
-    if (any(q.xy<tile.xy) || any(q.xy>tile.zw) || q.z<0 || q.z>1) return -1;
+    if (any(q.xy<tile.xy) || any(q.xy>tile.zw) || q.z<0 || q.z>1) return float4(1,1,1,-1);
     float2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
+    bool tinted=frame.counts.w != 0;
     float visibility=0;
-    for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++)
-        visibility+=shadow_image.sample_compare(shadow_sampler,clamp(q.xy+float2(x,y)*frame.shadow_parameters.xy,lo,hi),q.z);
-    return visibility/9;
+    float3 transmit=0;
+    for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++) {
+        float2 c=clamp(q.xy+float2(x,y)*frame.shadow_parameters.xy,lo,hi);
+        visibility+=shadow_image.sample_compare(shadow_sampler,c,q.z);
+        if (tinted) {
+            float4 f=tint_image.sample(tint_sampler,c);
+            transmit+=q.z < f.a*(1-p.w) ? f.rgb : float3(1);
+        }
+    }
+    return float4(tinted ? transmit/9 : float3(1),visibility/9);
 }
 static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
     constant Frame &frame,constant Material &material,
@@ -120,7 +131,7 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
     texture2d<float> normal_image,sampler normal_sampler,
     texture2d<float> ao_image,sampler ao_sampler,
     texture2d<float> emissive_image,sampler emissive_sampler,
-    depth2d<float> shadow_image,sampler shadow_sampler) {
+    depth2d<float> shadow_image,sampler shadow_sampler,texture2d<float> tint_image,sampler tint_sampler) {
     float4 base=base_image.sample(base_sampler,in.uv)*material.base_color*in.color;
     if (mask && base.a < material.alpha_cutoff) discard_fragment();
     float4 mr=mr_image.sample(mr_sampler,in.uv);
@@ -172,14 +183,16 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
         }
         // A light's tiles start at cone_shadow.z - 1, cone_shadow.w of them (shadows-local.md §8).
         uint first=uint(light.cone_shadow.z)-1;
+        float3 tint=1;
         if (light.cone_shadow.z != 0 && light.position_kind.w == 0 && cascade < frame.counts.y) {
-            float visibility=tileVisibility(frame,first+cascade,in.world,geometric_normal,1,shadow_image,shadow_sampler);
-            if (visibility < 0) visibility=1;
+            float4 shadow=tileShadow(frame,first+cascade,in.world,geometric_normal,1,shadow_image,shadow_sampler,tint_image,tint_sampler);
+            if (shadow.w < 0) shadow=float4(1);
             if (next_weight > 0) {
-                float next=cascade+1 < frame.counts.y ? tileVisibility(frame,first+cascade+1,in.world,geometric_normal,1,shadow_image,shadow_sampler) : 1;
-                if (next >= 0) visibility=mix(visibility,next,next_weight);
+                float4 next=cascade+1 < frame.counts.y ? tileShadow(frame,first+cascade+1,in.world,geometric_normal,1,shadow_image,shadow_sampler,tint_image,tint_sampler) : float4(1);
+                if (next.w >= 0) shadow=mix(shadow,next,next_weight);
             }
-            falloff*=visibility;
+            falloff*=shadow.w;
+            tint=shadow.rgb;
         } else if (light.cone_shadow.z != 0 && light.position_kind.w != 0) {
             // One tile for a spot to pi/3, its offset scaled by depth along its axis; six faces
             // otherwise, the face the offset light-to-receiver vector's largest component names,
@@ -195,10 +208,10 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
                 float3 b=abs(o);
                 t+=(b.x>=b.y && b.x>=b.z) ? (o.x>=0 ? 0u : 1u) : (b.y>=b.z) ? (o.y>=0 ? 2u : 3u) : (o.z>=0 ? 4u : 5u);
             }
-            float visibility=tileVisibility(frame,t,in.world,geometric_normal,axial,shadow_image,shadow_sampler);
-            if (visibility >= 0) falloff*=visibility;
+            float4 shadow=tileShadow(frame,t,in.world,geometric_normal,axial,shadow_image,shadow_sampler,tint_image,tint_sampler);
+            if (shadow.w >= 0) { falloff*=shadow.w; tint=shadow.rgb; }
         }
-        result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff;
+        result+=brdf(base.rgb,metal,rough,n,v,l)*light.color_intensity.rgb*light.color_intensity.w*falloff*tint;
     }
     float ao=1+material.surface.w*(ao_image.sample(ao_sampler,in.uv).r-1);
     float2 ab=ambient_dfg(rough,max(dot(n,v),0.0f));
@@ -214,41 +227,45 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
 }
 fragment float4 fragmentLit0(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(1)]],sampler base_sampler [[sampler(1)]],
-    texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
-    texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
-    texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
-    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
-    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
+    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
+    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
+    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
+    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
+    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
+    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
 }
 fragment float4 fragmentLit1(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(1)]],sampler base_sampler [[sampler(1)]],
-    texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
-    texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
-    texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
-    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
-    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
+    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
+    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
+    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
+    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
+    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
+    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
 }
 fragment float4 fragmentLit2(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(1)]],sampler base_sampler [[sampler(1)]],
-    texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
-    texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
-    texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
-    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
-    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
+    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
+    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
+    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
+    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
+    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
+    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
 }
 fragment float4 fragmentLit3(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(1)]],sampler base_sampler [[sampler(1)]],
-    texture2d<float> mr_image [[texture(2)]],sampler mr_sampler [[sampler(2)]],
-    texture2d<float> normal_image [[texture(3)]],sampler normal_sampler [[sampler(3)]],
-    texture2d<float> ao_image [[texture(4)]],sampler ao_sampler [[sampler(4)]],
-    texture2d<float> emissive_image [[texture(5)]],sampler emissive_sampler [[sampler(5)]],
-    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]]) {
-    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler);
+    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
+    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
+    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
+    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
+    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
+    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
 }
