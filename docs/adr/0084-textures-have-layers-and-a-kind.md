@@ -1,6 +1,6 @@
 # ADR-0084: RHI textures have layers and a kind
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M41 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0003, ADR-0035, `docs/design/rhi.md` §12, `docs/design/3d.md` §4, `docs/design/environment.md` §3
 

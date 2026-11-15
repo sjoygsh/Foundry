@@ -1,6 +1,6 @@
 # ADR-0089: Gamepads are positional devices in fixed slots, and captured motion is in counts
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M45 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0002, ADR-0013, `docs/design/platform-interface.md` §4 and §11,
 `docs/design/playable3d.md` §4.2 and §13, `docs/design/input.md` §3 and §4

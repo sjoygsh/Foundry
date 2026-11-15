@@ -1,6 +1,6 @@
 # ADR-0090: The table publishes input read-only, as the tick sees it, in `FoundryApi_v8`
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M45 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0004, ADR-0026, ADR-0059, ADR-0087, `docs/design/public-abi.md`,
 `docs/design/editor.md` §13, `docs/design/input.md` §7 and §10

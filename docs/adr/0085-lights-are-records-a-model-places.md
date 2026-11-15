@@ -1,6 +1,6 @@
 # ADR-0085: Lights are records a model places
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M41 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0053, ADR-0055, ADR-0056, `docs/design/light.md` §7.1 and §14, `docs/design/environment.md` §6
 

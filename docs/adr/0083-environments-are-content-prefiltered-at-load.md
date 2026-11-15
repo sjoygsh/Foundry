@@ -1,6 +1,6 @@
 # ADR-0083: Environments are content, prefiltered on the CPU when they load
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M41 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0053, ADR-0056, ADR-0062, ADR-0013, `docs/design/light.md` §7.3 and §14, `docs/design/environment.md` §4, §7–§9
 

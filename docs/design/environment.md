@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Proposed 2026-11-15; awaiting the owner's acceptance of §14. No step has begun.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Step 1 is in progress.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second

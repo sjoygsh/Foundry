@@ -1,6 +1,6 @@
 # ADR-0088: Rebinding is a preference keyed by action, which replaces its bindings whole
 
-**Status:** Proposed 2026-11-15
+**Status:** Accepted 2026-11-15, when the owner requested M45 Step 1
 **Date:** 2026-11-15
 **Informed by:** ADR-0031, ADR-0040, ADR-0087, `docs/design/distribution.md` §5,
 `docs/design/mod-management.md` §5, `docs/design/input.md` §8
