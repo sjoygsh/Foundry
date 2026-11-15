@@ -73,7 +73,18 @@ const AudioState = struct {
     /// Sized on demand by `stepAudio`. The device owns the buffer, exactly as a real one
     /// does, so a test never has to supply the memory the OS would have supplied.
     buffer: std.ArrayList(f32) = .empty,
+    /// The output asked for; null follows the system default.
+    chosen: ?audio.OutputId = null,
+    /// The output it plays through now, which for a device following the default is the
+    /// default's, and null when the "machine" has no output at all.
+    bound: ?audio.OutputId = null,
+    /// Times its stream was bound to another output: each move, each fallback, and each time
+    /// the default it follows moved.
+    moves: u32 = 0,
 };
+
+/// The name the null backend's one output starts with.
+pub const default_output_name = "Null Output";
 
 /// A pad a test has connected: what it reports itself as, and whether it has motors.
 pub const PadDescription = struct {
@@ -127,10 +138,25 @@ pub const Platform = struct {
     /// Per slot, the last rumble its pad accepted.
     rumbles: [gamepad.max_gamepads]?Rumble = @splat(null),
 
+    /// The "machine's" outputs, in the order a test added them, which is this OS's order. It
+    /// starts with one, the default, as the one fake device it always had.
+    outputs: [audio.max_outputs]audio.OutputInfo = undefined,
+    output_count: usize = 0,
+    default_output: ?audio.OutputId = null,
+    next_output: u32 = 1,
+    /// The last line logged about outputs, kept so a test can read what the log was told
+    /// (`input.md` §13: no name reaches the log).
+    output_log: [96]u8 = undefined,
+    output_log_len: usize = 0,
+
     pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
         const self = try gpa.create(Platform);
         self.* = .{ .gpa = gpa, .gamepads_enabled = options.gamepads };
         self.syncMotionUnit();
+        const first = self.takeOutputId();
+        self.outputs[0] = .init(first, default_output_name, true);
+        self.output_count = 1;
+        self.default_output = first;
         log.info("platform backend: null (headless)", .{});
         return self;
     }
@@ -279,6 +305,8 @@ pub const Platform = struct {
         self.cursor = 0;
 
         for (self.incoming.items) |ev| {
+            // At most one a frame, as SDL's backend coalesces its own: a consumer lists again.
+            if (ev == .audio_outputs_changed and self.changedThisFrame()) continue;
             self.applyToWindowState(ev);
             self.accumulator.apply(ev);
             // The queue was sized when the event was pushed, so this cannot fail; if
@@ -289,6 +317,11 @@ pub const Platform = struct {
             };
         }
         self.incoming.clearRetainingCapacity();
+    }
+
+    fn changedThisFrame(self: *const Platform) bool {
+        for (self.ready.items) |ready| if (ready == .audio_outputs_changed) return true;
+        return false;
     }
 
     pub fn nextEvent(self: *Platform) ?event.Event {
@@ -307,6 +340,7 @@ pub const Platform = struct {
     /// pulls 512 frames gets 512 frames.
     pub fn openAudio(self: *Platform, config: audio.AudioConfig) interface.AudioError!audio.AudioDeviceHandle {
         if (!audio.supportable(config)) return error.AudioFormatUnsupported;
+        if (config.output) |output| if (self.outputIndex(output) == null) return error.InvalidAudioOutput;
         return self.audio_devices.add(self.gpa, .{
             .config = config,
             .info = .{
@@ -318,6 +352,8 @@ pub const Platform = struct {
             // not a step every backend has to remember — a device that opened paused
             // would be an engine that ships with no sound until someone noticed.
             .paused = false,
+            .chosen = config.output,
+            .bound = config.output orelse self.default_output,
         });
     }
 
@@ -335,6 +371,46 @@ pub const Platform = struct {
     pub fn setAudioPaused(self: *Platform, device: audio.AudioDeviceHandle, paused: bool) void {
         const state = self.audio_devices.get(device) orelse return;
         state.paused = paused;
+    }
+
+    pub fn audioOutputs(self: *Platform, out: []audio.OutputInfo) usize {
+        const n = @min(out.len, self.output_count);
+        @memcpy(out[0..n], self.outputs[0..n]);
+        return n;
+    }
+
+    /// Moves a device to an output, or back to following the default. **The device is not
+    /// reopened**: its config, its `AudioInfo` and its callback stay, so the same `stepAudio`
+    /// calls produce the same samples on either side of a move.
+    pub fn setAudioOutput(self: *Platform, device: audio.AudioDeviceHandle, output: ?audio.OutputId) interface.AudioError!void {
+        const state = self.audio_devices.get(device) orelse return error.InvalidAudioDevice;
+        if (output) |o| if (self.outputIndex(o) == null) return error.InvalidAudioOutput;
+        state.chosen = output;
+        state.bound = output orelse self.default_output;
+        state.moves += 1;
+        self.logChoice(output);
+    }
+
+    pub fn audioOutput(self: *Platform, device: audio.AudioDeviceHandle) interface.AudioError!?audio.OutputId {
+        const state = self.audio_devices.getConst(device) orelse return error.InvalidAudioDevice;
+        return state.chosen;
+    }
+
+    fn outputIndex(self: *const Platform, id: audio.OutputId) ?usize {
+        for (self.outputs[0..self.output_count], 0..) |info, i| if (info.id == id) return i;
+        return null;
+    }
+
+    fn takeOutputId(self: *Platform) audio.OutputId {
+        defer self.next_output += 1;
+        return .fromInt(self.next_output);
+    }
+
+    fn logChoice(self: *Platform, chosen: ?audio.OutputId) void {
+        const index = if (chosen) |c| self.outputIndex(c) else null;
+        const line = audio.describeChoice(&self.output_log, self.output_count, index);
+        self.output_log_len = line.len;
+        log.info("{s}", .{line});
     }
 
     /// The synthetic monotonic clock. Advances by exactly `clock_step_ns` per `pumpEvents`,
@@ -520,6 +596,93 @@ pub const Platform = struct {
 
     fn addedEvent(pad: gamepad.GamepadHandle, description: PadDescription) event.Event {
         return .{ .gamepad_added = .{ .pad = pad, .kind = description.kind, .face = description.face } };
+    }
+
+    /// Plugs in an output, as the OS would announce one, and queues `audio_outputs_changed`. With
+    /// `make_default`, or when it is the only one, it also becomes the system default, and every
+    /// device following the default moves to it. Null when the list is full.
+    pub fn addOutput(self: *Platform, name: []const u8, make_default: bool) Allocator.Error!?audio.OutputId {
+        if (self.output_count == self.outputs.len) return null;
+        try self.incoming.ensureUnusedCapacity(self.gpa, 1);
+        const id = self.takeOutputId();
+        self.outputs[self.output_count] = .init(id, name, false);
+        self.output_count += 1;
+        if (make_default or self.default_output == null) self.makeDefault(id);
+        self.incoming.appendAssumeCapacity(.audio_outputs_changed);
+        return id;
+    }
+
+    /// Unplugs an output. A device that chose it falls back to following the default and queues
+    /// `audio_output_lost`, before the list's `audio_outputs_changed`, in the order SDL reports
+    /// the two. If it was the default, the first output left becomes the default, as an OS picks
+    /// one, and the devices following it move there.
+    pub fn removeOutput(self: *Platform, id: audio.OutputId) Allocator.Error!void {
+        const index = self.outputIndex(id) orelse return;
+        var lost: usize = 0;
+        var count_it = self.audio_devices.iterator();
+        while (count_it.next()) |entry| lost += @intFromBool(entry.value.chosen == id);
+        try self.incoming.ensureUnusedCapacity(self.gpa, lost + 1);
+
+        std.mem.copyForwards(audio.OutputInfo, self.outputs[index..][0 .. self.output_count - index - 1], self.outputs[index + 1 .. self.output_count]);
+        self.output_count -= 1;
+        if (self.default_output == id) {
+            if (self.output_count > 0) self.makeDefault(self.outputs[0].id) else {
+                self.default_output = null;
+                self.followDefault();
+            }
+        }
+        var it = self.audio_devices.iterator();
+        while (it.next()) |entry| if (entry.value.chosen == id) {
+            entry.value.chosen = null;
+            entry.value.bound = self.default_output;
+            entry.value.moves += 1;
+            self.logChoice(null);
+            self.incoming.appendAssumeCapacity(.{ .audio_output_lost = .{ .device = entry.id } });
+        };
+        self.incoming.appendAssumeCapacity(.audio_outputs_changed);
+    }
+
+    /// Makes an output the system default, as a person would in the OS's settings, and queues
+    /// `audio_outputs_changed`. Devices following the default move with it; a device that chose
+    /// an output stays where it is.
+    pub fn setDefaultOutput(self: *Platform, id: audio.OutputId) Allocator.Error!void {
+        if (self.outputIndex(id) == null or self.default_output == id) return;
+        try self.incoming.ensureUnusedCapacity(self.gpa, 1);
+        self.makeDefault(id);
+        self.incoming.appendAssumeCapacity(.audio_outputs_changed);
+    }
+
+    fn makeDefault(self: *Platform, id: audio.OutputId) void {
+        self.default_output = id;
+        for (self.outputs[0..self.output_count]) |*info| info.is_default = info.id == id;
+        self.followDefault();
+    }
+
+    /// Moves every device following the default to wherever it is now.
+    fn followDefault(self: *Platform) void {
+        var it = self.audio_devices.iterator();
+        while (it.next()) |entry| if (entry.value.chosen == null and entry.value.bound != self.default_output) {
+            entry.value.bound = self.default_output;
+            entry.value.moves += 1;
+        };
+    }
+
+    /// The output a device plays through now, which a game cannot ask: it knows only what it
+    /// chose (`audioOutput`). Null for a stale handle or a machine with no output.
+    pub fn boundOutput(self: *Platform, device: audio.AudioDeviceHandle) ?audio.OutputId {
+        const state = self.audio_devices.getConst(device) orelse return null;
+        return state.bound;
+    }
+
+    /// Times a device's stream was bound elsewhere: moves, fallbacks and the default moving.
+    pub fn outputMoves(self: *Platform, device: audio.AudioDeviceHandle) u32 {
+        const state = self.audio_devices.getConst(device) orelse return 0;
+        return state.moves;
+    }
+
+    /// The last line logged about outputs.
+    pub fn lastOutputLog(self: *const Platform) []const u8 {
+        return self.output_log[0..self.output_log_len];
     }
 
     /// Gives or takes keyboard focus, queueing the matching event.
@@ -942,6 +1105,190 @@ test "a config no device could serve is refused rather than opened" {
         error.AudioFormatUnsupported,
         p.openAudio(.{ .sample_rate = 0, .callback = Recorder.fill, .ctx = &rec }),
     );
+}
+
+// -- outputs -------------------------------------------------------------------------
+
+/// Drains a frame's events into `out`, returning how many there were.
+fn drain(p: *Platform, out: []event.Event) usize {
+    p.pumpEvents();
+    var n: usize = 0;
+    while (p.nextEvent()) |ev| : (n += 1) out[n] = ev;
+    return n;
+}
+
+test "outputs are listed in the OS's order, into the caller's buffer, with the default marked" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+
+    var list: [audio.max_outputs]audio.OutputInfo = undefined;
+    try testing.expectEqual(@as(usize, 1), p.audioOutputs(&list));
+    try testing.expectEqualStrings(default_output_name, list[0].name());
+    try testing.expect(list[0].is_default);
+
+    const phones = (try p.addOutput("Headphones", false)).?;
+    const hdmi = (try p.addOutput("HDMI", false)).?;
+    try testing.expectEqual(@as(usize, 3), p.audioOutputs(&list));
+    try testing.expectEqual(phones, list[1].id);
+    try testing.expectEqual(hdmi, list[2].id);
+    try testing.expect(list[0].is_default and !list[1].is_default and !list[2].is_default);
+
+    // A short buffer gets what fits, in the same order.
+    var two: [2]audio.OutputInfo = undefined;
+    try testing.expectEqual(@as(usize, 2), p.audioOutputs(&two));
+    try testing.expectEqual(phones, two[1].id);
+    try testing.expectEqual(@as(usize, 0), p.audioOutputs(&.{}));
+
+    // A full list refuses another rather than growing.
+    while (p.output_count < audio.max_outputs) _ = try p.addOutput("spare", false);
+    try testing.expect((try p.addOutput("one too many", false)) == null);
+}
+
+test "a move keeps the handle, its AudioInfo and its callback's samples" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    const phones = (try p.addOutput("Headphones", false)).?;
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(2, 4));
+    defer p.closeAudio(d);
+    try testing.expect((try p.audioOutput(d)) == null);
+    try testing.expectEqual(p.default_output, p.boundOutput(d));
+    const before = p.audioInfo(d).?;
+    try testing.expectEqualSlices(f32, &[_]f32{1.0} ** 8, try p.stepAudio(d, 4));
+
+    try p.setAudioOutput(d, phones);
+    try testing.expectEqual(phones, (try p.audioOutput(d)).?);
+    try testing.expectEqual(phones, p.boundOutput(d).?);
+    try testing.expectEqual(before, p.audioInfo(d).?);
+    // The same callback, carrying on where it was: the ramp's next value, not its first.
+    try testing.expectEqualSlices(f32, &[_]f32{2.0} ** 8, try p.stepAudio(d, 4));
+
+    try p.setAudioOutput(d, null);
+    try testing.expect((try p.audioOutput(d)) == null);
+    try testing.expectEqual(p.default_output, p.boundOutput(d));
+    try testing.expectEqualSlices(f32, &[_]f32{3.0} ** 8, try p.stepAudio(d, 4));
+    try testing.expectEqual(@as(u32, 2), p.outputMoves(d));
+    try testing.expectEqual(@as(u32, 3), rec.calls);
+
+    // And a device can be opened on an output directly.
+    var other: Recorder = .{};
+    const e = try p.openAudio(.{ .channels = 1, .buffer_frames = 4, .callback = Recorder.fill, .ctx = &other, .output = phones });
+    defer p.closeAudio(e);
+    try testing.expectEqual(phones, (try p.audioOutput(e)).?);
+}
+
+test "a chosen output lost falls back to the default, keeps the device, and says so" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    const phones = (try p.addOutput("Headphones", false)).?;
+    var events: [8]event.Event = undefined;
+    _ = drain(p, &events);
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(2, 4));
+    defer p.closeAudio(d);
+    var follower: Recorder = .{};
+    const f = try p.openAudio(follower.config(2, 4));
+    defer p.closeAudio(f);
+    try p.setAudioOutput(d, phones);
+    _ = try p.stepAudio(d, 4);
+
+    try p.removeOutput(phones);
+    // Lost, then the list: the order SDL reports them in. The device following the default had
+    // nothing to lose, and hears nothing about it.
+    try testing.expectEqual(@as(usize, 2), drain(p, &events));
+    try testing.expect(events[0] == .audio_output_lost);
+    try testing.expectEqual(d, events[0].audio_output_lost.device);
+    try testing.expect(events[1] == .audio_outputs_changed);
+
+    try testing.expect((try p.audioOutput(d)) == null);
+    try testing.expectEqual(p.default_output, p.boundOutput(d));
+    try testing.expect(p.audioInfo(d) != null);
+    try testing.expectEqualSlices(f32, &[_]f32{2.0} ** 8, try p.stepAudio(d, 4));
+    try testing.expectEqual(@as(u32, 0), p.outputMoves(f));
+
+    // The lost ID is gone for good: an ID is never reused within a session.
+    try testing.expectError(error.InvalidAudioOutput, p.setAudioOutput(d, phones));
+    const again = (try p.addOutput("Headphones", false)).?;
+    try testing.expect(again != phones);
+}
+
+test "the default moving carries a following device and leaves a chosen one, one event a frame" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    const first = p.default_output.?;
+    var events: [8]event.Event = undefined;
+
+    var a: Recorder = .{};
+    const follows = try p.openAudio(a.config(2, 4));
+    defer p.closeAudio(follows);
+    var b: Recorder = .{};
+    const chose = try p.openAudio(.{ .channels = 2, .buffer_frames = 4, .callback = Recorder.fill, .ctx = &b, .output = first });
+    defer p.closeAudio(chose);
+
+    // Two outputs plugged in and the default moved, all in one frame: one event, since a
+    // consumer lists again whatever changed.
+    const dock = (try p.addOutput("Dock", false)).?;
+    const monitor = (try p.addOutput("Monitor", false)).?;
+    try p.setDefaultOutput(monitor);
+    try testing.expectEqual(@as(usize, 1), drain(p, &events));
+    try testing.expect(events[0] == .audio_outputs_changed);
+    try testing.expectEqual(monitor, p.boundOutput(follows).?);
+    try testing.expectEqual(first, p.boundOutput(chose).?);
+
+    // The default unplugged: the follower goes to the first output left, the chosen one stays.
+    try p.removeOutput(monitor);
+    try testing.expectEqual(first, p.boundOutput(follows).?);
+    try testing.expectEqual(@as(usize, 1), drain(p, &events));
+
+    // Nothing left at all: the follower plays into nothing, and the chosen one is lost.
+    try p.removeOutput(first);
+    try p.removeOutput(dock);
+    try testing.expectEqual(@as(?audio.OutputId, null), p.boundOutput(follows));
+    try testing.expectEqual(@as(?audio.OutputId, null), p.boundOutput(chose));
+    try testing.expectEqual(@as(usize, 2), drain(p, &events));
+    try testing.expect(events[0] == .audio_output_lost and events[1] == .audio_outputs_changed);
+    try testing.expect(p.audioInfo(follows) != null and p.audioInfo(chose) != null);
+}
+
+test "a stale handle and an output that is not there are refused by name" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    var rec: Recorder = .{};
+
+    try testing.expectError(error.InvalidAudioOutput, p.openAudio(.{ .callback = Recorder.fill, .ctx = &rec, .output = .fromInt(999) }));
+
+    const stale = try p.openAudio(rec.config(2, 4));
+    p.closeAudio(stale);
+    try testing.expectError(error.InvalidAudioDevice, p.setAudioOutput(stale, null));
+    try testing.expectError(error.InvalidAudioDevice, p.setAudioOutput(stale, p.default_output));
+    try testing.expectError(error.InvalidAudioDevice, p.audioOutput(stale));
+
+    // A reopen in the stale handle's slot is not reached through it (I1).
+    const fresh = try p.openAudio(rec.config(2, 4));
+    defer p.closeAudio(fresh);
+    try testing.expectError(error.InvalidAudioDevice, p.setAudioOutput(stale, null));
+    try testing.expectError(error.InvalidAudioOutput, p.setAudioOutput(fresh, .fromInt(999)));
+    try testing.expectEqual(@as(u32, 0), p.outputMoves(fresh));
+}
+
+test "no output's name reaches the log, whether chosen or lost" {
+    const p = try open(testing.allocator);
+    defer p.deinit();
+    const named = (try p.addOutput("Ada's AirPods", false)).?;
+
+    var rec: Recorder = .{};
+    const d = try p.openAudio(rec.config(2, 4));
+    defer p.closeAudio(d);
+
+    try p.setAudioOutput(d, named);
+    try testing.expectEqualStrings("audio output: 2 of 2 chosen", p.lastOutputLog());
+    try testing.expect(std.mem.indexOf(u8, p.lastOutputLog(), "Ada") == null);
+
+    try p.removeOutput(named);
+    try testing.expectEqualStrings("audio output: following the system default, 1 present", p.lastOutputLog());
+    try testing.expect(std.mem.indexOf(u8, p.lastOutputLog(), "AirPods") == null);
 }
 
 test "a captured pointer reports relative motion and a position that does not move" {

@@ -24,6 +24,10 @@ pub const AudioDevice = opaque {};
 
 /// A handle, not a singleton, even though there is exactly one output device today.
 ///
+/// **A change of output is not a reopen.** Moving a device to other speakers, or falling back
+/// when its chosen output is unplugged, binds the same stream to another OS device, so the handle,
+/// its `AudioInfo` and the callback's clock all carry on (`Platform.setAudioOutput`).
+///
 /// Not because we expect many: because an output device is **closed and reopened in
 /// normal use** — headphones are unplugged and the OS moves output elsewhere — and a
 /// stale handle surviving that reopen is precisely the use-after-close a generation
@@ -45,6 +49,80 @@ pub const AudioDeviceHandle = core.Handle(AudioDevice);
 /// allocation, and everything that can fail was moved to the game thread.
 pub const AudioCallback = *const fn (ctx: ?*anyopaque, out: []f32) void;
 
+/// An output the OS can play through: speakers, headphones, an HDMI display.
+///
+/// **Valid for this session only.** SDL's device IDs, like the OS's beneath them, are not stable
+/// across runs, so nothing persists one: a game that remembers a player's choice keeps the
+/// output's name in its own preference file and looks it up again (`input.md` §5). A
+/// non-exhaustive enum over a `u32` rather than a bare integer, so it cannot be confused with a
+/// handle's index or a count.
+pub const OutputId = enum(u32) {
+    _,
+
+    pub fn fromInt(value: u32) OutputId {
+        return @enumFromInt(value);
+    }
+
+    pub fn toInt(self: OutputId) u32 {
+        return @intFromEnum(self);
+    }
+};
+
+/// Bytes an output's name keeps, in `OutputInfo`. Longer names are cut on a codepoint.
+pub const max_output_name: usize = 128;
+
+/// Outputs a caller is expected to ask for at once. A bound for arrays, not a limit the OS
+/// knows: `audioOutputs` fills what it is given.
+pub const max_outputs: usize = 32;
+
+/// One output, as `Platform.audioOutputs` lists it.
+///
+/// **The name is host information**, and often a person's ("<name>'s headphones"). It is for a
+/// game's own menu and nothing else: the log never prints one, and the public table does not
+/// publish it (M48's "what a mod may learn about its host").
+pub const OutputInfo = struct {
+    id: OutputId,
+    name_bytes: [max_output_name]u8 = @splat(0),
+    name_len: u8 = 0,
+    /// Whether this is the output a device following the system default plays through now.
+    is_default: bool = false,
+
+    /// Builds one from text the OS reported: bounded, cut on a codepoint, and empty if the text
+    /// is not UTF-8 or holds a NUL, since it is external input (`CLAUDE.md` §7).
+    pub fn init(id: OutputId, name_text: []const u8, is_default: bool) OutputInfo {
+        var self: OutputInfo = .{ .id = id, .is_default = is_default };
+        const kept = boundedName(name_text, &self.name_bytes);
+        self.name_len = @intCast(kept.len);
+        return self;
+    }
+
+    pub fn name(self: *const OutputInfo) []const u8 {
+        return self.name_bytes[0..self.name_len];
+    }
+};
+
+/// Copies an output's name into `buf`: valid UTF-8 with no NUL, cut on a codepoint boundary. Text
+/// that is not valid, or holds a NUL, gives an empty name. Shared by every backend so the same
+/// OS text is kept identically everywhere.
+pub fn boundedName(text: []const u8, buf: *[max_output_name]u8) []const u8 {
+    if (!std.unicode.utf8ValidateSlice(text) or std.mem.indexOfScalar(u8, text, 0) != null) return buf[0..0];
+    var end = @min(text.len, max_output_name);
+    // Valid UTF-8 cut before a continuation byte would split a codepoint; step back to its lead.
+    while (end > 0 and end < text.len and (text[end] & 0xC0) == 0x80) end -= 1;
+    @memcpy(buf[0..end], text[0..end]);
+    return buf[0..end];
+}
+
+/// The one line a backend logs about outputs, built from numbers alone: how many there are, and
+/// where in that list the device now plays, never what any is called (`input.md` §5). Taking no
+/// name is what makes "no name reaches the log" structural rather than a habit.
+pub fn describeChoice(buf: *[96]u8, count: usize, chosen: ?usize) []const u8 {
+    return (if (chosen) |index|
+        std.fmt.bufPrint(buf, "audio output: {d} of {d} chosen", .{ index + 1, count })
+    else
+        std.fmt.bufPrint(buf, "audio output: following the system default, {d} present", .{count})) catch buf[0..0];
+}
+
 /// What Foundry asks a device for. Two of these fields are negotiated and one is not.
 pub const AudioConfig = struct {
     /// Frames per second. A *request*: the backend may answer with the device's own
@@ -56,6 +134,10 @@ pub const AudioConfig = struct {
     buffer_frames: u32 = 512,
     callback: AudioCallback,
     ctx: ?*anyopaque = null,
+    /// The output to play through. Null **follows the system default**, moving when the OS's
+    /// default moves; an ID plays there until `setAudioOutput` moves it or the output is lost,
+    /// when the device falls back to following the default (`input.md` §5).
+    output: ?OutputId = null,
 };
 
 /// What the device actually does. The mixer computes against these, never against what
@@ -125,4 +207,43 @@ test "a config with a zero in it is refused rather than allocated from" {
     }) |config| {
         try testing.expect(!supportable(config));
     }
+}
+
+test "an output's name is bounded, cut on a codepoint, and empty when it is not text" {
+    const short = OutputInfo.init(.fromInt(7), "MacBook Pro Speakers", true);
+    try testing.expectEqualStrings("MacBook Pro Speakers", short.name());
+    try testing.expectEqual(@as(u32, 7), short.id.toInt());
+    try testing.expect(short.is_default);
+
+    // Exactly the capacity, and one byte over it.
+    const exact = "a" ** max_output_name;
+    try testing.expectEqualStrings(exact, OutputInfo.init(.fromInt(1), exact, false).name());
+    try testing.expectEqualStrings(exact, OutputInfo.init(.fromInt(1), exact ++ "b", false).name());
+
+    // A two-byte `é` straddling the end goes whole, and so does a four-byte codepoint.
+    const straddle = ("a" ** (max_output_name - 1)) ++ "\u{e9}";
+    try testing.expectEqualStrings("a" ** (max_output_name - 1), OutputInfo.init(.fromInt(1), straddle, false).name());
+    const wide = ("a" ** (max_output_name - 2)) ++ "\u{1F3A7}";
+    const cut = OutputInfo.init(.fromInt(1), wide, false);
+    try testing.expectEqual(max_output_name - 2, cut.name().len);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut.name()));
+
+    // External text that is not UTF-8, or that holds a NUL, gives nothing.
+    try testing.expectEqualStrings("", OutputInfo.init(.fromInt(1), "\xff\xfe", false).name());
+    try testing.expectEqualStrings("", OutputInfo.init(.fromInt(1), "head\x00phones", false).name());
+}
+
+test "the outputs' log line carries numbers and never a name" {
+    var buf: [96]u8 = undefined;
+    try testing.expectEqualStrings("audio output: 2 of 3 chosen", describeChoice(&buf, 3, 1));
+    try testing.expectEqualStrings("audio output: following the system default, 3 present", describeChoice(&buf, 3, null));
+    // The largest numbers the line can be asked to carry still fit.
+    try testing.expect(describeChoice(&buf, std.math.maxInt(usize), std.math.maxInt(usize) - 1).len > 0);
+}
+
+test "a config follows the system default unless it names an output" {
+    const follows: AudioConfig = .{ .callback = silence };
+    try testing.expect(follows.output == null);
+    const chosen: AudioConfig = .{ .callback = silence, .output = .fromInt(3) };
+    try testing.expectEqual(@as(u32, 3), chosen.output.?.toInt());
 }

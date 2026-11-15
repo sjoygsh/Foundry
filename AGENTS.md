@@ -383,6 +383,13 @@ on it, invisibly over SSH, so close that window when it appears.
 bar, because it needs a desktop session. On a Windows target reached over SSH, start it inside
 the logged-in session — a scheduled task with an interactive logon — never an RDP session.
 
+Two more SDL3 desktop tests sit beside it, outside the bar and compiled by `check` (M45). Run
+them when the SDL3 backend's input or audio changes. `zig build gamepad-test` drives SDL's
+virtual pads and skips if a physical pad is attached. `zig build audio-output-test` moves a
+silent device to each listed output and back to the default. It checks the handle, `AudioInfo`
+and the callback's count across every move, and prints counts but never an output's name. A loss
+needs a person to unplug something, so the null backend's script proves that headless.
+
 **The Vulkan backend's tests** need a Vulkan driver and the SDK's validation layer, so they run on
 the target and not in the bar. `-Drhi=vulkan` builds the ordinary test and check graph against the
 Vulkan backend, plus three steps of its own, and since M13 Step 8 it installs and runs both
