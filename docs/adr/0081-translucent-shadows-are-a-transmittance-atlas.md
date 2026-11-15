@@ -1,6 +1,7 @@
 # ADR-0081: Translucent shadows are a transmittance atlas
 
-**Status:** Accepted 2026-11-14, when the owner requested M40 Step 1
+**Status:** Accepted 2026-11-14, when the owner requested M40 Step 1; implemented in M40
+(complete 2026-11-15, tag `m40`)
 **Date:** 2026-11-14
 **Informed by:** ADR-0079, ADR-0080, `docs/design/light.md` §14, `docs/design/shadows-local.md` §9
 

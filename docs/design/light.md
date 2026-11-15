@@ -318,6 +318,9 @@ pub fn addLight(self: *Renderer, light: Light) Error!void;   // between begin an
     configuration, because it is compiled into every lit shader's uniform array;
   - at most one shadow-casting light, which must be directional (`InvalidShadowCaster`). Point and
     spot shadows are `3d.md` §11's.
+    *Note, 2026-11-15 (M40):* any light may cast. `addLight` refuses only a second casting
+    directional light, and `Light` gains `source_radius` for penumbrae (ADR-0080,
+    [`shadows-local.md`](shadows-local.md) §5, §10).
 - **Order is submission order,** and lights are summed in it, so the same submissions give the same
   image (I9's spirit, applied to rendering).
 - **No light record in M22.** The values come from wherever the game keeps them; `sandbox3d` keeps
@@ -459,6 +462,12 @@ own slice of the range, drawn as tiles of one depth atlas (ADR-0079,
 [`shadows-cascaded.md`](shadows-cascaded.md)). One cascade is this map bit for bit. The biases,
 the filter and the receivers are unchanged, and the normal offset now scales by each cascade's
 texel.
+
+*Note, 2026-11-15 (M40):* the atlas is now a row of square pages, and its tiles are granted each frame
+by a buddy allocator, the cascades first and then spot and point lights, nearest first, at most
+32 tiles (ADR-0080, [`shadows-local.md`](shadows-local.md) §4–§7). Bias is per pass. The 3×3
+filter is now the contact-hardening disc for a light with a source radius, and blended casters
+tint a transmittance twin of the atlas (ADR-0081).
 
 ## 10. `sandbox3d`: a lit room a content mod changes
 
@@ -944,7 +953,8 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   needs a sky. Cubemaps enter the RHI then. **M26 did not fire it** (2026-10-18): the court is lit by its
   content's constant ambient, one directional light and its beacons' point lights, and needed no
   sky. It is M41's.
-- **Point and spot shadows,** ~~cascades~~: `3d.md` §11. **Cascades done in M39** (2026-11-14,
+- ~~**Point and spot shadows,** cascades~~: `3d.md` §11. **Point and spot shadows done in M40**
+  (2026-11-15, [`shadows-local.md`](shadows-local.md), ADR-0080). **Cascades done in M39** (2026-11-14,
   [`shadows-cascaded.md`](shadows-cascaded.md)): the trigger was measured in the yard, where one 2048
   map over 80 m had 8.5 cm texels and four cascades give 0.58 cm nearest. *(2026-11-14: M40's design, [`shadows-local.md`](shadows-local.md), is proposed for point, spot and translucent shadows.)* Point and spot shadows
   are M40's.
@@ -959,7 +969,8 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   measurement ADR-0052 says would reconsider forward shading.
 - ~~**Making the fragment shader optional in a depth-only pipeline**~~: **done in M26 Step 9**
   (the note below); opaque shadow casters use a pipeline with no fragment stage.
-- **Translucent shadows:** when a game needs glass to cast coloured light.
+- ~~**Translucent shadows:** when a game needs glass to cast coloured light.~~ **Done in M40**
+  (2026-11-15, ADR-0081): `sandbox3d`'s glass tints the spot's light on the floor.
 
 ## 15. Decisions acceptance fixes
 

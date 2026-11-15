@@ -490,6 +490,14 @@ drawn only into the cascades whose light box holds it. Each draw's light matrix 
 inline constants, so the shadow shaders read no uniform. The frame uniform is its second layout of
 1,520 bytes, and `shadowCascades()` returns the last frame's fit (`shadows-cascaded.md` §4–§7).
 
+**Since M40 (2026-11-15, ADR-0080/0081):** the atlas is a row of pages, and a buddy allocator
+rebuilt each frame grants its tiles: the cascades first, then each seen casting spot and point
+light, nearest first, at most 32 tiles. A spot is one perspective tile and a point six widened
+face tiles. Local tiles set their own bias with `setDepthBias`. When blended casters cast, the
+depth pass is followed by a translucent pass into an `rgba16_float` twin of the atlas. The frame
+uniform is its third layout of 4,256 bytes, and `shadowTiles()` returns the last frame's grants
+(`shadows-local.md` §3–§11).
+
 `app.renderScene` prefers a world's `recordFrame` when declared and retains the legacy
 `passDesc`/`record` pair for other recorders. `app` still names no renderer type and still
 owns the optional single-sampled overlay, which loads the tone-mapped surface. The following

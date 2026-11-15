@@ -187,10 +187,11 @@ ground the game finds, their heads turn to what they watch, and blend spaces mix
 speed and direction. They ride lifts and turntables, push crates, stop doors, jump up through
 ledges, and hear the ground they walk on. They walk among thousands of bodies on hillsides of
 tens of thousands of triangles, and climb boulders shaped by their hulls. Their sun's shadows
-are sharp at their feet and reach across a yard, in cascades. It runs on macOS, Windows and Linux (X11
+are sharp at their feet and reach across a yard, in cascades, and their lamps, spots and
+beacons cast too, softening with distance and tinted through glass. It runs on macOS, Windows and Linux (X11
 and Wayland), and the first game built on it is finished in its own repository.
 
-**What comes next** is M40, Shadows III, whose design is proposed ([`shadows-local.md`](docs/design/shadows-local.md)), on the long roadmap
+**What comes next** is M41, Environment, which has no design yet, on the long roadmap
 ([ADR-0060](docs/adr/0060-a-150-milestone-roadmap.md)): a complete game toolkit, dynamics and
 large worlds, the renderer's upper tier, tools, and reach onto more platforms, ending in
 Foundry 1.0 at M149. It is a gradual ascent, not a sprint: the count says how far there is to

@@ -1,6 +1,7 @@
 # ADR-0080: Local shadows are allocated tiles of the atlas
 
-**Status:** Accepted 2026-11-14, when the owner requested M40 Step 1
+**Status:** Accepted 2026-11-14, when the owner requested M40 Step 1; implemented in M40
+(complete 2026-11-15, tag `m40`)
 **Date:** 2026-11-14
 **Informed by:** ADR-0048, ADR-0052, ADR-0079, `docs/design/light.md` §7.1 and §14, `docs/design/shadows-cascaded.md` §4 and §13, `docs/design/shadows-local.md`
 

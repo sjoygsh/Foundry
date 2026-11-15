@@ -542,6 +542,18 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
     i3, against 16.67 ms. `render.world` costs about 0.1 ms more than with one map. The paced
     interval's p95 sits near 17.1–17.4 ms from vsync jitter, which is M73's to time.
   - The court shadows to 40 m. Its digests did not move.
+- **M40's local shadows.** Run them when the allocator, a local tile, the translucent pass, the
+  penumbra or the frame uniform changes. The readbacks run under Metal and Vulkan only, as M39's.
+  - `sandbox3d --local-shadows=off` and `--penumbra=off`, with J toggling local shadows. The exit
+    report prints each local tile and `local shadows: 3 lights, 17 tiles, …, 8 translucent, 0
+    unseen, 0 dropped`; off, it is 4 tiles and M39's draws.
+  - The room's budget is frame work over the last 240 of 900 frames. With every light casting,
+    p95 4.10 ms on the M5 (3.45 off) and 7.62–7.87 ms on the i3 beside a running game (3.64–6.97
+    off), against 16.67 ms.
+  - The court's `win` peaks at three beacons casting into 22 tiles, 1.330 → 1.350 ms p95 on the
+    M5. Its digests did not move.
+  - Under contention the ReleaseSafe pins take over 40 minutes at `-j2` on the PC; M40's script
+    gives them 120.
 
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
@@ -553,7 +565,8 @@ cost and the walks' pins, `scripts/m37/windows.ps1` runs M37's: the corner, the 
 and the court's footsteps and `addMesh`, and `scripts/m38/windows.ps1` runs M38's: the yard, its
 replay and tilted stage, the moved pins and `sandbox3d-yard-test`, and `scripts/m39/windows.ps1`
 runs M39's: the tour at four cascades and at one, the yard's five budget runs and the court at
-40 m. The Mac compares the install's
+40 m, and `scripts/m40/windows.ps1` runs M40's: the tour with local shadows on and off, the
+room's six runs and the court's endings with every beacon casting. The Mac compares the install's
 content hashes with its own. Each milestone's `-setup.ps1` clones and checks out
 unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from the scheduled
 task.

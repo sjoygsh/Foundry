@@ -1,7 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M40 Step 9 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 10: close M40 (contract notes, ADR-0080/0081 to Accepted, CLAUDE.md, roadmap, index, tag `m40`). The PC still holds the clone `src\Foundry-m40` and the scratch `m40`, kept until the close.
+**Current handoff: M40 is complete** (2026-11-15, tag `m40`; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081 accepted and implemented). Stop before M41's design (Environment: sky, cubemaps, image-based lighting), which waits for the owner. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+
+**M40 Step 10 is done (2026-11-15): the close.** Every document names M40 complete; dated notes resolve `light.md` §7.1/§9/§14, `shadows-cascaded.md` §4/§13, `3d.md`, `render3d.md`, `debug-overlay.md` and `public3d.md`; §15's items are in the rows of M48, M73, M79, M82 and M99; `AGENTS.md` gains M40's runs and costs. Only documents changed after Step 8, whose bar stands (null 3,024/3,034, Metal 3,035/3,056).
 
 **M40 Step 9 is done (2026-11-15): Windows/Vulkan.**
 - The owner's PC (Arc A750, i3-10105F), from a fresh clone at `d5cae5f`, `-j2`, below-normal priority. EU5 was running in observe mode (~80% CPU), and the owner lifted the 50% cutoff, so every timing is contended.

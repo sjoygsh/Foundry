@@ -168,6 +168,10 @@ a side:
 
 Cascade `i` sits at column `i mod 2` and row `i / 2`.
 
+*Note, 2026-11-15 (M40):* this table is now the allocator's first grants. The atlas is a row of
+pages, each `2s` a side, and cascade `i` is granted page 0's quadrant `i`, which is this table's
+tile (ADR-0080, [`shadows-local.md`](shadows-local.md) §4).
+
 **Why an atlas and not a texture array.** A texture array is the usual answer, but:
 - the RHI has none, and the roadmap gives texture arrays to M41, with cubemaps;
 - an atlas needs nothing new below `render3d`, since viewports and scissors with origins already
@@ -489,17 +493,19 @@ Then:
 ## 13. What stays open, deliberately
 
 Each item names the milestone that owns it (CLAUDE.md §2, rule 17).
-- **Point and spot shadows, and translucent shadows:** M40 ([`shadows-local.md`](shadows-local.md), proposed 2026-11-14). It allocates tiles of this atlas,
-  which needs a tile allocator in place of §4's fixed table. M39 builds only the table.
+- ~~**Point and spot shadows, and translucent shadows:** M40.~~ **Done in M40** (2026-11-15,
+  [`shadows-local.md`](shadows-local.md)), with a tile allocator in place of §4's fixed table.
 - **Texture arrays and cubemaps in the RHI:** M41, unchanged.
-- **Per-cascade depth bias:** M40, which must add bias per tile anyway for spot maps of different
-  depth ranges. The trigger is a readback with acne in one cascade and not another.
+- **Per-cascade depth bias:** M40 added bias per pass (`setDepthBias`, ADR-0080), so per-cascade
+  values are a change inside `render3d`. None was set, because no readback showed acne in one
+  cascade and not another (`shadows-local.md` §15).
 - **The shadow pass timed on the GPU:** M73, which brings GPU timestamps to the profiler. Until
   then Steps 4 and 6 record its CPU cost and the frame's pacing.
 - **Caster caching, cascades updated on alternate frames, and drawing a caster once into several
   tiles:** M99, with its chunked submission. The trigger is a shadow pass measured over its share
   of a frame.
-- **Contact-hardening penumbrae (PCSS):** M40, with the other shadow kinds.
+- ~~**Contact-hardening penumbrae (PCSS):** M40.~~ **Done in M40** (2026-11-15,
+  `shadows-local.md` §10).
 - **Screen-space contact shadows:** M81, which adds the depth prepass they read.
 - **Particles casting and receiving shadows:** M79, as the roadmap already says.
 

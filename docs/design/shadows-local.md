@@ -1,7 +1,7 @@
 # Design: M40 — Shadows III: spot, point and translucent shadows in tiles of one allocated atlas
 
-**Status:** Accepted 2026-11-14, when the owner asked for Step 1, with §16 as written. Each step's
-Resolution follows §16.
+**Status:** Accepted 2026-11-14, when the owner asked for Step 1, with §16 as written. Complete
+2026-11-15, tag `m40`: all ten steps done. Each step's Resolution follows §16.
 **Date:** 2026-11-14
 **Baseline:** `7490d18`, tag `m39`. M0–M39 are complete.
 **Decisions:**
@@ -1387,3 +1387,49 @@ a budget.
 
 **No engine code changed** since Step 8, whose bar passed. This step adds only the PowerShell
 under `scripts/m40/`, which no line of the bar builds or runs.
+
+## Resolution — Step 10: Close M40 (2026-11-15)
+
+Every document now names M40 complete:
+- the status line here, ADR-0080 and ADR-0081, and their `CLAUDE.md` §4.1 rows;
+- §4.3's `rhi` line (the per-pass depth bias) and `render3d` line (local tiles, the
+  transmittance twin, penumbrae), and §9's row;
+- the roadmap, the design index and the README, which now points to M41. The roadmap row and the
+  index had still said "proposed" after Step 1 accepted the design; both now say complete.
+
+**The contracts M40 changed, resolved by dated notes:**
+- `light.md`:
+  - §7.1: any light may cast, with one directional caster;
+  - §9: the atlas is allocated in pages, bias is per pass, and the filter is a disc;
+  - §14: its point/spot and translucent rows are struck through as done.
+- `shadows-cascaded.md`:
+  - §4's fixed table is now the allocator's first grants;
+  - §13's M40 items are struck through. Per-cascade bias was not set, because no readback
+    showed acne confined to one cascade.
+- `3d.md` §4: the RHI needed no texture array or cubemap, only the bias command. §11's point
+  and spot shadows are noted done.
+- `render3d.md` gains the allocated atlas, the translucent pass, the 4,256-byte uniform and
+  `shadowTiles()`.
+- `debug-overlay.md` §7.5 gains the second profiler line.
+- `public3d.md` notes that a retained light still never casts, and that mod lights that cast
+  are M48's.
+
+**ADR-0052 needs nothing.** Local shadows cost about 0.7 ms of `render.world` on the M5 with
+three casting lights and 17 tiles. The room stays far inside its frame on both machines.
+
+**§15's items go to their roadmap rows:**
+- M48: mod lights that cast, and a light's source radius in the public table;
+- M73: GPU timing of the shadow passes, now M40's as well as M39's;
+- M79: particles casting as well as receiving;
+- M82: the penumbra disc's per-pixel rotation;
+- M99: tiles kept across frames, and a wide spot's unseen faces skipped.
+
+M41 (cubemaps and texture arrays) and M81 (contact shadows) already said so.
+
+**`AGENTS.md`** gains M40's runs and costs, and `scripts/m40`. **The PC's** clone
+`src\Foundry-m40`, its scratch `m40` and the helper scripts were removed by exact name, and no
+scheduled task is left.
+
+**No bar was rerun.** Only documents changed after Step 8, so Step 8's bar stands:
+- null 3,024/3,034 and Metal 3,035/3,056;
+- the PC's Step 9 suites: null 3,003/3,022, Vulkan 3,285/3,315, pins 767/767.

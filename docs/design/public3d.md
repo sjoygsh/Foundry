@@ -599,6 +599,9 @@ gains its row). Step 1 added `engine/src/render3d/instances.zig`, exported as
   renderer allows one caster a frame, and §4 puts the host's lights first so they are never the
   ones a full frame drops. A mod's light claiming the shadow would take it from the host's sun
   whenever the host had none, so the rule is the same in every frame instead.
+  *Note, 2026-11-15 (M40):* the renderer now lets any spot or point light cast, but a retained
+  light still never does. Mod lights that cast, and a light's source radius in the public table,
+  are M48's (`shadows-local.md` §15).
 - **`submit` adds lights first, then draws instances**, each in ascending slot order. A light
   refused for room is counted in `Stats.instance_lights_dropped`. An instance whose draw content
   has made impossible (`InvalidModel`, `InvalidOverride`, `InvalidMaterial`, `InvalidMesh`,
