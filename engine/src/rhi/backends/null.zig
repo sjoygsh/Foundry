@@ -581,6 +581,13 @@ pub const Device = struct {
                 return error.InvalidDescriptor;
             }
         }
+        // ADR-0084: a kind's layers, and a cube's square faces.
+        if (!resource.validLayers(desc)) {
+            self.violate(.limits, "texture '{s}' is a {t} of {d} layers at {d}x{d}, {d} samples, {t}; a d2 has 1 layer, an array 1 to {d}, a cube 6 square faces, and neither is multisampled or depth", .{
+                desc.label, desc.kind, desc.layers, desc.size.width, desc.size.height, desc.sample_count, desc.format, resource.max_array_layers,
+            });
+            return error.InvalidDescriptor;
+        }
         if (desc.usage.sampled and desc.format.isDepth()) {
             if (desc.format != .depth32_float or !desc.usage.depth_stencil or desc.sample_count != 1) {
                 self.violate(.usage, "sampled depth texture '{s}' must be single-sampled depth32_float with depth_stencil usage", .{desc.label});
@@ -675,6 +682,11 @@ pub const Device = struct {
                     const actual: pipeline.TextureBindingType = if (tex.desc.format.isDepth()) .depth else .color;
                     if (actual != want.texture) {
                         self.violate(.bind_group_compatibility, "bind group '{s}' binding {d} is a {t} texture, layout requires {t}", .{ desc.label, want.binding, actual, want.texture });
+                        return error.InvalidDescriptor;
+                    }
+                    const dimension = pipeline.TextureDimension.of(tex.desc.kind);
+                    if (dimension != want.dimension) {
+                        self.violate(.bind_group_compatibility, "bind group '{s}' binding {d} is a {t} texture, layout requires {t}", .{ desc.label, want.binding, dimension, want.dimension });
                         return error.InvalidDescriptor;
                     }
                 },
@@ -986,6 +998,10 @@ pub const CommandBuffer = struct {
             if (!tex.desc.usage.render_target) {
                 dev.violate(.usage, "render pass '{s}' colour attachment {d} '{s}' lacks render_target usage", .{ desc.label, i, tex.desc.label });
             }
+            // ADR-0084: one layer of a cube or an array is drawn into, and it must exist.
+            if (att.layer >= tex.desc.layers) {
+                dev.violate(.limits, "render pass '{s}' colour attachment {d} draws into layer {d} of '{s}', which has {d}", .{ desc.label, i, att.layer, tex.desc.label, tex.desc.layers });
+            }
             checkTransition(dev, tex, att.initial_state, att.final_state, desc.label, "colour attachment");
             pass.color_formats[i] = tex.desc.format;
             pass.noteSamples(tex, "colour attachment");
@@ -1055,6 +1071,10 @@ pub const CommandBuffer = struct {
         };
         if (rt.desc.sample_count != 1) {
             dev.violate(.attachment_format, "render pass '{s}' resolve target '{s}' is multisampled", .{ label, rt.desc.label });
+        }
+        // ADR-0084: a resolve writes one image, so its target is a `d2` (the source always is).
+        if (rt.desc.kind != .d2) {
+            dev.violate(.attachment_format, "render pass '{s}' resolves into '{s}', a {t}; a resolve target is a d2", .{ label, rt.desc.label, rt.desc.kind });
         }
         if (rt.desc.format != source.desc.format) {
             dev.violate(.attachment_format, "render pass '{s}' resolves {t} into '{s}', which is {t}", .{ label, source.desc.format, rt.desc.label, rt.desc.format });
@@ -1172,6 +1192,11 @@ pub const CommandBuffer = struct {
             // an out-of-bounds region undefined behaviour. A destination origin makes this
             // reachable by ordinary code — an atlas packing one sprite too many — so it is
             // checked rather than trusted.
+            if (copy.dst_layer >= dst.desc.layers) {
+                dev.violate(.limits, "copy targets layer {d} of texture '{s}', which has {d}", .{
+                    copy.dst_layer, dst.desc.label, dst.desc.layers,
+                });
+            }
             if (copy.dst_mip_level >= dst.desc.mip_levels) {
                 dev.violate(.limits, "copy targets mip level {d} of texture '{s}', which has {d}", .{
                     copy.dst_mip_level, dst.desc.label, dst.desc.mip_levels,
@@ -1233,6 +1258,11 @@ pub const CommandBuffer = struct {
             if (src.state != .copy_src) {
                 dev.violate(.resource_state, "texture '{s}' is tracked as {t}, not copy_src, at a texture-to-buffer copy", .{
                     src.desc.label, src.state,
+                });
+            }
+            if (copy.src_layer >= src.desc.layers) {
+                dev.violate(.limits, "copy reads layer {d} of texture '{s}', which has {d}", .{
+                    copy.src_layer, src.desc.label, src.desc.layers,
                 });
             }
             if (copy.src_mip_level >= src.desc.mip_levels) {
@@ -3607,6 +3637,190 @@ test "rule 10: a copy naming a mip level the texture does not have is caught" {
     });
     try testing.expectError(error.ValidationFailed, cmd.submit());
     try testing.expect(dev.hasViolation(.limits));
+}
+
+test "ADR-0084: a kind's layers are refused at creation when they do not fit it" {
+    const dev = try quietDevice();
+    defer dev.deinit();
+    const base: resource.TextureDesc = .{ .size = .{ .width = 8, .height = 8 }, .format = .rgba16_float, .usage = .{ .sampled = true, .copy_dst = true } };
+    const refused = [_]resource.TextureDesc{
+        blk: {
+            var d = base;
+            d.layers = 2;
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .d2_array;
+            d.layers = 0;
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .d2_array;
+            d.layers = resource.max_array_layers + 1;
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .cube;
+            d.layers = 5;
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .cube;
+            d.layers = 6;
+            d.size.height = 4;
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .cube;
+            d.layers = 6;
+            d.format = .depth32_float;
+            d.usage = .{ .depth_stencil = true };
+            break :blk d;
+        },
+        blk: {
+            var d = base;
+            d.kind = .d2_array;
+            d.layers = 2;
+            d.sample_count = 4;
+            d.usage = .{ .render_target = true };
+            break :blk d;
+        },
+    };
+    for (refused) |desc| {
+        try testing.expectError(error.InvalidDescriptor, dev.createTexture(desc));
+        try testing.expect(dev.hasViolation(.limits));
+        dev.clearViolations();
+    }
+    var cube = base;
+    cube.kind = .cube;
+    cube.layers = 6;
+    dev.destroyTexture(try dev.createTexture(cube));
+    var array = base;
+    array.kind = .d2_array;
+    array.layers = resource.max_array_layers;
+    dev.destroyTexture(try dev.createTexture(array));
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+// A cube written face by face, a face drawn into, and every face read back, with no
+// violation: the shape `render3d` and the readback tests record (`environment.md` §3).
+test "ADR-0084: a cube is uploaded, drawn into and read back one layer at a time" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const extent: resource.Extent2D = .{ .width = 4, .height = 4 };
+    const cube = try dev.createTexture(.{
+        .label = "cube",
+        .size = extent,
+        .format = .rgba8_unorm,
+        .usage = .{ .sampled = true, .copy_dst = true, .copy_src = true, .render_target = true },
+        .kind = .cube,
+        .layers = 6,
+        .mip_levels = 3,
+    });
+    defer dev.destroyTexture(cube);
+    const staging = try dev.createBuffer(.{ .size = 64, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer dev.destroyBuffer(staging);
+    const readback = try dev.createBuffer(.{ .size = 64 * 6, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = cube, .from = .undefined, .to = .copy_dst }});
+    for (0..6) |face| try cmd.copyBufferToTexture(.{ .src = staging, .dst = cube, .dst_layer = @intCast(face), .size = extent });
+    try cmd.copyBufferToTexture(.{ .src = staging, .dst = cube, .dst_layer = 5, .dst_mip_level = 2, .size = .{ .width = 1, .height = 1 } });
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = cube, .layer = 3, .load = .load, .initial_state = .copy_dst, .final_state = .copy_src }} });
+    pass.end();
+    for (0..6) |face| try cmd.copyTextureToBuffer(.{ .src = cube, .src_layer = @intCast(face), .size = extent, .dst = readback, .dst_offset = face * 64 });
+    try cmd.submit();
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
+}
+
+test "ADR-0084: a copy or an attachment naming a layer the texture does not have is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const extent: resource.Extent2D = .{ .width = 2, .height = 2 };
+    const array = try dev.createTexture(.{
+        .label = "array",
+        .size = extent,
+        .format = .rgba8_unorm,
+        .usage = .{ .copy_dst = true, .copy_src = true, .render_target = true },
+        .kind = .d2_array,
+        .layers = 3,
+    });
+    defer dev.destroyTexture(array);
+    const staging = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer dev.destroyBuffer(staging);
+    const readback = try dev.createBuffer(.{ .size = 16, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    for (0..3) |case| {
+        var cmd = try dev.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = array, .from = .undefined, .to = .copy_dst }});
+        switch (case) {
+            0 => try cmd.copyBufferToTexture(.{ .src = staging, .dst = array, .dst_layer = 3, .size = extent }),
+            1 => {
+                try cmd.textureBarrier(&.{.{ .texture = array, .from = .copy_dst, .to = .copy_src }});
+                try cmd.copyTextureToBuffer(.{ .src = array, .src_layer = 3, .size = extent, .dst = readback });
+            },
+            else => {
+                var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = array, .layer = 3, .initial_state = .copy_dst }} });
+                pass.end();
+            },
+        }
+        try testing.expectError(error.ValidationFailed, cmd.submit());
+        try testing.expect(dev.hasViolation(.limits));
+        dev.clearViolations();
+    }
+}
+
+test "ADR-0084: a resolve into a cube's face is caught" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    const dev = fx.dev;
+    const extent: resource.Extent2D = .{ .width = 2, .height = 2 };
+    const ms = try dev.createTexture(.{ .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true }, .sample_count = 4 });
+    defer dev.destroyTexture(ms);
+    const cube = try dev.createTexture(.{ .label = "cube", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .sampled = true }, .kind = .cube, .layers = 6 });
+    defer dev.destroyTexture(cube);
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .color = &.{.{ .texture = ms, .store = .discard, .resolve = .{ .texture = cube } }} });
+    pass.end();
+    try testing.expectError(error.ValidationFailed, cmd.submit());
+    try testing.expect(dev.hasViolation(.attachment_format));
+}
+
+test "ADR-0084: a bind group refuses a texture of another kind than its layout's dimension" {
+    const dev = try quietDevice();
+    defer dev.deinit();
+    const size: resource.Extent2D = .{ .width = 4, .height = 4 };
+    const flat = try dev.createTexture(.{ .size = size, .format = .rgba8_unorm, .usage = .{ .sampled = true } });
+    defer dev.destroyTexture(flat);
+    const array = try dev.createTexture(.{ .size = size, .format = .rgba8_unorm, .usage = .{ .sampled = true }, .kind = .d2_array, .layers = 2 });
+    defer dev.destroyTexture(array);
+    const cube = try dev.createTexture(.{ .size = size, .format = .rgba8_unorm, .usage = .{ .sampled = true }, .kind = .cube, .layers = 6 });
+    defer dev.destroyTexture(cube);
+    const textures = [3]resource.TextureHandle{ flat, array, cube };
+    for ([_]pipeline.TextureDimension{ .d2, .d2_array, .cube }, 0..) |dimension, want| {
+        const layout = try dev.createBindGroupLayout(.{ .entries = &.{.{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .dimension = dimension }} });
+        defer dev.destroyBindGroupLayout(layout);
+        for (textures, 0..) |texture, got| {
+            const result = dev.createBindGroup(.{ .layout = layout, .entries = &.{.{ .binding = 0, .resource = .{ .sampled_texture = texture } }} });
+            if (got == want) {
+                dev.destroyBindGroup(try result);
+            } else {
+                try testing.expectError(error.InvalidDescriptor, result);
+                try testing.expect(dev.hasViolation(.bind_group_compatibility));
+                dev.clearViolations();
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), dev.violationCount());
 }
 
 test "rule 10: writing more than 128 bytes is caught even with no pipeline bound" {

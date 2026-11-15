@@ -65,6 +65,9 @@ pub const ColorAttachment = struct {
     final_state: resource.ResourceState = .render_target,
     /// Only for a multisampled attachment. Depth has no counterpart: it is never resolved.
     resolve: ?ResolveTarget = null,
+    /// The array layer or cube face drawn into, below the texture's `layers` (ADR-0084). A
+    /// multisampled attachment and its resolve target are `d2`, so both use layer 0.
+    layer: u32 = 0,
 };
 
 pub const DepthAttachment = struct {
@@ -173,6 +176,8 @@ pub const BufferToTextureCopy = struct {
     src_bytes_per_row: u32 = 0,
     dst: resource.TextureHandle,
     dst_mip_level: u32 = 0,
+    /// The array layer or cube face written (ADR-0084): one copy, one layer of one level.
+    dst_layer: u32 = 0,
     /// Where in the destination the region lands. Defaults to the corner, so a
     /// whole-texture upload still reads as one. A runtime-packed atlas is why this is
     /// not the only option (`docs/design/rhi.md` §8).
@@ -187,6 +192,8 @@ pub const BufferToTextureCopy = struct {
 pub const TextureToBufferCopy = struct {
     src: resource.TextureHandle,
     src_mip_level: u32 = 0,
+    /// The array layer or cube face read (ADR-0084).
+    src_layer: u32 = 0,
     src_origin: resource.Origin2D = .{},
     size: resource.Extent2D,
     dst: resource.BufferHandle,

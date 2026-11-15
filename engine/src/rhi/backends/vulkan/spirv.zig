@@ -59,6 +59,10 @@ pub const Profile = enum {
     tone_fragment,
     particle_fragment,
     particle_mask_fragment,
+    // M41's layered-texture readback tests in the backend, not engine shading (`environment.md` §3).
+    layered_vertex,
+    cube_fragment,
+    array_fragment,
 };
 
 const magic: u32 = 0x0723_0203;
@@ -385,8 +389,8 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     const stage: Stage = switch (profile) {
         .shadow_vertex_0, .shadow_vertex_1, .shadow_vertex_2, .shadow_vertex_3 => .vertex,
         .shadow_fragment_0, .shadow_fragment_1, .shadow_fragment_2 => .fragment,
-        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex => .vertex,
-        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment, .particle_fragment, .particle_mask_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex, .layered_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment, .particle_fragment, .particle_mask_fragment, .cube_fragment, .array_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -418,6 +422,12 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             try require(try hasMemberDecoration(bytes, frame, 0, Decoration.offset, 0));
             const frame_variable = try bindingVariable(bytes, 0, 2, Storage.uniform) orelse return error.DecorationMismatch;
             try require(try variablePointsTo(bytes, frame_variable, Storage.uniform, frame));
+        },
+        .layered_vertex => {},
+        .cube_fragment, .array_fragment => {
+            try require(try hasLocatedVariable(bytes, 0, Storage.output));
+            try require(try bindingHasType(bytes, 0, 0, Storage.uniform_constant, Op.type_image));
+            try require(try bindingHasType(bytes, 0, 1, Storage.uniform_constant, Op.type_sampler));
         },
         .unlit_vertex => try requireUnlitVertex(bytes, false, false),
         .shadow_vertex_0 => try requireShadowVertex(bytes, false, false),

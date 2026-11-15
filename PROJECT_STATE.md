@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M41's design is proposed** ([`docs/design/environment.md`](docs/design/environment.md), ADR-0083–0086); awaiting acceptance of §14. Stop before Step 1. Under ADR-0082 it is paired with **M45 Input**, whose design is proposed beside it ([`docs/design/input.md`](docs/design/input.md)); each "Begin" now advances both by one step, M45's by an Opus agent in its own worktree. M40 is complete (2026-11-15, tag `m40`). Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+**Current handoff: M41 Step 1 and M45 Step 1 are done** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), done by an Opus agent and merged). Both designs and ADR-0083–0090 were accepted 2026-11-15. Stop before the pair's Step 2s: M41's MikkTSpace port in `asset`, and M45's gamepads in `platform`. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+
+**M41 Step 1 is done (2026-11-15): cube and array textures in the RHI** (ADR-0084).
+- `TextureDesc` gains `kind` and `layers`, copies and colour attachments name a layer, and a binding declares its dimension.
+- Null refuses a wrong layer count, a missing layer, a resolve into a layered texture and a wrong-kind binding.
+- Metal reads back six faces and one face drawn into, samples a cube by direction and across a seam (seamless), and samples an array by layer.
+- Vulkan has the same paths and three test-only SPIR-V stages; it compiles for Windows and Linux and runs at Step 9.
+- Bar: null 3,030/3,040 (ten skips), Metal 3,045/3,066 (21 skips), every check, the samples, `fdt-check` and the five Vulkan checks.
 
 **M41's design (2026-11-15):** ten steps — RHI layers, kinds and cube views; a MikkTSpace port; light records, model lights and glTF light import; the environment record and its CPU prefilter; image-based lighting; the sky pass; `sandbox3d`; the court; Windows/Vulkan; and the joint close with M45. M45 was chosen over M42 (same field), M43 (texture arrays, `asset`) and M44 (needs M43's text).
 

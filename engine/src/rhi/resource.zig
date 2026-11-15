@@ -152,12 +152,29 @@ pub const TextureUsage = packed struct(u8) {
     }
 };
 
+/// What a texture is, fixed when it is created and the only way it is ever bound
+/// (`environment.md` §3, ADR-0084). There is no separate view object.
+pub const TextureKind = enum {
+    /// One image, the only kind before M41. Every multisampled texture is one.
+    d2,
+    /// `layers` images of one size, format and level count, addressed by layer.
+    d2_array,
+    /// Six square faces, +X, -X, +Y, -Y, +Z, -Z, sampled by direction.
+    cube,
+};
+
+/// The most layers a `d2_array` may have. Vulkan guarantees 256 and Metal 2,048.
+pub const max_array_layers = 256;
+
 pub const TextureDesc = struct {
     label: []const u8 = "",
     size: Extent2D,
     format: format.TextureFormat,
     usage: TextureUsage,
     mip_levels: u32 = 1,
+    kind: TextureKind = .d2,
+    /// `d2`: 1. `d2_array`: 1 to `max_array_layers`. `cube`: exactly 6. See `validLayers`.
+    layers: u32 = 1,
     /// Samples per pixel: 1, or 4 for a multisampled attachment (`isValidSampleCount`). A
     /// multisampled texture is only ever drawn into and resolved from: its usage is
     /// `render_target` or `depth_stencil`, never `sampled` or a copy, and it has one mip level
@@ -171,6 +188,18 @@ pub const TextureDesc = struct {
     /// a freshly created texture has no contents worth preserving.
     initial_state: ResourceState = .undefined,
 };
+
+/// The rules on a kind's layers every backend refuses a texture by (ADR-0084): a `d2` has one
+/// layer, an array between one and `max_array_layers`, and a cube exactly six square faces. A
+/// multisampled texture is a `d2`, and a depth texture is never a cube or an array, since no pass
+/// renders or samples one.
+pub fn validLayers(desc: TextureDesc) bool {
+    return switch (desc.kind) {
+        .d2 => desc.layers == 1,
+        .d2_array => desc.layers >= 1 and desc.layers <= max_array_layers and desc.sample_count == 1 and !desc.format.isDepth(),
+        .cube => desc.layers == 6 and desc.size.width == desc.size.height and desc.sample_count == 1 and !desc.format.isDepth(),
+    };
+}
 
 /// **Exactly 1 and 4** (`render3d.md` §4.2). Vulkan's required limits put 4 in every conformant
 /// device's framebuffer sample counts, and every Apple GPU supports it; 2 buys little beside 4,
@@ -340,6 +369,33 @@ test "a mip level halves without ever reaching zero" {
     try testing.expect(base.mipLevel(4).eql(.{ .width = 1, .height = 1 }));
     // A nonsense level still produces something bounded rather than a shift overflow.
     try testing.expect(base.mipLevel(999).eql(.{ .width = 1, .height = 1 }));
+}
+
+test "a texture's layers follow its kind" {
+    var desc: TextureDesc = .{ .size = .{ .width = 8, .height = 8 }, .format = .rgba16_float, .usage = .{ .sampled = true } };
+    try testing.expect(validLayers(desc));
+    desc.layers = 2;
+    try testing.expect(!validLayers(desc));
+    desc.kind = .d2_array;
+    try testing.expect(validLayers(desc));
+    desc.layers = 0;
+    try testing.expect(!validLayers(desc));
+    desc.layers = max_array_layers + 1;
+    try testing.expect(!validLayers(desc));
+    desc.layers = max_array_layers;
+    try testing.expect(validLayers(desc));
+    desc.kind = .cube;
+    try testing.expect(!validLayers(desc));
+    desc.layers = 6;
+    try testing.expect(validLayers(desc));
+    desc.size.height = 4;
+    try testing.expect(!validLayers(desc));
+    desc.size.height = 8;
+    desc.sample_count = 4;
+    try testing.expect(!validLayers(desc));
+    desc.sample_count = 1;
+    desc.format = .depth32_float;
+    try testing.expect(!validLayers(desc));
 }
 
 test "an origin defaults to the corner" {

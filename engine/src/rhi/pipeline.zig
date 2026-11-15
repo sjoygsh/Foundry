@@ -92,6 +92,23 @@ pub const BindingType = enum {
 
 pub const SamplerBindingType = enum { filtering, comparison };
 pub const TextureBindingType = enum { color, depth };
+/// The kind of texture a sampled-texture slot takes (ADR-0084), as the shader declares it:
+/// `texture2d`, `texture2d_array` or `texturecube` in MSL, `sampler2D`, `sampler2DArray` or
+/// `samplerCube` in GLSL. A texture of another `resource.TextureKind` is refused at bind-group
+/// creation.
+pub const TextureDimension = enum {
+    d2,
+    d2_array,
+    cube,
+
+    pub fn of(kind: resource.TextureKind) TextureDimension {
+        return switch (kind) {
+            .d2 => .d2,
+            .d2_array => .d2_array,
+            .cube => .cube,
+        };
+    }
+};
 
 pub const BindGroupLayoutEntry = struct {
     binding: u32,
@@ -99,6 +116,7 @@ pub const BindGroupLayoutEntry = struct {
     visibility: ShaderStages,
     sampler: SamplerBindingType = .filtering,
     texture: TextureBindingType = .color,
+    dimension: TextureDimension = .d2,
 };
 
 pub const BindGroupLayoutDesc = struct {

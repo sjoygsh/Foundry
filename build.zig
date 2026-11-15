@@ -1877,12 +1877,18 @@ fn vulkanGraph(
     const unlit_mask_fragment = vulkanShaderStage(b, checker, "unlit-mask-fragment", "engine/src/render3d/shaders/unlit_mask.frag.glsl", "frag", "unlit_mask_fragment");
     const tone_vertex = vulkanShaderStage(b, checker, "tone-vertex", "engine/src/render3d/shaders/tone.vert.glsl", "vert", "tone_vertex");
     const tone_fragment = vulkanShaderStage(b, checker, "tone-fragment", "engine/src/render3d/shaders/tone.frag.glsl", "frag", "tone_fragment");
+    const layered_vertex = vulkanShaderStage(b, checker, "layered-vertex", "engine/src/rhi/backends/vulkan/shaders/layered.vert.glsl", "vert", "layered_vertex");
+    const cube_fragment = vulkanShaderStage(b, checker, "cube-fragment", "engine/src/rhi/backends/vulkan/shaders/cube.frag.glsl", "frag", "cube_fragment");
+    const array_fragment = vulkanShaderStage(b, checker, "array-fragment", "engine/src/rhi/backends/vulkan/shaders/array.frag.glsl", "frag", "array_fragment");
 
     for ([_]struct { name: []const u8, bytes: std.Build.LazyPath }{
         .{ .name = "sprite_vertex_spirv", .bytes = sprite_vertex },
         .{ .name = "sprite_fragment_spirv", .bytes = sprite_fragment },
         .{ .name = "quad_vertex_spirv", .bytes = quad_vertex },
         .{ .name = "quad_fragment_spirv", .bytes = quad_fragment },
+        .{ .name = "layered_vertex_spirv", .bytes = layered_vertex },
+        .{ .name = "cube_fragment_spirv", .bytes = cube_fragment },
+        .{ .name = "array_fragment_spirv", .bytes = array_fragment },
     }) |stage| rhi_module.addAnonymousImport(stage.name, .{ .root_source_file = stage.bytes });
     render2d_module.addAnonymousImport("sprite_vertex_spirv", .{ .root_source_file = sprite_vertex });
     render2d_module.addAnonymousImport("sprite_fragment_spirv", .{ .root_source_file = sprite_fragment });

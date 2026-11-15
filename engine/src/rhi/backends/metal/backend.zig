@@ -155,8 +155,12 @@ fn storeAction(a: command.StoreAction, resolves: bool) u32 {
     };
 }
 
-fn textureType(sample_count: u32) u32 {
-    return if (sample_count > 1) c.FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE else c.FD_MTL_TEXTURE_TYPE_2D;
+fn textureType(kind: resource.TextureKind, sample_count: u32) u32 {
+    return switch (kind) {
+        .d2 => if (sample_count > 1) c.FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE else c.FD_MTL_TEXTURE_TYPE_2D,
+        .d2_array => c.FD_MTL_TEXTURE_TYPE_2D_ARRAY,
+        .cube => c.FD_MTL_TEXTURE_TYPE_CUBE,
+    };
 }
 
 fn blendFactor(f: pipeline.BlendFactor) u32 {
@@ -734,6 +738,8 @@ pub const Device = struct {
         if (desc.size.isEmpty()) return error.InvalidDescriptor;
         if (!desc.usage.any()) return error.InvalidDescriptor;
         try self.checkSampleCount(desc.sample_count);
+        // ADR-0084, refused here as on null: Metal would build a cube of unequal faces' size.
+        if (!resource.validLayers(desc)) return error.InvalidDescriptor;
         // Rules 10 and 11 for a multisampled texture, refused here as on null, because Metal
         // would accept a sampled or copied one and let a program work on this backend alone.
         if (desc.sample_count > 1) {
@@ -747,12 +753,13 @@ pub const Device = struct {
         try self.reserveRetirement();
 
         const d: c.FdMtlTextureDesc = .{
-            .texture_type = textureType(desc.sample_count),
+            .texture_type = textureType(desc.kind, desc.sample_count),
             .pixel_format = pixelFormat(desc.format),
             .width = desc.size.width,
             .height = desc.size.height,
             .mip_levels = @max(desc.mip_levels, 1),
             .sample_count = desc.sample_count,
+            .array_length = if (desc.kind == .d2_array) desc.layers else 1,
             .usage = textureUsage(desc.usage),
             .storage_mode = storageMode(desc.memory),
         };
@@ -903,6 +910,8 @@ pub const Device = struct {
                     if (!texture.desc.usage.sampled) return error.InvalidDescriptor;
                     const actual: pipeline.TextureBindingType = if (texture.desc.format.isDepth()) .depth else .color;
                     if (actual != want.texture) return error.InvalidDescriptor;
+                    // ADR-0084: Metal would bind a cube where the shader reads a 2D texture.
+                    if (pipeline.TextureDimension.of(texture.desc.kind) != want.dimension) return error.InvalidDescriptor;
                 },
                 .sampler => |handle| {
                     const sampler = self.samplers.getConst(handle) orelse return error.InvalidDescriptor;
@@ -1304,6 +1313,7 @@ pub const CommandBuffer = struct {
             color[i] = .{
                 .texture = texture,
                 .resolve_texture = resolve_texture,
+                .slice = a.layer,
                 .load_action = loadAction(a.load),
                 .store_action = storeAction(a.store, resolve_texture != null),
                 .clear_r = clear[0],
@@ -1409,6 +1419,7 @@ pub const CommandBuffer = struct {
         c.fd_mtl_blit_copy_texture_to_buffer(
             enc,
             src_mtl,
+            copy.src_layer,
             copy.src_mip_level,
             copy.src_origin.x,
             copy.src_origin.y,
@@ -1441,6 +1452,7 @@ pub const CommandBuffer = struct {
             copy.src_offset,
             bytes_per_row,
             dst_mtl,
+            copy.dst_layer,
             copy.dst_mip_level,
             copy.dst_origin.x,
             copy.dst_origin.y,
@@ -2418,6 +2430,187 @@ const m22_shadow_msl =
     \\    float lit = shadow.sample_compare(comparison, in.uv, 0.4); return float4(lit, 0, 0, 1);
     \\}
 ;
+
+// -- M41: cubes and arrays, written, drawn into, sampled and read back a layer at a time ----
+//
+// `environment.md` §3 and §12's `rhi` list. A 2×2 cube whose faces are six solid colours is
+// written one face per copy, one face is cleared by a pass drawing into it, and every face is
+// read back. Then the cube is sampled by direction, one pixel a face, which proves the face
+// order the RHI promises (+X, -X, +Y, -Y, +Z, -Z), and once along a face's edge through a
+// linear sampler, where seamless filtering blends two faces. An array is sampled by layer.
+
+const face_colors = [6][4]u8{
+    .{ 255, 0, 0, 255 },   .{ 0, 255, 0, 255 },   .{ 0, 0, 255, 255 },
+    .{ 255, 255, 0, 255 }, .{ 0, 255, 255, 255 }, .{ 255, 0, 255, 255 },
+};
+
+const layered_msl =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\struct VOut { float4 pos [[position]]; };
+    \\vertex VOut vertexMain(uint vid [[vertex_id]]) {
+    \\    float2 q[6] = { float2(-1, -1), float2(1, -1), float2(-1, 1),
+    \\                    float2(-1, 1), float2(1, -1), float2(1, 1) };
+    \\    VOut out; out.pos = float4(q[vid], 0, 1); return out;
+    \\}
+    \\fragment float4 cubeMain(VOut in [[stage_in]], texturecube<float> image [[texture(0)]],
+    \\                         sampler image_sampler [[sampler(0)]]) {
+    \\    float3 d[7] = { float3(1, 0, 0), float3(-1, 0, 0), float3(0, 1, 0), float3(0, -1, 0),
+    \\                    float3(0, 0, 1), float3(0, 0, -1), float3(1, 0, 1) };
+    \\    return image.sample(image_sampler, d[uint(in.pos.x)]);
+    \\}
+    \\fragment float4 arrayMain(VOut in [[stage_in]], texture2d_array<float> image [[texture(0)]],
+    \\                          sampler image_sampler [[sampler(0)]]) {
+    \\    return image.sample(image_sampler, float2(0.5), uint(in.pos.x));
+    \\}
+;
+
+/// A 2×2 texture of `kind` with `colors.len` layers, layer `i` filled with `colors[i]`, each
+/// written by its own copy.
+fn solidLayers(dev: *Device, kind: resource.TextureKind, colors: []const [4]u8, extra: resource.TextureUsage) !resource.TextureHandle {
+    const extent: resource.Extent2D = .{ .width = 2, .height = 2 };
+    var usage = extra;
+    usage.sampled = true;
+    usage.copy_dst = true;
+    const texture = try dev.createTexture(.{ .label = "layers", .size = extent, .format = .rgba8_unorm, .usage = usage, .kind = kind, .layers = @intCast(colors.len) });
+    errdefer dev.destroyTexture(texture);
+    const staging = try dev.createBuffer(.{ .label = "layers staging", .size = colors.len * 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer dev.destroyBuffer(staging);
+    const bytes = try dev.mapBuffer(staging);
+    for (colors, 0..) |color, layer| for (0..4) |t| {
+        bytes[layer * 16 + t * 4 ..][0..4].* = color;
+    };
+    dev.unmapBuffer(staging);
+    var cmd = try dev.beginCommandBuffer();
+    try cmd.textureBarrier(&.{.{ .texture = texture, .from = .undefined, .to = .copy_dst }});
+    for (0..colors.len) |layer| try cmd.copyBufferToTexture(.{ .src = staging, .src_offset = layer * 16, .dst = texture, .dst_layer = @intCast(layer), .size = extent });
+    try cmd.submit();
+    return texture;
+}
+
+/// `texture` sampled by `entry` into a `width`×1 target, one pixel per direction or layer.
+fn renderLayers(dev: *Device, texture: resource.TextureHandle, dimension: pipeline.TextureDimension, entry: []const u8, filter: resource.FilterMode, comptime width: u32) ![width][4]u8 {
+    const shader = try dev.createShaderModuleFromSource(.{ .label = "layered", .source = layered_msl });
+    defer dev.destroyShaderModule(shader);
+    const sampler = try dev.createSampler(.{ .min_filter = filter, .mag_filter = filter });
+    defer dev.destroySampler(sampler);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .dimension = dimension },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    defer dev.destroyPipelineLayout(layout);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const pso = try dev.createRenderPipeline(.{
+        .label = "layered",
+        .layout = layout,
+        .vertex_shader = shader,
+        .vertex_entry = "vertexMain",
+        .fragment_shader = shader,
+        .fragment_entry = entry,
+        .color_targets = &.{.{ .format = .rgba8_unorm }},
+    });
+    defer dev.destroyRenderPipeline(pso);
+    const extent: resource.Extent2D = .{ .width = width, .height = 1 };
+    const target = try dev.createTexture(.{ .label = "target", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    defer dev.destroyTexture(target);
+    const readback = try dev.createBuffer(.{ .label = "readback", .size = width * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .label = "layered", .color = &.{.{ .texture = target, .final_state = .copy_src }} });
+    pass.setPipeline(pso);
+    pass.setBindGroup(0, group);
+    pass.setViewport(.{ .width = width, .height = 1 });
+    pass.draw(.{ .vertex_count = 6 });
+    pass.end();
+    try cmd.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try cmd.submit();
+    dev.waitIdle();
+    var out: [width][4]u8 = undefined;
+    @memcpy(std.mem.sliceAsBytes(&out), (try dev.mapBuffer(readback))[0 .. width * 4]);
+    dev.unmapBuffer(readback);
+    return out;
+}
+
+test "M41: a cube's faces are written, one drawn into, and each read back on its own layer" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const cube = try solidLayers(dev, .cube, &face_colors, .{ .render_target = true, .copy_src = true });
+    defer dev.destroyTexture(cube);
+    const readback = try dev.createBuffer(.{ .label = "faces", .size = 6 * 16, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    const drawn = [4]u8{ 10, 20, 30, 255 };
+    var cmd = try dev.beginCommandBuffer();
+    var pass = try cmd.beginRenderPass(.{ .label = "face 3", .color = &.{.{
+        .texture = cube,
+        .layer = 3,
+        .load = .{ .clear = .{ .color = .{ 10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1 } } },
+        .initial_state = .copy_dst,
+        .final_state = .copy_src,
+    }} });
+    pass.end();
+    for (0..6) |face| try cmd.copyTextureToBuffer(.{ .src = cube, .src_layer = @intCast(face), .size = .{ .width = 2, .height = 2 }, .dst = readback, .dst_offset = face * 16 });
+    try cmd.submit();
+    dev.waitIdle();
+    const got = try dev.mapBuffer(readback);
+    defer dev.unmapBuffer(readback);
+    for (0..6) |face| for (0..4) |t| {
+        const expected = if (face == 3) drawn else face_colors[face];
+        try testing.expectEqual(expected, got[face * 16 + t * 4 ..][0..4].*);
+    };
+}
+
+test "M41: a cube is sampled by direction in the RHI's face order, and blends across a seam" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const cube = try solidLayers(dev, .cube, &face_colors, .{});
+    defer dev.destroyTexture(cube);
+    {
+        var cmd = try dev.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = cube, .from = .copy_dst, .to = .shader_read }});
+        try cmd.submit();
+    }
+    const nearest = try renderLayers(dev, cube, .cube, "cubeMain", .nearest, 6);
+    for (nearest, face_colors) |got, want| try testing.expectEqual(want, got);
+    // Along the edge between +X and +Z, a linear sample is half of each face: seamless.
+    const linear = try renderLayers(dev, cube, .cube, "cubeMain", .linear, 7);
+    for (0..4) |channel| {
+        const mean = @divTrunc(@as(i32, face_colors[0][channel]) + face_colors[4][channel], 2);
+        try testing.expect(@abs(@as(i32, linear[6][channel]) - mean) <= 2);
+    }
+}
+
+test "M41: an array is sampled by layer" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const array = try solidLayers(dev, .d2_array, face_colors[0..3], .{});
+    defer dev.destroyTexture(array);
+    {
+        var cmd = try dev.beginCommandBuffer();
+        try cmd.textureBarrier(&.{.{ .texture = array, .from = .copy_dst, .to = .shader_read }});
+        try cmd.submit();
+    }
+    const got = try renderLayers(dev, array, .d2_array, "arrayMain", .nearest, 3);
+    for (got, face_colors[0..3]) |texel, want| try testing.expectEqual(want, texel);
+}
+
+test "M41: a texture of another kind than its slot's dimension is refused, as on null" {
+    const dev = try headlessDevice();
+    defer dev.deinit();
+    const cube = try solidLayers(dev, .cube, &face_colors, .{});
+    defer dev.destroyTexture(cube);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{.{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } }} });
+    defer dev.destroyBindGroupLayout(group_layout);
+    try testing.expectError(error.InvalidDescriptor, dev.createBindGroup(.{ .layout = group_layout, .entries = &.{.{ .binding = 0, .resource = .{ .sampled_texture = cube } }} }));
+    try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{ .size = .{ .width = 2, .height = 1 }, .format = .rgba8_unorm, .usage = .{ .sampled = true }, .kind = .cube, .layers = 6 }));
+}
 
 test "M40: a pass's depth bias moves one tile's depth, and rebinding the pipeline restores its own" {
     const dev = try headlessDevice();

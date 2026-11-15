@@ -87,7 +87,9 @@ enum {
     FD_MTL_STORE_ACTION_STORE_AND_MULTISAMPLE_RESOLVE = 3,
 
     FD_MTL_TEXTURE_TYPE_2D = 2,
+    FD_MTL_TEXTURE_TYPE_2D_ARRAY = 3,
     FD_MTL_TEXTURE_TYPE_2D_MULTISAMPLE = 4,
+    FD_MTL_TEXTURE_TYPE_CUBE = 5,
 
     FD_MTL_STORAGE_MODE_SHARED = 0,
     FD_MTL_STORAGE_MODE_MANAGED = 1,
@@ -250,6 +252,8 @@ typedef struct FdMtlTextureDesc {
     uint32_t height;
     uint32_t mip_levels;
     uint32_t sample_count;
+    /* A 2D array's layers; 1 for every other type, a cube's six faces included. */
+    uint32_t array_length;
     uint32_t usage;        /* MTLTextureUsage bitmask */
     uint32_t storage_mode; /* MTLStorageMode */
 } FdMtlTextureDesc;
@@ -372,6 +376,8 @@ typedef struct FdMtlColorAttachment {
     FdMtlTexture *texture;
     /* NULL unless `store_action` is one of the multisample resolves. */
     FdMtlTexture *resolve_texture;
+    /* The array layer or cube face drawn into. */
+    uint32_t slice;
     uint32_t load_action;  /* MTLLoadAction */
     uint32_t store_action; /* MTLStoreAction */
     double clear_r;
@@ -449,11 +455,11 @@ void fd_mtl_blit_copy_buffer(FdMtlBlitEncoder *enc, FdMtlBuffer *src, uint64_t s
                              FdMtlBuffer *dst, uint64_t dst_offset, uint64_t size);
 void fd_mtl_blit_copy_buffer_to_texture(FdMtlBlitEncoder *enc, FdMtlBuffer *src,
                                         uint64_t src_offset, uint32_t bytes_per_row,
-                                        FdMtlTexture *dst, uint32_t mip_level,
+                                        FdMtlTexture *dst, uint32_t slice, uint32_t mip_level,
                                         uint32_t origin_x, uint32_t origin_y,
                                         uint32_t width, uint32_t height);
 void fd_mtl_blit_copy_texture_to_buffer(FdMtlBlitEncoder *enc, FdMtlTexture *src,
-                                        uint32_t mip_level, uint32_t origin_x,
+                                        uint32_t slice, uint32_t mip_level, uint32_t origin_x,
                                         uint32_t origin_y, uint32_t width, uint32_t height,
                                         FdMtlBuffer *dst, uint64_t dst_offset,
                                         uint32_t bytes_per_row);

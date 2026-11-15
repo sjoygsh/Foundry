@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Step 1 is in progress.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Step 1 is done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -668,3 +668,67 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17):
 - **Reflection probes, cube arrays, parallax correction, multiple-scattering compensation and
   blending environments:** M87.
 - **Light probes for moving objects:** M89.
+
+## Resolution — Step 1: layers, kinds, cube views, per-layer copies and attachments (2026-11-15)
+
+**What the step pinned (`rhi`, ADR-0084):**
+- `resource.TextureKind` (`d2`, `d2_array`, `cube`), `TextureDesc.kind` and `layers`, and
+  `resource.validLayers`, the one rule every backend refuses a texture by:
+  - a `d2` has one layer;
+  - an array has 1 to `max_array_layers` (256);
+  - a cube has exactly six square faces;
+  - neither an array nor a cube is multisampled or depth.
+- `BufferToTextureCopy.dst_layer`, `TextureToBufferCopy.src_layer`, `ColorAttachment.layer`
+  and `pipeline.TextureDimension` on a layout entry. Every default is the old behaviour, so no
+  caller outside `rhi` changed; `render3d` is untouched.
+- **Null:**
+  - refuses a kind's wrong layers, a copy or attachment naming a missing layer, a resolve
+    into anything but a `d2`, and a bind group whose texture's kind is not its slot's
+    dimension;
+  - tests a whole cube frame (six uploads, a face drawn into, six readbacks) with no violation.
+- **Metal:** `MTLTextureType2DArray` and `TypeCube`, the array length, a copy's slice and an
+  attachment's slice in the shim. It refuses the same descriptors and bindings as null.
+  New readbacks:
+  - six faces written and read back, with face 3 drawn into;
+  - the cube sampled by direction in the RHI's face order;
+  - a linear sample on the +X/+Z edge within 2/255 of the two faces' mean, which is seamless
+    filtering;
+  - an array sampled by layer.
+- **Vulkan:**
+  - `CUBE_COMPATIBLE`, `arrayLayers`, a `CUBE` or `2D_ARRAY` view over every layer, and
+    barriers over every layer;
+  - copies at their `baseArrayLayer`;
+  - the device's `maxImageArrayLayers` and `maxImageDimensionCube`;
+  - the bind check.
+  - The same three readbacks as Metal are written against validated devices with three
+    test-only SPIR-V stages (`backends/vulkan/shaders/layered.vert.glsl`, `cube.frag.glsl` and
+    `array.frag.glsl`, with their own `spirv.Profile`s). They compile for Windows and Linux
+    here and run at Step 9.
+
+**Where the implementation sharpened the design:**
+- §3.3 said an attachment's layer sits "beside its mip level". No attachment has a mip level:
+  every render target draws into level 0, so `layer` is the only new field.
+- Vulkan draws into one layer through a 2D view of it, so a layered render target owns one view
+  per layer, made at creation and retired with the texture. A `d2` keeps its one view.
+- A depth texture is never a cube or an array (§3.1 implied it; `validLayers` says it), and a
+  resolve target is always a `d2`.
+- Texture state is still tracked per texture, not per layer. A barrier moves every layer,
+  which is what `render3d`'s uploads will do (§7.4).
+
+**Guards verified by mutation:** each failed its test when broken, then passed restored:
+- null's `validLayers` refusal, dimension check, copy-layer bound, attachment-layer bound and
+  resolve-kind check;
+- Metal's copy slice, which failed three readbacks;
+- Metal's attachment slice.
+
+**The bar:**
+- `zig fmt --check`, every `check` (native, Metal, Linux and Windows null) and `fdt-check`
+  pass.
+- **Tests:** null 3,030/3,040 (ten skips, six more than M40's), and Metal 3,045/3,066
+  (21 skips).
+- The four thirty-frame samples run.
+- The five Vulkan checks (both `vulkan-check`s, both `check -Drhi=vulkan` and Windows
+  ReleaseSafe) compile and validate every SPIR-V stage, the three new ones included.
+
+Next is Step 2, the MikkTSpace port. No environment, light record or tangent generation exists
+yet.

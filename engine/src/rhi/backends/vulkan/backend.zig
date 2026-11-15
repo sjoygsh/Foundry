@@ -207,6 +207,10 @@ const TextureState = struct {
     swapchain: bool = false,
     image: c.VkImage,
     view: c.VkImageView,
+    /// A cube's or an array's 2D view of each layer's first level, for drawing into one layer
+    /// (ADR-0084). Empty for a `d2`, which is drawn into through `view`. Owned by the device's
+    /// allocator.
+    layer_views: []c.VkImageView = &.{},
     allocation: c.VkDeviceMemory,
     /// As `BufferState.last_write`.
     last_write: u64 = 0,
@@ -268,7 +272,7 @@ const RenderPipelineState = struct {
 /// staging buffer a repacked copy made is retired the same way, after that one recording.
 const Retired = union(enum) {
     buffer: struct { native: c.VkBuffer, allocation: c.VkDeviceMemory },
-    texture: struct { image: c.VkImage, view: c.VkImageView, allocation: c.VkDeviceMemory },
+    texture: struct { image: c.VkImage, view: c.VkImageView, layer_views: []c.VkImageView = &.{}, allocation: c.VkDeviceMemory },
     sampler: c.VkSampler,
     shader: ShaderState,
     bind_group_layout: *BindGroupLayoutBacking,
@@ -284,6 +288,8 @@ const Retired = union(enum) {
                 dev.freeMemory(b.allocation);
             },
             .texture => |t| {
+                for (t.layer_views) |view| fns.vkDestroyImageView(dev.device, view, null);
+                if (t.layer_views.len > 0) dev.gpa.free(t.layer_views);
                 fns.vkDestroyImageView(dev.device, t.view, null);
                 fns.vkDestroyImage(dev.device, t.image, null);
                 dev.freeMemory(t.allocation);
@@ -768,6 +774,10 @@ pub const Device = struct {
         if (desc.size.width > self.limits.maxImageDimension2D or desc.size.height > self.limits.maxImageDimension2D) {
             return error.InvalidDescriptor;
         }
+        // ADR-0084, refused here as on null and Metal, then the device's own limits.
+        if (!resource.validLayers(desc)) return error.InvalidDescriptor;
+        if (desc.layers > self.limits.maxImageArrayLayers) return error.InvalidDescriptor;
+        if (desc.kind == .cube and desc.size.width > self.limits.maxImageDimensionCube) return error.InvalidDescriptor;
         const vk_format = vkFormat(desc.format);
         var properties: c.VkFormatProperties = undefined;
         self.instance_fns.vkGetPhysicalDeviceFormatProperties(self.physical, vk_format, &properties);
@@ -798,11 +808,12 @@ pub const Device = struct {
         const fns = &self.device_fns;
         const info: c.VkImageCreateInfo = .{
             .sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .flags = if (desc.kind == .cube) c.VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT else 0,
             .imageType = c.VK_IMAGE_TYPE_2D,
             .format = vk_format,
             .extent = .{ .width = desc.size.width, .height = desc.size.height, .depth = 1 },
             .mipLevels = levels,
-            .arrayLayers = 1,
+            .arrayLayers = desc.layers,
             .samples = sampleCountBit(desc.sample_count),
             .tiling = c.VK_IMAGE_TILING_OPTIMAL,
             .usage = imageUsage(desc.usage),
@@ -834,9 +845,9 @@ pub const Device = struct {
             const view_info: c.VkImageViewCreateInfo = .{
                 .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                 .image = image,
-                .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+                .viewType = viewType(desc.kind),
                 .format = vk_format,
-                .subresourceRange = .{ .aspectMask = aspectMask(desc.format), .levelCount = levels, .layerCount = 1 },
+                .subresourceRange = .{ .aspectMask = aspectMask(desc.format), .levelCount = levels, .layerCount = desc.layers },
             };
             const viewed = self.injectedResource(.create_view) orelse fns.vkCreateImageView(self.device, &view_info, null, &view);
             if (viewed != c.VK_SUCCESS) {
@@ -845,7 +856,31 @@ pub const Device = struct {
             }
         }
 
-        const state: TextureState = .{ .desc = desc, .image = image, .view = view, .allocation = allocation.memory };
+        // A layered render target is drawn into one layer at a time, through a 2D view of that
+        // layer's first level each (ADR-0084).
+        var layer_views: []c.VkImageView = &.{};
+        var made: usize = 0;
+        errdefer {
+            for (layer_views[0..made]) |layer_view| fns.vkDestroyImageView(self.device, layer_view, null);
+            if (layer_views.len > 0) self.gpa.free(layer_views);
+        }
+        if (desc.kind != .d2 and desc.usage.render_target) {
+            layer_views = try self.gpa.alloc(c.VkImageView, desc.layers);
+            for (layer_views, 0..) |*layer_view, layer| {
+                const layer_info: c.VkImageViewCreateInfo = .{
+                    .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                    .image = image,
+                    .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
+                    .format = vk_format,
+                    .subresourceRange = .{ .aspectMask = aspectMask(desc.format), .levelCount = 1, .baseArrayLayer = @intCast(layer), .layerCount = 1 },
+                };
+                const viewed = self.injectedResource(.create_view) orelse fns.vkCreateImageView(self.device, &layer_info, null, layer_view);
+                if (viewed != c.VK_SUCCESS) return resourceFailure(viewed, "vkCreateImageView");
+                made += 1;
+            }
+        }
+
+        const state: TextureState = .{ .desc = desc, .image = image, .view = view, .layer_views = layer_views, .allocation = allocation.memory };
         // An image starts undefined; any other declared state is reached by a transition of its own,
         // queued in order before anything that could use the texture (§5.2).
         if (desc.initial_state != .undefined) try self.transitionAtCreation(&state);
@@ -882,7 +917,7 @@ pub const Device = struct {
         const state = self.textures.getConst(handle) orelse return;
         // The frame loop owns the surface, not whoever holds its handle.
         if (state.is_surface) return;
-        const backing: Retired = .{ .texture = .{ .image = state.image, .view = state.view, .allocation = state.allocation } };
+        const backing: Retired = .{ .texture = .{ .image = state.image, .view = state.view, .layer_views = state.layer_views, .allocation = state.allocation } };
         _ = self.textures.remove(handle);
         self.retire(backing);
     }
@@ -1120,6 +1155,8 @@ pub const Device = struct {
                     const texture = self.textures.getConst(handle) orelse return error.InvalidDescriptor;
                     const actual: pipeline.TextureBindingType = if (texture.desc.format.isDepth()) .depth else .color;
                     if (actual != wanted.texture) return error.InvalidDescriptor;
+                    // ADR-0084: a cube in a 2D slot is undefined behaviour Vulkan would accept.
+                    if (pipeline.TextureDimension.of(texture.desc.kind) != wanted.dimension) return error.InvalidDescriptor;
                 },
                 .sampler => |handle| {
                     const sampler = self.samplers.getConst(handle) orelse return error.InvalidDescriptor;
@@ -2608,6 +2645,7 @@ pub const Device = struct {
                 Retired.release(.{ .texture = .{
                     .image = e.value.image,
                     .view = e.value.view,
+                    .layer_views = e.value.layer_views,
                     .allocation = e.value.allocation,
                 } }, self);
             }
@@ -2814,7 +2852,7 @@ pub const CommandBuffer = struct {
             const state = dev.textures.get(attachment.texture);
             native.* = .{
                 .sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                .imageView = if (state) |s| s.view else null,
+                .imageView = if (state) |s| attachmentView(s, attachment.layer) else null,
                 .imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .loadOp = loadOp(attachment.load),
                 .storeOp = storeOp(attachment.store),
@@ -3015,7 +3053,7 @@ pub const CommandBuffer = struct {
             .bufferOffset = copy.dst_offset,
             // In texels, where zero means tightly packed: the RHI's zero means the same.
             .bufferRowLength = copy.dst_bytes_per_row / src.desc.format.bytesPerTexel(),
-            .imageSubresource = .{ .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = copy.src_mip_level, .layerCount = 1 },
+            .imageSubresource = .{ .aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = copy.src_mip_level, .baseArrayLayer = copy.src_layer, .layerCount = 1 },
             .imageOffset = .{ .x = @intCast(copy.src_origin.x), .y = @intCast(copy.src_origin.y) },
             .imageExtent = .{ .width = copy.size.width, .height = copy.size.height, .depth = 1 },
         }};
@@ -3089,7 +3127,7 @@ pub const CommandBuffer = struct {
         const region = [_]c.VkBufferImageCopy{.{
             .bufferOffset = source_offset,
             .bufferRowLength = row_texels,
-            .imageSubresource = .{ .aspectMask = aspect, .mipLevel = copy.dst_mip_level, .layerCount = 1 },
+            .imageSubresource = .{ .aspectMask = aspect, .mipLevel = copy.dst_mip_level, .baseArrayLayer = copy.dst_layer, .layerCount = 1 },
             .imageOffset = .{ .x = @intCast(copy.dst_origin.x), .y = @intCast(copy.dst_origin.y) },
             .imageExtent = .{ .width = copy.size.width, .height = copy.size.height, .depth = 1 },
         }};
@@ -3743,9 +3781,23 @@ fn imageBarrier(state: *const TextureState, from: resource.ResourceState, to: re
         .subresourceRange = .{
             .aspectMask = aspectMask(state.desc.format),
             .levelCount = @max(state.desc.mip_levels, 1),
-            .layerCount = 1,
+            .layerCount = state.desc.layers,
         },
     };
+}
+
+fn viewType(kind: resource.TextureKind) c.VkImageViewType {
+    return switch (kind) {
+        .d2 => c.VK_IMAGE_VIEW_TYPE_2D,
+        .d2_array => c.VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+        .cube => c.VK_IMAGE_VIEW_TYPE_CUBE,
+    };
+}
+
+/// The view a pass draws into: a layered texture's view of that layer (ADR-0084), or the whole.
+fn attachmentView(state: *const TextureState, layer: u32) c.VkImageView {
+    if (state.layer_views.len == 0) return state.view;
+    return state.layer_views[@min(layer, state.layer_views.len - 1)];
 }
 
 fn vkFormat(f: format.TextureFormat) c.VkFormat {
@@ -4565,6 +4617,9 @@ const builtin_stages = struct {
     const sprite_fragment = @embedFile("sprite_fragment_spirv");
     const quad_vertex = @embedFile("quad_vertex_spirv");
     const quad_fragment = @embedFile("quad_fragment_spirv");
+    const layered_vertex = @embedFile("layered_vertex_spirv");
+    const cube_fragment = @embedFile("cube_fragment_spirv");
+    const array_fragment = @embedFile("array_fragment_spirv");
 };
 
 fn createSpritePipeline(
@@ -4600,6 +4655,159 @@ test "the four produced stages carry the documented shader ABI" {
     try spirv.validateProfile(builtin_stages.sprite_fragment, .sprite_fragment);
     try spirv.validateProfile(builtin_stages.quad_vertex, .quad_vertex);
     try spirv.validateProfile(builtin_stages.quad_fragment, .quad_fragment);
+}
+
+// -- M41: cubes and arrays, as the Metal backend's tests prove them (`environment.md` §3) ----
+
+const face_colors = [6][4]u8{
+    .{ 255, 0, 0, 255 },   .{ 0, 255, 0, 255 },   .{ 0, 0, 255, 255 },
+    .{ 255, 255, 0, 255 }, .{ 0, 255, 255, 255 }, .{ 255, 0, 255, 255 },
+};
+
+/// A 2×2 texture of `kind` with `colors.len` layers, layer `i` filled with `colors[i]`, each
+/// written by its own copy, left in `copy_dst`.
+fn solidLayers(dev: *Device, kind: resource.TextureKind, colors: []const [4]u8, extra: resource.TextureUsage) !resource.TextureHandle {
+    const extent: resource.Extent2D = .{ .width = 2, .height = 2 };
+    var usage = extra;
+    usage.sampled = true;
+    usage.copy_dst = true;
+    const texture = try dev.createTexture(.{ .label = "layers", .size = extent, .format = .rgba8_unorm, .usage = usage, .kind = kind, .layers = @intCast(colors.len) });
+    errdefer dev.destroyTexture(texture);
+    const staging = try dev.createBuffer(.{ .label = "layers staging", .size = colors.len * 16, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer dev.destroyBuffer(staging);
+    const bytes = try dev.mapBuffer(staging);
+    for (colors, 0..) |color, layer| for (0..4) |t| {
+        bytes[layer * 16 + t * 4 ..][0..4].* = color;
+    };
+    dev.unmapBuffer(staging);
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = texture, .from = .undefined, .to = .copy_dst }});
+    for (0..colors.len) |layer| try cb.copyBufferToTexture(.{ .src = staging, .src_offset = layer * 16, .dst = texture, .dst_layer = @intCast(layer), .size = extent });
+    try finish(dev, cb);
+    return texture;
+}
+
+/// `texture` sampled by `fragment` into a `width`×1 target, one pixel per direction or layer.
+fn renderLayers(dev: *Device, texture: resource.TextureHandle, dimension: pipeline.TextureDimension, fragment_bytes: []const u8, filter: resource.FilterMode, comptime width: u32) ![width][4]u8 {
+    const vertex = try dev.createShaderModule(.{ .label = "layered vertex", .bytes = builtin_stages.layered_vertex });
+    defer dev.destroyShaderModule(vertex);
+    const fragment = try dev.createShaderModule(.{ .label = "layered fragment", .bytes = fragment_bytes });
+    defer dev.destroyShaderModule(fragment);
+    const sampler = try dev.createSampler(.{ .min_filter = filter, .mag_filter = filter });
+    defer dev.destroySampler(sampler);
+    const group_layout = try dev.createBindGroupLayout(.{ .entries = &.{
+        .{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true }, .dimension = dimension },
+        .{ .binding = 1, .type = .sampler, .visibility = .{ .fragment = true } },
+    } });
+    defer dev.destroyBindGroupLayout(group_layout);
+    const pipeline_layout = try dev.createPipelineLayout(.{ .bind_group_layouts = &.{group_layout} });
+    defer dev.destroyPipelineLayout(pipeline_layout);
+    const group = try dev.createBindGroup(.{ .layout = group_layout, .entries = &.{
+        .{ .binding = 0, .resource = .{ .sampled_texture = texture } },
+        .{ .binding = 1, .resource = .{ .sampler = sampler } },
+    } });
+    defer dev.destroyBindGroup(group);
+    const pso = try dev.createRenderPipeline(.{
+        .label = "layered",
+        .layout = pipeline_layout,
+        .vertex_shader = vertex,
+        .vertex_entry = "main",
+        .fragment_shader = fragment,
+        .fragment_entry = "main",
+        .color_targets = &.{.{ .format = .rgba8_unorm }},
+    });
+    defer dev.destroyRenderPipeline(pso);
+    const extent: resource.Extent2D = .{ .width = width, .height = 1 };
+    const target = try dev.createTexture(.{ .label = "target", .size = extent, .format = .rgba8_unorm, .usage = .{ .render_target = true, .copy_src = true } });
+    defer dev.destroyTexture(target);
+    const readback = try dev.createBuffer(.{ .label = "readback", .size = width * 4, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{ .label = "layered", .color = &.{.{ .texture = target, .final_state = .copy_src }} });
+    pass.setPipeline(pso);
+    pass.setBindGroup(0, group);
+    pass.setViewport(.{ .width = width, .height = 1 });
+    pass.setScissor(.{ .width = width, .height = 1 });
+    pass.draw(.{ .vertex_count = 6 });
+    pass.end();
+    try cb.copyTextureToBuffer(.{ .src = target, .size = extent, .dst = readback });
+    try finish(dev, cb);
+    var out: [width][4]u8 = undefined;
+    @memcpy(std.mem.sliceAsBytes(&out), (try dev.mapBuffer(readback))[0 .. width * 4]);
+    dev.unmapBuffer(readback);
+    return out;
+}
+
+test "the layered test stages carry their shader ABI" {
+    try spirv.validateProfile(builtin_stages.layered_vertex, .layered_vertex);
+    try spirv.validateProfile(builtin_stages.cube_fragment, .cube_fragment);
+    try spirv.validateProfile(builtin_stages.array_fragment, .array_fragment);
+}
+
+test "M41: a cube's faces are written, one drawn into, and each read back on its own layer" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const cube = try solidLayers(dev, .cube, &face_colors, .{ .render_target = true, .copy_src = true });
+    defer dev.destroyTexture(cube);
+    const readback = try dev.createBuffer(.{ .label = "faces", .size = 6 * 16, .usage = .{ .copy_dst = true }, .memory = .readback });
+    defer dev.destroyBuffer(readback);
+
+    const drawn = [4]u8{ 10, 20, 30, 255 };
+    const cb = try dev.beginCommandBuffer();
+    const pass = try cb.beginRenderPass(.{ .label = "face 3", .color = &.{.{
+        .texture = cube,
+        .layer = 3,
+        .load = .{ .clear = .{ .color = .{ 10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 1 } } },
+        .initial_state = .copy_dst,
+        .final_state = .copy_src,
+    }} });
+    pass.end();
+    for (0..6) |face| try cb.copyTextureToBuffer(.{ .src = cube, .src_layer = @intCast(face), .size = .{ .width = 2, .height = 2 }, .dst = readback, .dst_offset = face * 16 });
+    try finish(dev, cb);
+    const got = try dev.mapBuffer(readback);
+    defer dev.unmapBuffer(readback);
+    for (0..6) |face| for (0..4) |t| {
+        const expected = if (face == 3) drawn else face_colors[face];
+        try testing.expectEqual(expected, got[face * 16 + t * 4 ..][0..4].*);
+    };
+    try expectValidationHeard(dev);
+}
+
+test "M41: a cube is sampled by direction in the RHI's face order, and blends across a seam" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const cube = try solidLayers(dev, .cube, &face_colors, .{});
+    defer dev.destroyTexture(cube);
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = cube, .from = .copy_dst, .to = .shader_read }});
+    try finish(dev, cb);
+    const nearest = try renderLayers(dev, cube, .cube, builtin_stages.cube_fragment, .nearest, 6);
+    for (nearest, face_colors) |got, want| try testing.expectEqual(want, got);
+    const linear = try renderLayers(dev, cube, .cube, builtin_stages.cube_fragment, .linear, 7);
+    for (0..4) |channel| {
+        const mean = @divTrunc(@as(i32, face_colors[0][channel]) + face_colors[4][channel], 2);
+        try testing.expect(@abs(@as(i32, linear[6][channel]) - mean) <= 3);
+    }
+    try expectValidationHeard(dev);
+}
+
+test "M41: an array is sampled by layer, and a texture of another kind is refused its slot" {
+    const dev = try validated(.{});
+    defer dev.deinit();
+    const array = try solidLayers(dev, .d2_array, face_colors[0..3], .{});
+    defer dev.destroyTexture(array);
+    const cb = try dev.beginCommandBuffer();
+    try cb.textureBarrier(&.{.{ .texture = array, .from = .copy_dst, .to = .shader_read }});
+    try finish(dev, cb);
+    const got = try renderLayers(dev, array, .d2_array, builtin_stages.array_fragment, .nearest, 3);
+    for (got, face_colors[0..3]) |texel, want| try testing.expectEqual(want, texel);
+
+    const flat = try dev.createBindGroupLayout(.{ .entries = &.{.{ .binding = 0, .type = .sampled_texture, .visibility = .{ .fragment = true } }} });
+    defer dev.destroyBindGroupLayout(flat);
+    try testing.expectError(error.InvalidDescriptor, dev.createBindGroup(.{ .layout = flat, .entries = &.{.{ .binding = 0, .resource = .{ .sampled_texture = array } }} }));
+    try testing.expectError(error.InvalidDescriptor, dev.createTexture(.{ .size = .{ .width = 2, .height = 1 }, .format = .rgba8_unorm, .usage = .{ .sampled = true }, .kind = .cube, .layers = 6 }));
+    try expectValidationHeard(dev);
 }
 
 test "malformed shader envelopes and wrong-stage entries are refused before a pipeline call" {
