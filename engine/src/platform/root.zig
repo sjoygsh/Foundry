@@ -43,6 +43,7 @@ const build_options = @import("build_options");
 
 pub const audio = @import("audio.zig");
 pub const event = @import("event.zig");
+pub const gamepad = @import("gamepad.zig");
 pub const input = @import("input.zig");
 pub const interface = @import("interface.zig");
 pub const key = @import("key.zig");
@@ -95,12 +96,23 @@ comptime {
 /// The selected platform backend. One implementation per binary, no vtable.
 pub const Platform = selected.Platform;
 
+/// The selected backend's own file, for the desktop tests that drive its test affordances
+/// (`zig build gamepad-test`'s virtual pads). Not for engine code, which sees only `Platform`.
+pub const selected_backend = selected;
+
 // The types a caller reaches for, re-exported so `platform.Event` reads better than
 // `platform.event.Event` at every call site.
 pub const AudioConfig = audio.AudioConfig;
 pub const AudioDeviceHandle = audio.AudioDeviceHandle;
 pub const AudioInfo = audio.AudioInfo;
 pub const Event = event.Event;
+pub const GamepadAxis = gamepad.GamepadAxis;
+pub const GamepadButton = gamepad.GamepadButton;
+pub const GamepadHandle = gamepad.GamepadHandle;
+pub const GamepadKind = gamepad.GamepadKind;
+pub const GamepadState = gamepad.GamepadState;
+pub const ButtonLabel = gamepad.ButtonLabel;
+pub const max_gamepads = gamepad.max_gamepads;
 pub const InputSnapshot = input.InputSnapshot;
 pub const Key = key.Key;
 pub const Modifiers = key.Modifiers;
@@ -123,6 +135,7 @@ pub const Background = background.Background;
 pub const XlibWindow = window.XlibWindow;
 
 pub const AudioError = interface.AudioError;
+pub const GamepadRumbleError = interface.GamepadRumbleError;
 pub const InitError = interface.InitError;
 pub const InitOptions = interface.InitOptions;
 pub const WindowError = interface.WindowError;
@@ -141,6 +154,7 @@ test {
     // breaking the Windows loader on purpose and watching the suite stay green.
     _ = audio;
     _ = event;
+    _ = gamepad;
     _ = input;
     _ = interface;
     _ = key;
