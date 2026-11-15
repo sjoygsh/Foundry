@@ -1,7 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M40 Step 8 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 9: Windows/Vulkan on the Arc PC, with the room and the court windowed and relocated, validation clean, and the room's budget on the i3/Arc. The PC holds no Foundry clone.
+**Current handoff: M40 Step 9 of 10 is complete** (2026-11-15; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081). Stop before Step 10: close M40 (contract notes, ADR-0080/0081 to Accepted, CLAUDE.md, roadmap, index, tag `m40`). The PC still holds the clone `src\Foundry-m40` and the scratch `m40`, kept until the close.
+
+**M40 Step 9 is done (2026-11-15): Windows/Vulkan.**
+- The owner's PC (Arc A750, i3-10105F), from a fresh clone at `d5cae5f`, `-j2`, below-normal priority. EU5 was running in observe mode (~80% CPU), and the owner lifted the 50% cutoff, so every timing is contended.
+- Null 3,003/3,022 (19 skips), Vulkan 3,285/3,315 (30 skips, readbacks ±3/255, validation on), ReleaseSafe pins 767/767, install 177/177.
+- The relocated install's 210 content files equal the Mac's byte for byte (the orbiter's `.dll`/`.dylib` aside).
+- 18 windowed runs passed, the validated ones clean: the tour with every pin (local shadows on and off, tilted), the room (17 tiles casting, 4 off), and the court's three endings (`win` peaks at 3 beacons, 22 tiles).
+- The room casting: frame work p95 7.62 and 7.87 ms against 16.67; off 3.64 and 6.97 ms.
+- `scripts/m40/` gains `-IgnoreCpuLimit` in the launcher and 120-minute deadlines for the pins and the install. No engine code changed.
 
 **M40 Step 8 is done (2026-11-15): the court.**
 - The beacon record's light gains `casts_shadow bool (default true)`, read into `BeaconSettings.light_casts_shadow` and submitted with each lit beacon's point light. The exit report logs the most beacon lights casting in one frame.

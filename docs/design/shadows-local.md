@@ -1325,3 +1325,65 @@ the court's refusal test, which turns the flag off.
   (`1052a9ae891b0d27`), `court-test` 87/89, and the five Vulkan checks;
 - the court's content changed, so `zig build dist -Dapp=court` staged it on macOS, ReleaseSafe
   on Metal, exit 0.
+
+## Resolution — Step 9: Windows/Vulkan (2026-11-15)
+
+**Where it ran:**
+- the owner's PC (Arc A750, i3-10105F), from a fresh clone of `origin/main` plus a bundle of
+  the unpushed commits, checked out at `d5cae5f`;
+- `-j2`, below-normal priority, windowed runs from a scheduled task in the desktop session.
+
+**The PC was not idle.** The owner was running EU5 in its automatic observe mode, at about 80%
+CPU, and lifted the 50% cutoff for this run ("ignore usage"). So every timing below was taken
+beside a running game. They are upper bounds for this machine, not readings of an idle i3.
+`scripts/m40/` gained two things for this:
+- the launcher passes `-IgnoreCpuLimit` through to the desktop half, as the build half already
+  took it;
+- the ReleaseSafe pins and the install get 120 minutes instead of 40. At `-j2` beside the game,
+  the pins took 22 minutes once a first attempt had hit the old deadline. That attempt ran no
+  test to completion, so it left nothing to compare.
+
+**The suites:**
+- null: 3,003 of 3,022 passed (19 skips);
+- Vulkan, the readbacks at ±3/255 with validation and synchronization on: 3,285 of 3,315 passed
+  (30 skips), every local, point, translucent and penumbra readback among them;
+- the pins at ReleaseSafe on x86_64 (physics3d, nav, anim, rigs, scene, sandbox3d, the yard and
+  the court): 767 of 767;
+- the install: 177 of 177 steps.
+
+**The bytes.** The relocated, read-only install's 210 content files equal the Mac's
+ReleaseSafe install byte for byte. The one expected difference is the orbiter's native library,
+`orbiter.dll` against `liborbiter.dylib`. The install's hash was the same after every run.
+
+**The runs, all 18 passing, the validated ones clean:**
+- **The tour.** Five runs (plain, validated, local shadows off, tilted, repeated) held every
+  pin: walker `655e865f98779129`, player `b85b52c97d259db4`, yard replay `1052a9ae891b0d27`.
+- **The room.** 900 frames, with the cascades exactly as on the Mac. Casting, it had Step 7's
+  17 tiles (light 1 face 0, light 2 face 5, light 3's spot, each 1,024 texels), 320–327 local
+  draws, 8 translucent and nothing dropped. Off, it had 4 tiles and 0 local draws.
+- **The court.** Its three endings each ran validated and plain, and `win` ran twice. Every
+  replay matched a fresh simulation. `win` peaked at three beacons casting into 22 tiles, 78
+  local draws, nothing dropped, as on the Mac.
+
+| Room, last 240 frames | Frame work median / p95 | `render.world` median / p95 |
+| --- | --- | --- |
+| every light casting | 2.85 / 7.62 ms | 0.92 / 3.37 ms |
+| every light casting, again | 3.34 / 7.87 ms | 1.00 / 3.38 ms |
+| penumbrae off | 2.76 / 6.47 ms | 0.89 / 2.45 ms |
+| local shadows off | 1.86 / 3.64 ms | 0.54 / 1.00 ms |
+| local shadows off, again | 2.63 / 6.97 ms | 0.70 / 2.02 ms |
+
+**The exit holds.** With every light casting, the room's frame work p95 is 7.62 and 7.87 ms
+against 16.67, beside a running game. The validated run, 35 ms, measures the layers and is not
+a budget.
+
+**What the numbers do not settle:**
+- **The local shadows' cost.** At the median it is about 0.4 ms of `render.world`. The p95s
+  move by a millisecond or more between identical runs, because the game took the CPU.
+- **The court's whole-tick p95** was 0.35 and 0.30 ms in its two `win` runs, against M23's
+  0.25 ms line. That line is a game-tick figure, the beacons' shadows are render work, and the
+  validated run read 0.30 ms. It is the contention, not this milestone. An idle reading belongs
+  with the paced spread M39 left to M73.
+
+**No engine code changed** since Step 8, whose bar passed. This step adds only the PowerShell
+under `scripts/m40/`, which no line of the bar builds or runs.
