@@ -736,6 +736,13 @@ updates and review itself by default. Delegation is exceptional, not routine. Us
 only for a concrete technical reason that materially benefits the task, such as genuinely
 independent parallel work or a clearly separable investigation.
 
+**Paired milestones are the standing exception (ADR-0082).** Each stop moves the lead milestone
+and its partner. The primary agent does one of them. One spawned Opus agent does the other, in
+its own git worktree and branch, with its own full bar, Resolution and commit. The primary agent
+merges that branch into `main` and does not re-verify it. The pair's joint close does the
+cleanup and runs one compile check of the merged tree. Only one of the two uses the Windows PC
+at a time.
+
 Do not spawn agents merely to repeat completed work, review work the primary agent can
 reasonably review itself, reconfirm successful tests, duplicate architecture or documentation
 audits, or provide reassurance after adequate verification has succeeded. Never spawn several

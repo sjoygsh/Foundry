@@ -6,6 +6,11 @@ done; M26 closed Phase 5, and M27 opened Phase 6. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
 
+**Since M41 (2026-11-15, ADR-0082) milestones advance in pairs:** the next milestone in this
+order, and one later milestone from an unrelated field, chosen at the lead's design stop. Both
+move by the same stop; they share one closing step; a partner found to depend on its lead is
+dropped for the rest of the lead.
+
 **Milestones are units of work, not units of time.** No dates. Sessions are bounded by
 available context, so each milestone is sized to be resumable from `PROJECT_STATE.md` alone,
 and each leaves behind something that runs.

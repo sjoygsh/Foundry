@@ -262,6 +262,7 @@ fast-math. Bit-exactness across machines is explicitly *not* guaranteed (ADR-001
 | Repository | Engine is a standalone public repo; games are separate consumers | [0017](docs/adr/0017-repository-scope.md) |
 | Process | CLAUDE.md + PROJECT_STATE.md + numbered ADRs | [0009](docs/adr/0009-documentation-process.md) |
 | Roadmap | 150 numbered engine milestones, M0–M149, then M150, the certified release, in a fixed total and a gradual ascent; a line fixes intent and order, never a design; Android, web, VR/XR, D3D12, an opt-in replication layer and an optional voxel module are planned | [0060](docs/adr/0060-a-150-milestone-roadmap.md) |
+| Paired milestones | From M41, the next milestone (the lead) advances with one unrelated later partner, chosen as the first act of the design stop; both move by the same stop, one by a spawned Opus agent in its own worktree; one joint close with one compile check; a dependency found mid-pair drops the partner; accepted 2026-11-15 | [0082](docs/adr/0082-milestones-advance-in-pairs.md) |
 
 **Language note.** Zig is pre-1.0 and both the language and `std` break between releases. This
 is an accepted, managed risk: pinned to a stable release, **never master or nightly**, upgraded
@@ -840,5 +841,6 @@ A future session must not, without explicit discussion:
 * Close a milestone with any of its own work deferred, or leave anything a design sets aside
   without naming the roadmap milestone that owns it (§2, rule 17).
 * Expand `CLAUDE.md` into an implementation diary.
-* Treat the 150-milestone roadmap as a schedule, design a milestone before its turn, or let
+* Treat the 150-milestone roadmap as a schedule, design a milestone before its turn (a pair's
+  turn since ADR-0082: the lead and its chosen partner), or let
   the total grow without the owner's decision (ADR-0060).

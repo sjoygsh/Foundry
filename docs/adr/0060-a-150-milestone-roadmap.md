@@ -5,6 +5,8 @@
 **Revised 2026-10-02 (before any milestone was built against it), by the owner's instruction:**
 certified releases become the final milestone, M150. The 150 engine milestones M0–M149 are
 unchanged; the plan now runs M0 to M150.
+**Amended 2026-11-15 by [ADR-0082](0082-milestones-advance-in-pairs.md):** milestones advance in
+pairs, the next one and an unrelated partner, so "its turn" means the pair's turn.
 **Informed by:** ADR-0008, ADR-0013, ADR-0017, ADR-0033, ADR-0044, ADR-0047, ADR-0051, ADR-0052,
 `docs/ROADMAP.md`, `docs/design/3d.md` §11
 
