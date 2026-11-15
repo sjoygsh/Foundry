@@ -64,6 +64,8 @@ pub const ui_theme = @import("ui_theme.zig");
 /// `foundry:particle_emitter`, an effect as content (ADR-0064). Here for `ui_theme`'s reason:
 /// `fpack` checks it with no renderer, and `particles` at L1 holds no schema.
 pub const light = @import("light.zig");
+/// `foundry:environment` and its prefilter (ADR-0083). Here for `light`'s reason.
+pub const environment = @import("environment.zig");
 pub const particle_emitter = @import("particle_emitter.zig");
 pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 /// Ogg, the container a Vorbis file is (ADR-0065).
@@ -183,6 +185,7 @@ test {
     _ = ui_theme;
     _ = particle_emitter;
     _ = light;
+    _ = environment;
     _ = ogg;
     _ = vorbis;
     _ = tangents;

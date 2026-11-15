@@ -401,10 +401,12 @@ pub const kinds = [_]Kind{
 };
 
 /// Engine-defined record schemas with no source bytes of their own.
-pub const records = [_]Schema{ material, model, light.schema };
+pub const records = [_]Schema{ material, model, light.schema, environment.schema };
 
 pub const light = @import("light.zig");
 pub const light_name = light.name;
+pub const environment = @import("environment.zig");
+pub const environment_name = environment.name;
 
 /// Engine-defined authoring records that are compiled into others and never shipped, beside
 /// `foundry:model_import`, which is a kind because an extension derives it. The compiler checks

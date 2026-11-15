@@ -1,0 +1,11 @@
+# M41's night over the court (`docs/design/environment.md` §11, ADR-0083): a deep blue zenith to
+# a faint horizon, dim enough to keep the court as dark as it is at EV100 4. It lights the court
+# indirectly and is its sky from Step 8; `engine/tests/environment_content.zig` pins its bytes.
+foundry:environment court:environments.night {
+    kind      "gradient"
+    zenith    { r 0.03  g 0.05  b 0.16  l 30 }
+    horizon   { r 0.1   g 0.1   b 0.16  l 20 }
+    ground    { r 0.04  g 0.04  b 0.05  l 10 }
+    sharpness 3
+    size      128
+}

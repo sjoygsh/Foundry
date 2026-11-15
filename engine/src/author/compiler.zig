@@ -307,7 +307,7 @@ pub fn compile(
     return identity;
 }
 
-/// Whether every `foundry:light`, `foundry:particle_emitter`, `foundry:music_playlist`, `foundry:music_stinger`,
+/// Whether every `foundry:light`, `foundry:environment`, `foundry:particle_emitter`, `foundry:music_playlist`, `foundry:music_stinger`,
 /// mixing record and `foundry:sound` in a written package decodes (ADR-0064, ADR-0066, ADR-0067,
 /// ADR-0068). A refusal names the record and its field, at the line that declared it when one
 /// did. IDs resolve across packages, so whether a playlist's tracks are sounds, or a bus's
@@ -334,6 +334,9 @@ fn checkMeanings(
         const fields = reader.fieldsOf(view, schema.*);
         const what: []const u8, const why: []const u8 = if (view.schema_id.eql(asset.light.schema.id)) blk: {
             _ = asset.light.decode(fields) catch |err| break :blk .{ "light", asset.light.describe(err) };
+            continue;
+        } else if (view.schema_id.eql(asset.environment.schema.id)) blk: {
+            _ = asset.environment.decode(fields) catch |err| break :blk .{ "environment", asset.environment.describe(err) };
             continue;
         } else if (view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) blk: {
             _ = asset.particle_emitter.decode(fields) catch |err| break :blk .{ "particle emitter", asset.particle_emitter.describe(err) };
@@ -507,6 +510,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.schemas.model_name,
     asset.schemas.model_import_name,
     asset.schemas.light_name,
+    asset.schemas.environment_name,
     asset.schemas.tilegrid_name,
     asset.schemas.sound_name,
     asset.schemas.script_name,

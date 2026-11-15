@@ -203,8 +203,9 @@ const unorm_to_float: [256]f32 = blk: {
     break :blk table;
 };
 
-/// The sRGB transfer function's inverse, per byte, from IEC 61966-2-1.
-const srgb_to_linear: [256]f32 = blk: {
+/// The sRGB transfer function's inverse, per byte, from IEC 61966-2-1. Public for
+/// `environment.zig`, which reads a face's bytes in linear light the same way.
+pub const srgb_to_linear: [256]f32 = blk: {
     @setEvalBranchQuota(100_000);
     var table: [256]f32 = undefined;
     for (&table, 0..) |*t, i| t.* = @floatCast(srgbDecodeExact(@as(f64, @floatFromInt(i)) / 255.0));

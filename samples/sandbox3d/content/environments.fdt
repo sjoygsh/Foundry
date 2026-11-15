@@ -1,0 +1,28 @@
+# M41's environments (`docs/design/environment.md` §7, §11, ADR-0083): what surrounds the yard and
+# the room, and so what lights them indirectly and stands behind them as a sky. Each is
+# prefiltered when it loads; `engine/tests/environment_content.zig` pins the bytes each makes, so
+# a change here moves those pins on purpose. The `dusk` mod overrides the day by its ID.
+
+# The yard's daytime sky: a blue zenith, a pale horizon and a green-brown ground. Each colour is
+# linear and multiplied by its own `l`, in cd/m². The sun is the directional light, not the sky.
+foundry:environment sandbox3d:environments.day {
+    kind      "gradient"
+    zenith    { r 0.25  g 0.45  b 1     l 6000 }
+    horizon   { r 0.85  g 0.9   b 1     l 8000 }
+    ground    { r 0.3   g 0.32  b 0.2   l 2500 }
+    sharpness 4
+    size      128
+}
+
+# The room's six painted faces, drawn by scripts/m41/make_room_faces.py: plaster, a plank floor
+# and one window in the -Z wall. A texel of value 1 is 60 cd/m², so the room stays dim.
+foundry:environment sandbox3d:environments.room {
+    kind      "faces"
+    faces     [
+        sandbox3d:textures.room.px sandbox3d:textures.room.nx
+        sandbox3d:textures.room.py sandbox3d:textures.room.ny
+        sandbox3d:textures.room.pz sandbox3d:textures.room.nz
+    ]
+    luminance 60
+    size      128
+}

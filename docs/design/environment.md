@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 3 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 4 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -910,3 +910,105 @@ skips, as before). No shader, Vulkan or ABI code changed.
 
 Next is Step 4: the environment record and its CPU prefilter. No `foundry:environment` exists
 yet.
+
+## Resolution — Step 4: the environment record and its prefilter (2026-11-16)
+
+`asset/environment.zig` holds `foundry:environment` v1, its decode and validation, and the
+prefilter as one pure function, `prefilter(gpa, environment, faces)`. It returns a
+`Prefiltered`: the specular cube as `rgba16_float` bytes and nine harmonics a channel. The
+schema is registered with the other engine records (`schemas.records`). The compiler checks the
+record's meaning as it checks a light's, so `fpack`, the editor and a load refuse alike. It is
+not yet loaded by anything; residency is Step 5's.
+
+**Where the implementation corrects or sharpens §7:**
+- **The field that picks the source is `kind`, not `source`.** `source` is every asset kind's
+  file path (`schemas.source_field`), and the registry reads any record carrying one as a file
+  to open. `kind "faces"` or `kind "gradient"` matches `foundry:light`'s spelling.
+- **An environment is not a registry asset kind.** It has no bytes of its own, and a `faces`
+  environment needs six other assets' pixels. So the prefilter takes decoded `Face` values: an
+  image and its texture record's colour space. How Step 5 gathers them and runs the prefilter on
+  the background pool is Step 5's to decide; the function is ready for a decode's body.
+- **Faces and `size`:** faces must be six equal squares, each `size` times a power of two. They
+  are box-filtered in linear light down to `size`, so a face larger than the cube costs one pass
+  and no larger buffer. Smaller faces are refused (`FaceSizeInvalid`), because upsampling adds
+  nothing. A `linear` texture is refused as `FaceNotColour`.
+- **Luminance is capped at 65504 cd/m²,** the largest finite `f16`, both the faces' `luminance`
+  and a gradient colour's `l`. The cube stores half floats, and no average or blend of in-range
+  texels leaves the range, so the prefilter never clamps.
+- **Gradient colours:** `r g b` are refused outside [0, 1], and `sharpness` must be positive and
+  finite. The blend toward either pole is `1 − (1 − |y|)^sharpness`, computed with `core`'s
+  own `exp2` and `log2`.
+- **The source mips are weighted by solid angle,** not a plain 2×2 box. A face's central texels
+  subtend about twice its corners'. With a plain box, a bright texel at a face's centre lost about
+  half its light at the coarse mips that rough levels read (the roughness-1 test measured 52%).
+  Weighted, the lobe's total light is within 2% of GGX's prediction.
+- **A bilinear read clamps at a face's edge** and does not blend across into the next face, as
+  the GPU's seamless filter would. A rough level reads a coarse mip, where the error is a fraction
+  of one texel's weight.
+- **The harmonics are pre-convolved:** each band is multiplied by the clamped cosine's weight over
+  π (1, 2/3, 1/4). `evaluate(h, n)` therefore returns the radiance a white Lambertian surface
+  reflects, and a constant cube evaluates to that constant. The texels' approximate solid angles
+  are rescaled to sum to exactly 4π. The basis is the real SH in Ramamoorthi and Hanrahan's
+  order, over (x, y, z) in Foundry's world axes.
+- **The byte layout:** level by level, largest first; within a level, face by face, +X −X +Y −Y
+  +Z −Z; within a face, rows top to bottom. Each face of each level is one RHI copy (§3.2).
+  `Prefiltered.faceBytes(level, face)` hands Step 5 each copy's slice.
+- **The cost is lower than §7.2 estimated.** Level 0 is copied, not sampled, so a 128 cube takes
+  about 2.1 million samples, not 8.4 million.
+
+**The shipped environments.** They are written now, so their bytes can be pinned. Steps 7 and 8
+draw them and may tune their numbers, moving the pins on purpose.
+- `sandbox3d:environments.day` (the yard) is a gradient.
+- `sandbox3d:environments.room` is six 128² faces painted by `scripts/m41/make_room_faces.py`:
+  plaster walls, a plank floor, a pale ceiling and one window in the −Z wall. The faces are
+  committed as `samples/sandbox3d/content/textures/room/*.png`, and `luminance` is 60.
+- `court:environments.night` is a dim gradient.
+
+`engine/tests/environment_content.zig` reads each from its sample's own `environments.fdt`, its
+faces from the package's PNGs, and pins the cube's bytes and the harmonics by FNV-1a hash.
+
+**Measured times** (ReleaseFast, one thread, this Mac, two runs):
+- size 128: 25–47 ms;
+- size 512: 0.40–0.75 s;
+- Debug, size 128: 0.37 s.
+
+ADR-0083's two-second trigger for a 512 cube is not near. The Windows time is taken at Step 9,
+with the pins compared across machines there.
+
+**Oracle tests (§12):**
+- every record refusal, by name;
+- every face refusal;
+- the gradient's level 0 against the closed form, to an `f16`'s precision;
+- a constant cube's harmonics and every level equal to that constant;
+- level 0 equal to the faces in linear light times the luminance, exactly at size, and as the
+  2×2 mean when halved;
+- one bright texel at roughness 1 spreading as GGX's cosine lobe predicts, checked four ways:
+  - its total light within 5%;
+  - the texels facing it within 30%, since 64 samples are noisy texel to texel;
+  - nothing more than 144.7° away (no sample reaches its face from there);
+  - a narrower, brighter peak at the roughness between;
+- the same record giving the same bytes, pinned;
+- a malformed record refused by `fpack` with its field named.
+
+**Guards verified by mutation.** Each was broken and then restored, and each broken version
+failed a test:
+- the colour range;
+- the size's power of two;
+- the face colour space;
+- the faces' power-of-two ratio;
+- the solid-angle weights in the mips;
+- the harmonics' normalisation;
+- the `n·l` weight;
+- the sample's mip;
+- the compiler's environment check.
+
+Two first mutants did not compile, so they were rewritten into ones that did before being
+counted.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples, `fdt-check` and `zig build dist -Dapp=court` (the court's content changed)
+pass. Tests: null 3,116/3,126 (ten skips), Metal 3,131/3,152 (21 skips); `asset` 286/286, the
+integration graph 165/168 (three skips, as before). No shader, Vulkan or ABI code changed.
+
+Next is Step 5: residency, the fourth uniform and image-based lighting. Nothing loads or draws
+an environment yet.

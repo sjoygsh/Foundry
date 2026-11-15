@@ -1461,6 +1461,24 @@ test "a light the renderer would refuse does not compile, by its field" {
     try testing.expect(found);
 }
 
+test "an environment the prefilter would refuse does not compile, by its field" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    try stack.write("content.fdt",
+        \\foundry:environment demo:environments.odd {
+        \\    kind "gradient"
+        \\    zenith { r 1 g 1 b 1 l 1 }  horizon { r 1 g 1 b 1 l 1 }  ground { r 1 g 1 b 1 l 1 }
+        \\    size 100
+        \\}
+    );
+    try testing.expectError(error.ContentInvalid, stack.build());
+    var found = false;
+    for (stack.diags.items.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "environment") != null and std.mem.indexOf(u8, diag.message, "size") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
 test "asset.light's rules are render3d.lighting.valid's, for every light a record can hold" {
     // The two rule sets cannot see each other (ADR-0085); this stands above both.
     const kinds = [_]asset.light.Kind{ .directional, .point, .spot };
