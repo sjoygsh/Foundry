@@ -553,8 +553,8 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | Deferred | Returns when |
 | --- | --- |
 | Pointer capture through the public ABI | **M48**, Public API v8 (renumbered at M27's close, 2026-10-18), with a host grant |
-| Raw-input selection or normalised motion units in `platform` | **M45**, Input |
-| Gamepads | **M45**, Input, with its own Linux run |
+| Raw-input selection or normalised motion units in `platform` | **M45**, Input; proposed in [`input.md`](input.md) §3 |
+| Gamepads | **M45**, Input, with its own Linux run; proposed in [`input.md`](input.md) §4 and §12 |
 | 3D spatialised audio and a listener | **Done in M31** (2026-10-27, tag `m31`, [`mixing.md`](mixing.md), ADR-0068): spatial voices from one listener with attenuation records and occlusion; the court's main-thread audio, placing included, stays under its 0.10 ms p95 on the M5 and the Arc PC |
 | A warden that sees and chases | **Done in M33** (2026-10-31): M32 ([`navigation.md`](navigation.md)) built the warden's mesh from the level, and M33 ([`agents.md`](agents.md)) gave it paths, an agent and the chase |
 | An engine-declared "draws this model" component | **M103**, Prefabs |
