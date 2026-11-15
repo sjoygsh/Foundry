@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15); Step 4 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Step 4 (2026-11-16); Step 5 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1329,3 +1329,103 @@ No Vulkan check applies: no shader, RHI or native-window code changed. Outside
 `engine/src/platform` and `engine/src/audio/mixer.zig`, only `engine/tests/music_sequencing.zig`,
 the new `engine/tests/audio_output.zig`, `build.zig` (its step), `samples/sandbox/main.zig` (the
 two events in its exhaustive report) and `AGENTS.md` (the two desktop tests) changed.
+
+## Resolution — Step 4: the module and its records (2026-11-16)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 4.
+
+**What the step pinned:**
+- **`input`, a new L2 module on `core`, `data` and `platform`**, in `build.zig`'s `layering`
+  after `mod`, and granted to `app`, `abi` and `author`. `zig build input-test` runs its tests.
+  `engine/src/input/` holds three files:
+  - `source.zig`: `Source`, a value union over keys, mouse buttons, `mouse.motion`,
+    `mouse.wheel`, the wheel's four directions, pad buttons, pad axes and the two sticks.
+    `Source.parse(text)` and `Source.name(buf)` round-trip every name this build knows, each
+    within 32 bytes. `Source.class()` is `button`, `axis`, `stick` or `delta`.
+  - `schemas.zig`: `foundry:input_action` v1 and `foundry:input_context` v1, `registerAll`,
+    `Kind` with `accepts(class)` (§6.5's table), `Binding` with `validate()`, `decodeAction`,
+    `decodeContext`, `check` and `noun` for the compiler, and `describe`/`describeAt`.
+  - `map.zig`: `Map.build(gpa, store)`, which fails only for memory, with `find`, `action`,
+    `findContext` and `context` by sorted search. Actions and contexts are in content-ID order
+    (ascending hash). An action's contexts are indices into `Map.contexts`.
+- **Registration:** `app/engine.zig` registers both schemas after `foundry:animation_set`, and a
+  test checks they are there before any package. `author/compiler.zig` imports `input`,
+  registers it after `scene`, and lists both names at the end of `engine_schema_names`. They
+  were put at the end rather than beside `light_name`, so that M41's own additions near the
+  light record merge without touching these lines.
+
+**Where the code sharpened the design:**
+- **String fields are quoted.** §6.2's example writes `kind vector` and `axis y`, but `.fdt`
+  reads a bare token as a content ID. They are `kind "vector"` and `axis "y"`, as `order
+  "shuffle"` is in a playlist.
+- **`fpack` refuses a malformed action too, not only the load.** This uses the same decoder,
+  through `checkMeanings`, which has been the house rule since M29: `fpack`, the editor and a
+  load refuse alike. A refusal names the record, its field and the binding at the line that
+  declared it, for example `input action 'demo:action.look' has a binding whose source cannot
+  feed its kind (binding 0)`. So the overlap with M41 is more than §1's "one line": an import,
+  the registration block, two names, one `checkMeanings` branch with two locals, and a test.
+  All are textual, and no M41 code is read or changed in meaning.
+- **What stays at load:** whether a context is a `foundry:input_context`, and the map's bounds.
+  Both need the merged store. An unknown source compiles, because a later engine may know it.
+- **Ranges the design left open:**
+  - `scale` must be finite and nonzero, because a zero-scale binding does nothing and has no
+    sign for an axis feeding a button;
+  - `threshold` must be in (0, 1];
+  - `deadzone` must be in [0, 0.95].
+
+  Every check is written so that a NaN fails it, since a package's bytes can carry one that its
+  text cannot spell.
+- **Two refusals §6.5 did not list:** `DuplicateContext` (an action naming one context twice)
+  and `EmptySource`. `bindings` is optional: an action with no defaults is one a player binds.
+  `contexts` is required, one to four.
+- **An unknown source's other fields are still checked.** A deadzone of 2 is wrong whatever it
+  reads. The record keeps a mask of the skipped bindings (`unknown_sources`), and the map warns
+  once for each one.
+- **`key.unknown` is not a source name.** `platform` says that key is never bound, so it parses
+  as unknown and is skipped, rather than being something every unmapped key would press.
+- **Past a bound, the records last in content-ID order are left out**, with `ActionsFull` or
+  `ContextsFull`. Which records those are is decided by ID, never by load order or layout. A
+  test builds the same records in ascending and descending order and gets the same map.
+- **Warnings are values as well as log lines.** `Map.warnings` keeps at most 64, each with the
+  record, the problem and the binding, and `refused()` tells a refusal from a skip. Past 64 they
+  are counted (`warnings_dropped`) and neither kept nor logged, so hostile content cannot flood
+  a load.
+- A context can be refused only as `Unreadable`, because no value of its two fields is out of
+  range.
+
+**Not done here, as §14 orders it:** evaluation, contexts by priority, blocking, the tick view,
+overrides, capture and conflicts (Step 5); reload keeping held state, and `engine.actions`
+(Step 6). Nothing builds a `Map` outside tests yet.
+
+**The exit, met:**
+- every record test passes: each field's refusal by name and binding, the kind/source table in
+  full (four kinds against eight sources of four classes), the bounds, an unknown source skipped
+  and the rest kept, a mod's record replacing the game's whole, and a mod's action added to the
+  game's context without overriding it;
+- `fpack` compiled a package with two contexts and two actions to a 1,510-byte `.fpk` from a
+  scratch directory, and refused a `delta` action bound to `pad.right_stick` by name and line,
+  writing nothing;
+- `compiler.zig`'s test does the same in `zig build test`.
+
+**Each guard was broken once, and each failed its test:**
+- the compiler's `input` branch disabled failed "a package with actions compiles, and a
+  malformed action is refused by name at its line";
+- `vector` accepting a delta failed the kind/source table test;
+- five contexts allowed, the deadzone bound raised to 1, and the duplicate-context check
+  removed each failed "every field's refusal is named";
+- an unknown source refused instead of skipped failed both unknown-source tests;
+- an unresolved context accepted failed "a malformed record is refused by name";
+- the actions left unsorted failed the order, override and bound tests;
+- `key.unknown` parsed failed the unknown-names test;
+- numbers checked only for known sources failed "every field's refusal is named";
+- the warning cap removed failed "warnings past 64 are counted";
+- the action bound removed failed the bound test.
+
+**Bar:** every line of `AGENTS.md` §3 exited 0, plus `zig build test -Drhi=metal`. That is
+`zig fmt --check`, the four `check` variants, the four thirty-frame samples and `fdt-check`. The
+counts:
+- null 3,124/3,134 (ten skips);
+- Metal 3,139/3,160 (21 skips).
+
+No platform backend, shader, RHI, ABI header or sample content changed, so no SDL3 cross-check,
+Vulkan check or C header compile applies.

@@ -103,6 +103,14 @@ const layering = [_]Module{
     // loading — this module says which library a manifest names and never opens one.
     .{ .name = "mod", .deps = &.{ "core", "data", "platform" } },
 
+    // L2 — actions and contexts as content (ADR-0087, docs/design/input.md §6). `platform` for
+    // the snapshot actions are read from and the names a binding spells; `data` for the records,
+    // whose meaning this module owns as `mod` owns `foundry:mod`. No device and no thread, so
+    // every rule tests with no window. Not `platform`, which has no `data`; not `app`, because
+    // `author` registers these records and cannot see `app`; not `asset`, because nothing here
+    // is loaded.
+    .{ .name = "input", .deps = &.{ "core", "data", "platform" } },
+
     // L2 — authenticated network sessions (ADR-0044/0045,
     // docs/design/networking.md). `platform` is present for its authenticated
     // streams (`platform.Transport`, Step 2); the module owns checked limits,
@@ -154,7 +162,9 @@ const layering = [_]Module{
     // `physics3d` joined at M38 Step 7 (ADR-0077): a mesh's tree is baked into its `.fcol`
     // by the builder that would otherwise build it at load, and a hull's corners found by the
     // routine that finds its faces, so there is one of each and the two cannot drift.
-    .{ .name = "author", .deps = &.{ "core", "data", "platform", "asset", "mod", "scene", "physics3d" } },
+    // `input` joined at M45 Step 4 for its two record types (`input.md` §1): `fpack` must know
+    // them to compile a package with actions, and refuses one as a load would.
+    .{ .name = "author", .deps = &.{ "core", "data", "platform", "asset", "mod", "scene", "physics3d", "input" } },
 
     // L4 — the engine loop and subsystem lifecycle. Gains dependencies as the layers
     // between it and `platform` arrive; it is allowed to see all of them (ADR-0007).
@@ -169,7 +179,9 @@ const layering = [_]Module{
     // turns a host's roots, its required packages and a player's pending selection into a
     // load order, a preview and a conflict report. `mod` stays below and computes each
     // answer from files alone; `app` is where they meet the settings a selection is saved in.
-    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d", "render3d", "mod" } },
+    // `input` joined at M45 Step 4: the engine registers its record types before content
+    // loads, and from Step 6 evaluates actions in the frame (`input.md` §9).
+    .{ .name = "app", .deps = &.{ "core", "data", "platform", "ui", "rhi", "asset", "render2d", "render3d", "mod", "input" } },
 
     // L5 — the in-process debug overlay (ADR-0025, docs/design/debug-overlay.md). Above
     // `app` rather than inside it, because it needs `scene` and the engine loop does not:
@@ -219,7 +231,9 @@ const layering = [_]Module{
     // The one module it will **never** have is
     // `rhi` — §4.2's two boundaries, where the renderer API is game-facing and the RHI is
     // not, so this module does not merely decline to publish the RHI, it cannot see it.
-    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "net", "render2d", "render3d", "ui", "audio", "physics2d", "physics3d" } },
+    // `input` joined at M45 Step 4, granted ahead of Step 7's `FoundryApi_v8`, which publishes
+    // actions (`input.md` §10).
+    .{ .name = "abi", .deps = &.{ "core", "data", "platform", "asset", "app", "author", "scene", "mod", "net", "render2d", "render3d", "ui", "audio", "physics2d", "physics3d", "input" } },
 };
 
 /// Which platform backend to build against.
@@ -1594,6 +1608,9 @@ pub fn build(b: *std.Build) void {
         }
         if (std.mem.eql(u8, spec.name, "asset") or std.mem.eql(u8, spec.name, "author") or std.mem.eql(u8, spec.name, "physics3d") or std.mem.eql(u8, spec.name, "anim") or std.mem.eql(u8, spec.name, "particles") or std.mem.eql(u8, spec.name, "nav") or std.mem.eql(u8, spec.name, "scene") or std.mem.eql(u8, spec.name, "debug")) {
             b.step(b.fmt("{s}-test", .{spec.name}), b.fmt("Run the {s} unit tests", .{spec.name})).dependOn(&run.step);
+        }
+        if (std.mem.eql(u8, spec.name, "input")) {
+            b.step("input-test", "Run the input action, context and source tests").dependOn(&run.step);
         }
     }
 
