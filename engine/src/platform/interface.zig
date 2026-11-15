@@ -25,6 +25,7 @@ const core = @import("core");
 
 const audio = @import("audio.zig");
 const event = @import("event.zig");
+const gamepad = @import("gamepad.zig");
 const input = @import("input.zig");
 const key = @import("key.zig");
 const window = @import("window.zig");
@@ -105,9 +106,23 @@ pub const AudioError = error{
     InvalidAudioDevice,
 };
 
-/// Options common to every backend. Empty today; present so that adding one later is
-/// an edit to this struct rather than to every call site.
-pub const InitOptions = struct {};
+pub const GamepadRumbleError = error{
+    /// The handle does not name the pad seated in its slot: disconnected, replaced, or never
+    /// issued (I1).
+    InvalidGamepad,
+    /// A strength outside [0, 1], NaN, or a duration over `gamepad.max_rumble_ms`. A game may pass
+    /// on a value from content or a mod, so it is reported rather than asserted.
+    InvalidRumble,
+    /// The pad has no motors, or its driver declined. **A normal answer**: the game carries on.
+    Unsupported,
+};
+
+/// Options common to every backend, set once at `init`.
+pub const InitOptions = struct {
+    /// Whether to watch for gamepads at all. A dedicated server or a content tool turns it off,
+    /// so it opens no HID devices and starts no threads for them (`input.md` §4.3).
+    gamepads: bool = true,
+};
 
 /// Verifies that `Impl` provides the whole backend interface with the exact signatures.
 ///
@@ -168,6 +183,10 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         // in the caller's buffer, and empty for `unknown`. Presentation only; a binding keeps the
         // key's physical name (`input.md` §3).
         expectFn(P, label, "keyLabel", &.{ *P, key.Key, *[key.label_capacity]u8 }, []const u8);
+
+        // Rumble on a seated pad: two motor strengths in [0, 1] for up to ten seconds, zeros to
+        // stop. Output and presentation: nothing in simulation reads it (`input.md` §4.3).
+        expectFn(P, label, "setGamepadRumble", &.{ *P, gamepad.GamepadHandle, f32, f32, u32 }, GamepadRumbleError!void);
 
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
@@ -303,6 +322,14 @@ test "the check accepts a conforming implementation" {
                 _ = k;
                 return buf[0..0];
             }
+            pub fn setGamepadRumble(self: *@This(), pad: gamepad.GamepadHandle, low: f32, high: f32, duration_ms: u32) GamepadRumbleError!void {
+                _ = self;
+                _ = pad;
+                _ = low;
+                _ = high;
+                _ = duration_ms;
+                return error.Unsupported;
+            }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;
             }
@@ -348,11 +375,11 @@ test "the interface names every call a frame makes" {
     // A change to the frame's shape should be a deliberate edit here, not something
     // that drifts in one backend at a time.
     const required = [_][]const u8{
-        "init",              "deinit",        "openWindow",     "closeWindow",
-        "windowInfo",        "nativeSurface", "pumpEvents",     "nextEvent",
-        "captureInput",      "now",           "setWindowSize",  "openAudio",
-        "closeAudio",        "audioInfo",     "setAudioPaused", "setPointerCapture",
-        "setCapturedMotion", "keyLabel",
+        "init",              "deinit",        "openWindow",       "closeWindow",
+        "windowInfo",        "nativeSurface", "pumpEvents",       "nextEvent",
+        "captureInput",      "now",           "setWindowSize",    "openAudio",
+        "closeAudio",        "audioInfo",     "setAudioPaused",   "setPointerCapture",
+        "setCapturedMotion", "keyLabel",      "setGamepadRumble",
     };
-    try testing.expectEqual(@as(usize, 18), required.len);
+    try testing.expectEqual(@as(usize, 19), required.len);
 }

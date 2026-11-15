@@ -23,6 +23,7 @@ const core = @import("core");
 
 const audio = @import("../audio.zig");
 const event = @import("../event.zig");
+const gamepad = @import("../gamepad.zig");
 const input = @import("../input.zig");
 const interface = @import("../interface.zig");
 const key = @import("../key.zig");
@@ -130,21 +131,40 @@ pub const Platform = struct {
     /// (`rawMotionOfDriver`). Fixed at `init`, because SDL picks its video driver once.
     raw_motion_available: bool = false,
 
-    pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
-        _ = options;
+    /// Whether this platform holds a reference to SDL's gamepad subsystem
+    /// (`InitOptions.gamepads`, and SDL agreeing to start it).
+    gamepads_on: bool = false,
+    /// Which SDL joystick sits in which slot, by the rule every backend shares. Pads are known
+    /// here by SDL's instance IDs, which never leave this file.
+    slots: gamepad.Slots = .empty,
+    /// The open gamepad in each slot. A waiting pad is not opened until it is seated.
+    pads: [gamepad.max_gamepads]?*c.SDL_Gamepad = @splat(null),
+    /// Joysticks SDL found but cannot map as a gamepad: ignored, and counted, until M146.
+    unmapped_joysticks: u32 = 0,
 
+    pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
         // Video implies events. Audio is not requested here: `openAudio` initialises it on
-        // first use, so a game that plays no sound costs no device and no thread. Gamepads
-        // are M45 Step 2's (`input.md` §4).
+        // first use, so a game that plays no sound costs no device and no thread.
         if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
             log.err("SDL_Init failed: {s}", .{sdlError()});
             return error.PlatformInitFailed;
         }
         live_platforms += 1;
-        errdefer releaseSdl();
+        errdefer releaseSdl(false);
+
+        // Gamepads, unless the host turned them off. SDL's built-in mapping database, and no
+        // external file (`input.md` §4.3). A machine where SDL cannot start them still has a
+        // keyboard: it is said, and the platform carries on with no pads.
+        const gamepads_on = options.gamepads and c.SDL_InitSubSystem(c.SDL_INIT_GAMEPAD);
+        if (options.gamepads and !gamepads_on) log.warn("SDL could not start gamepads: {s}", .{sdlError()});
+        errdefer if (gamepads_on) c.SDL_QuitSubSystem(c.SDL_INIT_GAMEPAD);
 
         const self = try gpa.create(Platform);
-        self.* = .{ .gpa = gpa, .raw_motion_available = rawMotionOfDriver(currentVideoDriver()) };
+        self.* = .{
+            .gpa = gpa,
+            .raw_motion_available = rawMotionOfDriver(currentVideoDriver()),
+            .gamepads_on = gamepads_on,
+        };
         // `raw` is the default on every backend, applied rather than assumed: an environment
         // variable could otherwise have set SDL's hints for this process before it started.
         if (!applyMotionHints(.raw)) log.warn("could not set the captured-motion hints: {s}", .{sdlError()});
@@ -174,8 +194,13 @@ pub const Platform = struct {
         while (it.next()) |entry| destroyWindow(gpa, entry.value);
         self.windows.deinit(gpa);
 
+        for (&self.pads) |*pad| if (pad.*) |open| {
+            c.SDL_CloseGamepad(open);
+            pad.* = null;
+        };
+
         self.ready.deinit(gpa);
-        releaseSdl();
+        releaseSdl(self.gamepads_on);
         gpa.destroy(self);
     }
 
@@ -184,7 +209,8 @@ pub const Platform = struct {
     /// reference and the last one closes SDL. Quitting outright while another platform lived
     /// closed the Wayland connection under its windows, and its swapchain's destruction then
     /// crashed in the compositor's client library (M18).
-    fn releaseSdl() void {
+    fn releaseSdl(gamepads_on: bool) void {
+        if (gamepads_on) c.SDL_QuitSubSystem(c.SDL_INIT_GAMEPAD);
         c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
         live_platforms -= 1;
         if (live_platforms == 0) c.SDL_Quit();
@@ -391,6 +417,68 @@ pub const Platform = struct {
         return key.boundedLabel(k.name(), buf);
     }
 
+    /// `SDL_RumbleGamepad`, with Foundry's strengths as 16-bit motor levels. SDL stops the motors
+    /// itself when the duration ends.
+    pub fn setGamepadRumble(self: *Platform, pad: gamepad.GamepadHandle, low: f32, high: f32, duration_ms: u32) interface.GamepadRumbleError!void {
+        _ = self.slots.deviceOf(pad) orelse return error.InvalidGamepad;
+        if (!gamepad.rumbleValid(low, high, duration_ms)) return error.InvalidRumble;
+        const open = self.pads[pad.index] orelse return error.InvalidGamepad;
+        if (!c.SDL_RumbleGamepad(open, gamepad.rumbleLevel(low), gamepad.rumbleLevel(high), duration_ms)) {
+            // A pad without motors, or a driver that declined: said at debug only, since a game
+            // that rumbles on every hit would otherwise fill the log.
+            log.debug("SDL_RumbleGamepad failed: {s}", .{sdlError()});
+            return error.Unsupported;
+        }
+    }
+
+    /// A pad SDL announced. Seated by `gamepad.Slots`, opened, and announced upward with what it
+    /// is; one arriving with every slot taken waits, unopened.
+    fn gamepadAdded(self: *Platform, id: c.SDL_JoystickID) void {
+        switch (self.slots.connect(id)) {
+            .seated => |pad| self.seatGamepad(id, pad),
+            .waiting => log.info("a gamepad connected with every slot taken; it waits for one to free", .{}),
+            .overflowed => log.warn("a gamepad connected with every slot and the queue full; it is ignored", .{}),
+            .already => {},
+        }
+    }
+
+    fn gamepadRemoved(self: *Platform, id: c.SDL_JoystickID) void {
+        const left = self.slots.disconnect(id);
+        if (left.removed) |pad| {
+            if (self.pads[pad.index]) |open| c.SDL_CloseGamepad(open);
+            self.pads[pad.index] = null;
+            self.emit(.{ .gamepad_removed = .{ .pad = pad } });
+        }
+        if (left.promoted) |next| self.seatGamepad(next.device, next.pad);
+    }
+
+    /// Opens the pad SDL calls `id` into the slot `pad` names. A pad SDL then refuses to open is
+    /// unseated again, and the next waiting pad, if any, is offered the slot in its place.
+    fn seatGamepad(self: *Platform, first_id: c.SDL_JoystickID, first_pad: gamepad.GamepadHandle) void {
+        var id = first_id;
+        var pad = first_pad;
+        while (true) {
+            if (c.SDL_OpenGamepad(id)) |open| {
+                self.pads[pad.index] = open;
+                self.emit(.{ .gamepad_added = .{
+                    .pad = pad,
+                    .kind = kindFromSdl(c.SDL_GetGamepadType(open)),
+                    .face = .{
+                        labelFromSdl(c.SDL_GetGamepadButtonLabel(open, c.SDL_GAMEPAD_BUTTON_SOUTH)),
+                        labelFromSdl(c.SDL_GetGamepadButtonLabel(open, c.SDL_GAMEPAD_BUTTON_EAST)),
+                        labelFromSdl(c.SDL_GetGamepadButtonLabel(open, c.SDL_GAMEPAD_BUTTON_WEST)),
+                        labelFromSdl(c.SDL_GetGamepadButtonLabel(open, c.SDL_GAMEPAD_BUTTON_NORTH)),
+                    },
+                } });
+                return;
+            }
+            log.warn("SDL_OpenGamepad failed: {s}", .{sdlError()});
+            const next = self.slots.disconnect(id).promoted orelse return;
+            id = next.device;
+            pad = next.pad;
+        }
+    }
+
     pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
         try icon.validate();
         const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
@@ -548,10 +636,41 @@ pub const Platform = struct {
                 } });
             },
 
-            // Everything else SDL reports, Foundry has no use for yet: joystick and gamepad
-            // events (M45 Step 2, `input.md` §4), audio device changes (M45 Step 3, §5), touch
-            // (M139), pen, camera devices, clipboard, drop, render targets reset.
-            // Dropped here rather than passed upward to be ignored.
+            c.SDL_EVENT_GAMEPAD_ADDED => self.gamepadAdded(raw.gdevice.which),
+            c.SDL_EVENT_GAMEPAD_REMOVED => self.gamepadRemoved(raw.gdevice.which),
+
+            c.SDL_EVENT_GAMEPAD_BUTTON_DOWN, c.SDL_EVENT_GAMEPAD_BUTTON_UP => {
+                const pad = self.slots.handleOf(raw.gbutton.which) orelse return;
+                // SDL's `MISC2` to `MISC6` have no Foundry name yet (M146), and are dropped.
+                const button = buttonFromSdl(raw.gbutton.button) orelse return;
+                const payload: event.GamepadButtonEvent = .{ .pad = pad, .button = button };
+                self.emit(if (raw.gbutton.down)
+                    .{ .gamepad_button_down = payload }
+                else
+                    .{ .gamepad_button_up = payload });
+            },
+
+            c.SDL_EVENT_GAMEPAD_AXIS_MOTION => {
+                const pad = self.slots.handleOf(raw.gaxis.which) orelse return;
+                const axis = axisFromSdl(raw.gaxis.axis) orelse return;
+                self.emit(.{ .gamepad_axis = .{
+                    .pad = pad,
+                    .axis = axis,
+                    .value = gamepad.normalizeAxis(axis, raw.gaxis.value),
+                } });
+            },
+
+            // A joystick SDL cannot map as a gamepad, such as a wheel or a flight stick. A gamepad
+            // arrives as both this and `GAMEPAD_ADDED`, and is counted here only when it is not one.
+            c.SDL_EVENT_JOYSTICK_ADDED => if (!c.SDL_IsGamepad(raw.jdevice.which)) {
+                self.unmapped_joysticks += 1;
+                log.info("ignored a joystick SDL cannot map as a gamepad ({d} so far)", .{self.unmapped_joysticks});
+            },
+
+            // Everything else SDL reports, Foundry has no use for yet: raw joystick events, a
+            // gamepad's remapping, touchpads and sensors (M146), audio device changes (M45 Step 3,
+            // `input.md` §5), touch (M139), pen, camera devices, clipboard, drop, render targets
+            // reset. Dropped here rather than passed upward to be ignored.
             else => {},
         }
     }
@@ -708,6 +827,107 @@ pub const Platform = struct {
     pub fn now(self: *Platform) core.time.Instant {
         _ = self;
         return .{ .ns = @intCast(c.SDL_GetTicksNS()) };
+    }
+
+    // -- test affordances ----------------------------------------------------------
+    //
+    // SDL's virtual joysticks, for `zig build gamepad-test` (`input.md` §4.3). Not part of the
+    // backend interface, and not reachable from engine code above `platform`. A virtual pad goes
+    // through SDL's own discovery, mapping and event path, so what it proves is this file's
+    // translation; a person with a real pad proves the drivers beneath it.
+
+    /// Attaches a virtual pad that reports itself as `family`, through the same SDL path a
+    /// plugged-in pad takes. Its events arrive at the next `pumpEvents`. `pad` must stay where it
+    /// is until `detachVirtualGamepad`, because SDL calls back into it for rumble.
+    pub fn attachVirtualGamepad(self: *Platform, pad: *VirtualGamepad, family: VirtualFamily) error{Unsupported}!void {
+        if (!self.gamepads_on) return error.Unsupported;
+        const ids: [2]u16 = switch (family) {
+            // An Xbox One pad and a DualSense, by their USB vendor and product IDs, which is how
+            // SDL decides a pad's type and so its labels.
+            .xbox => .{ 0x045e, 0x02ea },
+            .playstation => .{ 0x054c, 0x0ce6 },
+        };
+        pad.* = .{};
+        // `SDL_INIT_INTERFACE`, which is a macro: zeroed, with its own size as its version.
+        var desc = std.mem.zeroes(c.SDL_VirtualJoystickDesc);
+        desc.version = @sizeOf(c.SDL_VirtualJoystickDesc);
+        desc.type = c.SDL_JOYSTICK_TYPE_GAMEPAD;
+        desc.vendor_id = ids[0];
+        desc.product_id = ids[1];
+        desc.naxes = c.SDL_GAMEPAD_AXIS_COUNT;
+        desc.nbuttons = c.SDL_GAMEPAD_BUTTON_COUNT;
+        // Every button and axis, so SDL's automatic mapping numbers them as its enums do.
+        desc.button_mask = (@as(u32, 1) << c.SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        desc.axis_mask = (@as(u32, 1) << c.SDL_GAMEPAD_AXIS_COUNT) - 1;
+        desc.name = "Foundry virtual gamepad";
+        desc.userdata = pad;
+        desc.Rumble = VirtualGamepad.rumble;
+        const id = c.SDL_AttachVirtualJoystick(&desc);
+        if (id == 0) {
+            log.warn("SDL_AttachVirtualJoystick failed: {s}", .{sdlError()});
+            return error.Unsupported;
+        }
+        // A virtual joystick takes its input through an open joystick of its own.
+        pad.joystick = c.SDL_OpenJoystick(id) orelse {
+            log.warn("SDL_OpenJoystick on a virtual pad failed: {s}", .{sdlError()});
+            _ = c.SDL_DetachVirtualJoystick(id);
+            return error.Unsupported;
+        };
+        pad.id = id;
+    }
+
+    /// Sets a virtual button, seen at the next `pumpEvents`.
+    pub fn setVirtualGamepadButton(self: *Platform, pad: *const VirtualGamepad, button: gamepad.GamepadButton, down: bool) bool {
+        _ = self;
+        return c.SDL_SetJoystickVirtualButton(pad.joystick, sdl_button_of[@intFromEnum(button)], down);
+    }
+
+    /// Sets a virtual axis to a raw reading, in SDL's convention (a stick's down is positive).
+    pub fn setVirtualGamepadAxis(self: *Platform, pad: *const VirtualGamepad, axis: gamepad.GamepadAxis, raw: i16) bool {
+        _ = self;
+        const sdl_axis: c_int = switch (axis) {
+            .left_x => c.SDL_GAMEPAD_AXIS_LEFTX,
+            .left_y => c.SDL_GAMEPAD_AXIS_LEFTY,
+            .right_x => c.SDL_GAMEPAD_AXIS_RIGHTX,
+            .right_y => c.SDL_GAMEPAD_AXIS_RIGHTY,
+            .left_trigger => c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
+            .right_trigger => c.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,
+        };
+        return c.SDL_SetJoystickVirtualAxis(pad.joystick, sdl_axis, raw);
+    }
+
+    /// Unplugs a virtual pad. Its removal arrives at the next `pumpEvents`.
+    pub fn detachVirtualGamepad(self: *Platform, pad: *VirtualGamepad) void {
+        _ = self;
+        if (pad.joystick) |joystick| c.SDL_CloseJoystick(joystick);
+        if (pad.id != 0 and !c.SDL_DetachVirtualJoystick(pad.id)) log.warn("SDL_DetachVirtualJoystick failed: {s}", .{sdlError()});
+        pad.* = .{};
+    }
+
+    /// Joysticks SDL found but could not map as a gamepad.
+    pub fn unmappedJoysticks(self: *const Platform) u32 {
+        return self.unmapped_joysticks;
+    }
+};
+
+/// What a virtual pad pretends to be (`Platform.attachVirtualGamepad`).
+pub const VirtualFamily = enum { xbox, playstation };
+
+/// A virtual pad's SDL identity, and the last rumble SDL handed it, which is what a real pad's
+/// driver would have received.
+pub const VirtualGamepad = struct {
+    id: c.SDL_JoystickID = 0,
+    joystick: ?*c.SDL_Joystick = null,
+    low: u16 = 0,
+    high: u16 = 0,
+    rumbles: u32 = 0,
+
+    fn rumble(userdata: ?*anyopaque, low: u16, high: u16) callconv(.c) bool {
+        const self: *VirtualGamepad = @ptrCast(@alignCast(userdata.?));
+        self.low = low;
+        self.high = high;
+        self.rumbles += 1;
+        return true;
     }
 };
 
@@ -890,6 +1110,91 @@ fn mouseButtonFromSdl(button: u8) ?key.MouseButton {
         c.SDL_BUTTON_X2 => .forward,
         // Mice with more buttons than Foundry names. Dropped, not invented.
         else => null,
+    };
+}
+
+/// SDL's gamepad buttons are positional, as Foundry's are, so this is a renaming. SDL orders its
+/// paddles right before left, and its `MISC2` to `MISC6` have no Foundry name yet.
+fn buttonFromSdl(button: u8) ?gamepad.GamepadButton {
+    return switch (button) {
+        c.SDL_GAMEPAD_BUTTON_SOUTH => .south,
+        c.SDL_GAMEPAD_BUTTON_EAST => .east,
+        c.SDL_GAMEPAD_BUTTON_WEST => .west,
+        c.SDL_GAMEPAD_BUTTON_NORTH => .north,
+        c.SDL_GAMEPAD_BUTTON_BACK => .back,
+        c.SDL_GAMEPAD_BUTTON_GUIDE => .guide,
+        c.SDL_GAMEPAD_BUTTON_START => .start,
+        c.SDL_GAMEPAD_BUTTON_LEFT_STICK => .left_stick_press,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_STICK => .right_stick_press,
+        c.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER => .left_shoulder,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER => .right_shoulder,
+        c.SDL_GAMEPAD_BUTTON_DPAD_UP => .dpad_up,
+        c.SDL_GAMEPAD_BUTTON_DPAD_DOWN => .dpad_down,
+        c.SDL_GAMEPAD_BUTTON_DPAD_LEFT => .dpad_left,
+        c.SDL_GAMEPAD_BUTTON_DPAD_RIGHT => .dpad_right,
+        c.SDL_GAMEPAD_BUTTON_MISC1 => .misc1,
+        c.SDL_GAMEPAD_BUTTON_LEFT_PADDLE1 => .left_paddle1,
+        c.SDL_GAMEPAD_BUTTON_LEFT_PADDLE2 => .left_paddle2,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1 => .right_paddle1,
+        c.SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2 => .right_paddle2,
+        c.SDL_GAMEPAD_BUTTON_TOUCHPAD => .touchpad_press,
+        else => null,
+    };
+}
+
+/// `buttonFromSdl` run backwards, built from it at compile time so the two cannot disagree. Used
+/// by the virtual pads `gamepad-test` drives.
+const sdl_button_of: [gamepad.GamepadButton.count]u8 = blk: {
+    var table: [gamepad.GamepadButton.count]u8 = undefined;
+    var filled = [_]bool{false} ** gamepad.GamepadButton.count;
+    for (0..c.SDL_GAMEPAD_BUTTON_COUNT) |sdl| {
+        const b = buttonFromSdl(@intCast(sdl)) orelse continue;
+        table[@intFromEnum(b)] = @intCast(sdl);
+        filled[@intFromEnum(b)] = true;
+    }
+    for (filled) |f| if (!f) @compileError("a Foundry gamepad button that no SDL button maps to");
+    break :blk table;
+};
+
+fn axisFromSdl(axis: u8) ?gamepad.GamepadAxis {
+    return switch (axis) {
+        c.SDL_GAMEPAD_AXIS_LEFTX => .left_x,
+        c.SDL_GAMEPAD_AXIS_LEFTY => .left_y,
+        c.SDL_GAMEPAD_AXIS_RIGHTX => .right_x,
+        c.SDL_GAMEPAD_AXIS_RIGHTY => .right_y,
+        c.SDL_GAMEPAD_AXIS_LEFT_TRIGGER => .left_trigger,
+        c.SDL_GAMEPAD_AXIS_RIGHT_TRIGGER => .right_trigger,
+        else => null,
+    };
+}
+
+/// SDL's pad types, folded into the families a prompt draws differently.
+fn kindFromSdl(kind: c.SDL_GamepadType) gamepad.GamepadKind {
+    return switch (kind) {
+        c.SDL_GAMEPAD_TYPE_STANDARD => .standard,
+        c.SDL_GAMEPAD_TYPE_XBOX360, c.SDL_GAMEPAD_TYPE_XBOXONE => .xbox,
+        c.SDL_GAMEPAD_TYPE_PS3, c.SDL_GAMEPAD_TYPE_PS4, c.SDL_GAMEPAD_TYPE_PS5 => .playstation,
+        c.SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO,
+        c.SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT,
+        c.SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT,
+        c.SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR,
+        c.SDL_GAMEPAD_TYPE_GAMECUBE,
+        => .nintendo,
+        else => .other,
+    };
+}
+
+fn labelFromSdl(label: c.SDL_GamepadButtonLabel) gamepad.ButtonLabel {
+    return switch (label) {
+        c.SDL_GAMEPAD_BUTTON_LABEL_A => .a,
+        c.SDL_GAMEPAD_BUTTON_LABEL_B => .b,
+        c.SDL_GAMEPAD_BUTTON_LABEL_X => .x,
+        c.SDL_GAMEPAD_BUTTON_LABEL_Y => .y,
+        c.SDL_GAMEPAD_BUTTON_LABEL_CROSS => .cross,
+        c.SDL_GAMEPAD_BUTTON_LABEL_CIRCLE => .circle,
+        c.SDL_GAMEPAD_BUTTON_LABEL_SQUARE => .square,
+        c.SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE => .triangle,
+        else => .none,
     };
 }
 
@@ -1211,6 +1516,74 @@ test "a native surface points at its window's payload through pool growth, and n
 
     _ = p.windows.remove(handles[0]);
     try testing.expectEqual(@as(?win.NativeSurfaceHandle, null), p.nativeSurface(handles[0]));
+}
+
+test "every Foundry pad button comes from exactly one SDL button, and SDL's extras from none" {
+    var seen = [_]bool{false} ** gamepad.GamepadButton.count;
+    for (0..c.SDL_GAMEPAD_BUTTON_COUNT) |sdl| {
+        const b = buttonFromSdl(@intCast(sdl)) orelse continue;
+        try testing.expect(!seen[@intFromEnum(b)]);
+        seen[@intFromEnum(b)] = true;
+        try testing.expectEqual(@as(u8, @intCast(sdl)), sdl_button_of[@intFromEnum(b)]);
+    }
+    for (seen) |s| try testing.expect(s);
+    // Positions, not labels: SDL's south is Foundry's south on every pad.
+    try testing.expectEqual(gamepad.GamepadButton.south, buttonFromSdl(c.SDL_GAMEPAD_BUTTON_SOUTH).?);
+    // SDL orders its paddles right before left; the names must not follow the numbers.
+    try testing.expectEqual(gamepad.GamepadButton.left_paddle1, buttonFromSdl(c.SDL_GAMEPAD_BUTTON_LEFT_PADDLE1).?);
+    try testing.expectEqual(gamepad.GamepadButton.right_paddle2, buttonFromSdl(c.SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2).?);
+    try testing.expectEqual(@as(?gamepad.GamepadButton, null), buttonFromSdl(c.SDL_GAMEPAD_BUTTON_MISC2));
+    for (0..c.SDL_GAMEPAD_AXIS_COUNT) |sdl| try testing.expect(axisFromSdl(@intCast(sdl)) != null);
+    try testing.expectEqual(gamepad.GamepadAxis.left_y, axisFromSdl(c.SDL_GAMEPAD_AXIS_LEFTY).?);
+}
+
+test "SDL's pad types fold into families, and its labels into Foundry's" {
+    try testing.expectEqual(gamepad.GamepadKind.xbox, kindFromSdl(c.SDL_GAMEPAD_TYPE_XBOX360));
+    try testing.expectEqual(gamepad.GamepadKind.playstation, kindFromSdl(c.SDL_GAMEPAD_TYPE_PS5));
+    try testing.expectEqual(gamepad.GamepadKind.nintendo, kindFromSdl(c.SDL_GAMEPAD_TYPE_GAMECUBE));
+    try testing.expectEqual(gamepad.GamepadKind.nintendo, kindFromSdl(c.SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR));
+    try testing.expectEqual(gamepad.GamepadKind.standard, kindFromSdl(c.SDL_GAMEPAD_TYPE_STANDARD));
+    try testing.expectEqual(gamepad.GamepadKind.other, kindFromSdl(c.SDL_GAMEPAD_TYPE_UNKNOWN));
+    try testing.expectEqual(gamepad.ButtonLabel.triangle, labelFromSdl(c.SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE));
+    try testing.expectEqual(gamepad.ButtonLabel.none, labelFromSdl(c.SDL_GAMEPAD_BUTTON_LABEL_UNKNOWN));
+}
+
+test "SDL's pad events reach the snapshot by slot, with a stick's y turned up" {
+    // No SDL here: a seated pad is only the slots' record, and translating its events calls
+    // nothing in SDL, so a platform value with no SDL initialised behind it is enough.
+    var p: Platform = .{ .gpa = testing.allocator };
+    defer p.ready.deinit(testing.allocator);
+    const id: c.SDL_JoystickID = 77;
+    const pad = p.slots.connect(id).seated;
+    p.emit(.{ .gamepad_added = .{ .pad = pad, .kind = .xbox } });
+
+    var axis: c.SDL_Event = .{ .gaxis = std.mem.zeroes(c.SDL_GamepadAxisEvent) };
+    axis.gaxis.type = c.SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    axis.gaxis.which = id;
+    axis.gaxis.axis = c.SDL_GAMEPAD_AXIS_LEFTY;
+    // Pushed away from the player, which SDL reports as negative.
+    axis.gaxis.value = -32768;
+    p.translate(axis);
+
+    var button: c.SDL_Event = .{ .gbutton = std.mem.zeroes(c.SDL_GamepadButtonEvent) };
+    button.gbutton.type = c.SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+    button.gbutton.which = id;
+    button.gbutton.button = c.SDL_GAMEPAD_BUTTON_EAST;
+    button.gbutton.down = true;
+    p.translate(button);
+    // An extra button Foundry does not name, and a pad that is not seated: neither arrives.
+    button.gbutton.button = c.SDL_GAMEPAD_BUTTON_MISC3;
+    p.translate(button);
+    button.gbutton.which = id + 1;
+    button.gbutton.button = c.SDL_GAMEPAD_BUTTON_NORTH;
+    p.translate(button);
+
+    const snap = p.accumulator.capture();
+    const state = snap.gamepadState(pad).?;
+    try testing.expectEqual(@as(f32, 1), state.axis(.left_y));
+    try testing.expect(state.isHeld(.east));
+    try testing.expect(!state.isHeld(.north));
+    try testing.expectEqual(@as(usize, 3), p.ready.items.len);
 }
 
 test "scale is the ratio of the two sizes, and never divides by zero" {

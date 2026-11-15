@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const gamepad = @import("gamepad.zig");
 const key = @import("key.zig");
 const event = @import("event.zig");
 const window = @import("window.zig");
@@ -122,6 +123,9 @@ pub const InputSnapshot = struct {
     /// True when a window had keyboard focus at capture time. Games pause on focus
     /// loss; without this they would need to track focus events themselves.
     focused: bool = false,
+    /// The four pad slots, by slot (`gamepad.Slots`). A slot's state belongs to the pad its
+    /// `handle` names.
+    gamepads: [gamepad.max_gamepads]gamepad.GamepadState = @splat(.{}),
 
     pub fn isHeld(self: *const InputSnapshot, k: Key) bool {
         return key.keyIsSet(self.keys_held, k);
@@ -133,9 +137,22 @@ pub const InputSnapshot = struct {
         return key.keyIsSet(self.keys_released, k);
     }
 
+    /// The slot `pad` sits in, while it is still the pad there and connected; null for a stale
+    /// handle, which is how a game learns its pad has gone or been replaced.
+    pub fn gamepadState(self: *const InputSnapshot, pad: gamepad.GamepadHandle) ?*const gamepad.GamepadState {
+        if (pad.isNone() or pad.index >= gamepad.max_gamepads) return null;
+        const state = &self.gamepads[pad.index];
+        if (!state.connected or !state.handle.eql(pad)) return null;
+        return state;
+    }
+
     /// True when nothing at all is held or changed. Useful for tests and for asserting
-    /// that a replay's first frame is clean.
+    /// that a replay's first frame is clean. Pad axes are positions, like the mouse's, and do
+    /// not count; pad buttons do.
     pub fn isIdle(self: *const InputSnapshot) bool {
+        for (self.gamepads) |pad| {
+            if (pad.buttons_held.count() != 0 or pad.buttons_pressed.count() != 0 or pad.buttons_released.count() != 0) return false;
+        }
         return self.keys_held.count() == 0 and
             self.keys_pressed.count() == 0 and
             self.keys_released.count() == 0 and
@@ -175,7 +192,19 @@ pub const Accumulator = struct {
     motion_unit: MotionUnit = .points,
     wheel: Vec2 = .{},
 
+    /// Each slot's state, held and edges alike; the edges are cleared every `capture`.
+    pads: [gamepad.max_gamepads]gamepad.GamepadState = @splat(.{}),
+
     pub const init: Accumulator = .{};
+
+    /// The live slot a pad event names, or null when the handle is not the pad seated there. An
+    /// event for a pad that has since left is dropped rather than applied to its successor.
+    fn livePad(self: *Accumulator, pad: gamepad.GamepadHandle) ?*gamepad.GamepadState {
+        if (pad.isNone() or pad.index >= gamepad.max_gamepads) return null;
+        const state = &self.pads[pad.index];
+        if (!state.connected or !state.handle.eql(pad)) return null;
+        return state;
+    }
 
     /// The unit motion arriving now is in.
     fn currentUnit(self: *const Accumulator) MotionUnit {
@@ -229,6 +258,27 @@ pub const Accumulator = struct {
                 self.motion = self.motion.add(e.delta);
             },
             .mouse_wheel => |e| self.wheel = self.wheel.add(e.delta),
+            // A new pad starts from nothing, edges included: what the slot showed this frame
+            // belonged to the pad its old handle named, which a game sees has gone.
+            .gamepad_added => |e| if (!e.pad.isNone() and e.pad.index < gamepad.max_gamepads) {
+                self.pads[e.pad.index] = .{ .connected = true, .handle = e.pad, .kind = e.kind, .face = e.face };
+            },
+            .gamepad_removed => |e| if (self.livePad(e.pad)) |pad| {
+                releasePad(pad);
+                pad.connected = false;
+            },
+            .gamepad_button_down => |e| if (self.livePad(e.pad)) |pad| {
+                pad.buttons_pressed.set(@intFromEnum(e.button));
+                pad.buttons_held.set(@intFromEnum(e.button));
+            },
+            .gamepad_button_up => |e| if (self.livePad(e.pad)) |pad| {
+                pad.buttons_released.set(@intFromEnum(e.button));
+                pad.buttons_held.unset(@intFromEnum(e.button));
+            },
+            // The latest value, unfiltered: a deadzone is a binding's (ADR-0087).
+            .gamepad_axis => |e| if (self.livePad(e.pad)) |pad| {
+                pad.axes[@intFromEnum(e.axis)] = e.value;
+            },
             .window_focus_gained => self.focused = true,
             .window_focus_lost => {
                 self.focused = false;
@@ -255,7 +305,19 @@ pub const Accumulator = struct {
         while (bit.next()) |index| self.buttons_released.set(index);
         self.buttons_held = key.empty_buttons;
 
+        // Pads too, and their axes return to rest: SDL stops delivering pad events to a
+        // window without focus, so a stick held at the moment focus went would otherwise stay
+        // held until the player came back and moved it (`input.md` §4.2).
+        for (&self.pads) |*pad| releasePad(pad);
+
         self.modifiers = .{};
+    }
+
+    /// Every held button of one pad reported released, and its axes at rest.
+    fn releasePad(pad: *gamepad.GamepadState) void {
+        pad.buttons_released.setUnion(pad.buttons_held);
+        pad.buttons_held = gamepad.empty_buttons;
+        pad.axes = @splat(0);
     }
 
     /// Produces this frame's snapshot and starts the next frame.
@@ -269,6 +331,7 @@ pub const Accumulator = struct {
             .keys_released = self.released,
             .modifiers = self.modifiers,
             .focused = self.focused,
+            .gamepads = self.pads,
             .mouse = .{
                 .position = self.position,
                 .position_pixels = self.position_pixels,
@@ -289,6 +352,10 @@ pub const Accumulator = struct {
         self.motion = .{};
         self.motion_unit = self.currentUnit();
         self.wheel = .{};
+        for (&self.pads) |*pad| {
+            pad.buttons_pressed = gamepad.empty_buttons;
+            pad.buttons_released = gamepad.empty_buttons;
+        }
 
         return snapshot;
     }
@@ -512,4 +579,128 @@ test "a frame's motion sum never mixes points and counts" {
     try testing.expectEqual(MotionUnit.counts, ended.mouse.motion_unit);
     try testing.expectEqual(@as(f32, 7), ended.mouse.motion.x);
     try testing.expectEqual(MotionUnit.points, acc.capture().mouse.motion_unit);
+}
+
+// -- gamepads ----------------------------------------------------------------------
+
+fn padAt(index: u32, generation: u32) gamepad.GamepadHandle {
+    return .{ .index = index, .generation = generation };
+}
+fn padDown(pad: gamepad.GamepadHandle, b: gamepad.GamepadButton) event.Event {
+    return .{ .gamepad_button_down = .{ .pad = pad, .button = b } };
+}
+fn padUp(pad: gamepad.GamepadHandle, b: gamepad.GamepadButton) event.Event {
+    return .{ .gamepad_button_up = .{ .pad = pad, .button = b } };
+}
+fn padAxis(pad: gamepad.GamepadHandle, a: gamepad.GamepadAxis, value: f32) event.Event {
+    return .{ .gamepad_axis = .{ .pad = pad, .axis = a, .value = value } };
+}
+
+test "a pad's buttons give state and edges, and a press and release in one frame are both seen" {
+    var acc: Accumulator = .init;
+    const pad = padAt(1, 1);
+    acc.apply(.{ .gamepad_added = .{ .pad = pad, .kind = .xbox, .face = .{ .a, .b, .x, .y } } });
+    acc.apply(padDown(pad, .south));
+    acc.apply(padDown(pad, .west));
+    acc.apply(padUp(pad, .west));
+
+    const first = acc.capture();
+    const state = first.gamepadState(pad).?;
+    try testing.expectEqual(gamepad.GamepadKind.xbox, state.kind);
+    try testing.expectEqual(gamepad.ButtonLabel.x, state.labelOf(.west));
+    try testing.expect(state.wasPressed(.south) and state.isHeld(.south));
+    try testing.expect(state.wasPressed(.west) and state.wasReleased(.west) and !state.isHeld(.west));
+    try testing.expect(!first.isIdle());
+    // The other slots are empty, and a handle for one of them names nothing.
+    try testing.expect(!first.gamepads[0].connected);
+    try testing.expectEqual(@as(?*const gamepad.GamepadState, null), first.gamepadState(padAt(0, 1)));
+
+    const second = acc.capture();
+    try testing.expect(second.gamepadState(pad).?.isHeld(.south));
+    try testing.expect(!second.gamepadState(pad).?.wasPressed(.south));
+}
+
+test "an axis is its latest value, unfiltered" {
+    var acc: Accumulator = .init;
+    const pad = padAt(0, 3);
+    acc.apply(.{ .gamepad_added = .{ .pad = pad } });
+    acc.apply(padAxis(pad, .left_x, 0.25));
+    acc.apply(padAxis(pad, .left_x, 0.01));
+    acc.apply(padAxis(pad, .right_trigger, 0.9));
+    const snap = acc.capture();
+    // Near zero stays near zero: a deadzone is a binding's, not the platform's.
+    try testing.expectEqual(@as(f32, 0.01), snap.gamepads[0].axis(.left_x));
+    try testing.expectEqual(@as(f32, 0.9), snap.gamepads[0].axis(.right_trigger));
+    // Axes are state, so they persist.
+    try testing.expectEqual(@as(f32, 0.9), acc.capture().gamepads[0].axis(.right_trigger));
+}
+
+test "losing focus releases held pad buttons and returns every axis to rest" {
+    var acc: Accumulator = .init;
+    const pad = padAt(2, 1);
+    acc.apply(.{ .window_focus_gained = .{ .window = .none } });
+    acc.apply(.{ .gamepad_added = .{ .pad = pad } });
+    acc.apply(padDown(pad, .right_shoulder));
+    acc.apply(padAxis(pad, .left_y, 1));
+    acc.apply(padAxis(pad, .left_trigger, 0.5));
+    _ = acc.capture();
+
+    acc.apply(.{ .window_focus_lost = .{ .window = .none } });
+    const lost = acc.capture();
+    const state = lost.gamepadState(pad).?;
+    try testing.expect(!state.isHeld(.right_shoulder));
+    try testing.expect(state.wasReleased(.right_shoulder));
+    for (state.axes) |v| try testing.expectEqual(@as(f32, 0), v);
+    // The pad is still there: focus is the window's, not the pad's.
+    try testing.expect(state.connected);
+}
+
+test "a removed pad reports its held buttons released, and its stale events are dropped" {
+    var acc: Accumulator = .init;
+    const pad = padAt(0, 1);
+    acc.apply(.{ .gamepad_added = .{ .pad = pad } });
+    acc.apply(padDown(pad, .north));
+    acc.apply(padAxis(pad, .right_x, -0.7));
+    _ = acc.capture();
+
+    acc.apply(.{ .gamepad_removed = .{ .pad = pad } });
+    // Arriving after the removal, for a pad that is no longer there.
+    acc.apply(padDown(pad, .south));
+    const left = acc.capture();
+    const slot = left.gamepads[0];
+    try testing.expect(!slot.connected);
+    try testing.expect(slot.handle.eql(pad));
+    try testing.expect(slot.wasReleased(.north) and !slot.isHeld(.north));
+    try testing.expect(!slot.wasPressed(.south));
+    try testing.expectEqual(@as(f32, 0), slot.axis(.right_x));
+    try testing.expectEqual(@as(?*const gamepad.GamepadState, null), left.gamepadState(pad));
+
+    // A new pad in the slot under a new generation; the old handle's events still go nowhere.
+    const next = padAt(0, 2);
+    acc.apply(.{ .gamepad_added = .{ .pad = next, .kind = .playstation } });
+    acc.apply(padDown(pad, .east));
+    acc.apply(padDown(next, .start));
+    const after = acc.capture();
+    try testing.expect(after.gamepadState(next).?.isHeld(.start));
+    try testing.expect(!after.gamepadState(next).?.isHeld(.east));
+    try testing.expectEqual(gamepad.GamepadKind.playstation, after.gamepads[0].kind);
+}
+
+test "the same pad events always produce the same snapshot" {
+    const a_pad = padAt(0, 1);
+    const b_pad = padAt(1, 1);
+    const script = [_]event.Event{
+        .{ .gamepad_added = .{ .pad = a_pad, .kind = .xbox } },
+        .{ .gamepad_added = .{ .pad = b_pad, .kind = .nintendo, .face = .{ .b, .a, .y, .x } } },
+        padDown(a_pad, .south),
+        padAxis(b_pad, .left_y, -0.5),
+        padUp(a_pad, .south),
+        padDown(b_pad, .dpad_left),
+        .{ .gamepad_removed = .{ .pad = a_pad } },
+    };
+    var a: Accumulator = .init;
+    var b: Accumulator = .init;
+    for (script) |ev| a.apply(ev);
+    for (script) |ev| b.apply(ev);
+    try testing.expectEqualDeep(a.capture(), b.capture());
 }

@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const gamepad = @import("gamepad.zig");
 const key = @import("key.zig");
 const window = @import("window.zig");
 
@@ -98,6 +99,31 @@ pub const MouseWheel = struct {
     delta: Vec2 = .{},
 };
 
+/// A pad was seated in a slot. It carries what the pad is, so the snapshot, which is built from
+/// events alone, can say it: the accumulator never asks a device.
+pub const GamepadAdded = struct {
+    pad: gamepad.GamepadHandle,
+    kind: gamepad.GamepadKind = .other,
+    face: gamepad.FaceLabels = gamepad.no_face_labels,
+};
+
+pub const GamepadRemoved = struct {
+    pad: gamepad.GamepadHandle,
+};
+
+pub const GamepadButtonEvent = struct {
+    pad: gamepad.GamepadHandle,
+    button: gamepad.GamepadButton,
+};
+
+pub const GamepadAxisEvent = struct {
+    pad: gamepad.GamepadHandle,
+    axis: gamepad.GamepadAxis,
+    /// Already normalised (`gamepad.normalizeAxis`): sticks in [-1, 1] with +y up, triggers in
+    /// [0, 1].
+    value: f32 = 0,
+};
+
 pub const WindowEvent = struct {
     window: window.WindowHandle,
 };
@@ -132,6 +158,15 @@ pub const Event = union(enum) {
     mouse_button_down: MouseButtonEvent,
     mouse_button_up: MouseButtonEvent,
     mouse_wheel: MouseWheel,
+
+    /// A pad took a slot: on connection, or when a waiting pad takes a slot another freed.
+    gamepad_added: GamepadAdded,
+    /// A seated pad disconnected. Its held buttons are reported released in the snapshot it
+    /// leaves (`input.Accumulator`).
+    gamepad_removed: GamepadRemoved,
+    gamepad_button_down: GamepadButtonEvent,
+    gamepad_button_up: GamepadButtonEvent,
+    gamepad_axis: GamepadAxisEvent,
 };
 
 // -- tests -------------------------------------------------------------------------

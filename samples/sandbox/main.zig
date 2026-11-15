@@ -3388,6 +3388,14 @@ fn report(ev: platform.Event) void {
         .mouse_wheel => |e| log.info("wheel: ({d:.2}, {d:.2})", .{ e.delta.x, e.delta.y }),
         // Every frame it moves, so it stays at trace.
         .mouse_moved => |e| log.trace("mouse at ({d:.0}, {d:.0})", .{ e.position.x, e.position.y }),
+
+        // Pads by slot: buttons by position, so `south` is the same place on every pad.
+        .gamepad_added => |e| log.info("gamepad {d} connected: {t}", .{ e.pad.index, e.kind }),
+        .gamepad_removed => |e| log.info("gamepad {d} disconnected", .{e.pad.index}),
+        .gamepad_button_down => |e| log.info("gamepad {d} down: {s}", .{ e.pad.index, e.button.name() }),
+        .gamepad_button_up => |e| log.debug("gamepad {d} up: {s}", .{ e.pad.index, e.button.name() }),
+        // Every frame a stick moves, so it stays at trace.
+        .gamepad_axis => |e| log.trace("gamepad {d} {s}: {d:.3}", .{ e.pad.index, e.axis.name(), e.value }),
     }
 }
 

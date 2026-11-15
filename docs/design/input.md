@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Step 1 is done (2026-11-15); Step 2 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 and 2 are done (2026-11-15); Step 3 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1084,3 +1084,120 @@ ReleaseSafe, because the backend's C calls changed. The counts:
 
 No Vulkan check applies: no shader, RHI or native-window code changed. Outside
 `engine/src/platform`, only `engine/tests/native_window.zig` changed.
+
+## Resolution — Step 2: gamepads (2026-11-15)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 2. The primary session ran the bar and committed it after the agent hit its usage limit.
+
+**What the step pinned:**
+- **`platform/gamepad.zig`**, new, holds everything §4 names:
+  - `GamepadButton` (21 positional names, §4.1's list in its order, `south` = 0) and
+    `GamepadAxis` (6), each with `name`/`fromName`, append-only;
+  - `GamepadKind`, `ButtonLabel`, and `FaceLabels`, the four face labels in `south east west
+    north` order;
+  - `GamepadState` and `GamepadHandle = core.Handle(Gamepad)`, with `max_gamepads = 4`;
+  - `normalizeAxis(axis, raw: i16)`, the one place §4.2's rule lives (divide by 32,767, clamp at
+    -1, negate a stick's y, clamp a trigger at 0). Both backends call it;
+  - `rumbleValid`, `rumbleLevel` and `max_rumble_ms = 10_000`;
+  - `Slots`, the shared seating rule.
+- **Five events:** `gamepad_added`, `gamepad_removed`, `gamepad_button_down`/`up` and
+  `gamepad_axis`. An axis event carries the value already normalised.
+- **The snapshot:** `InputSnapshot.gamepads: [4]GamepadState`, by slot.
+  `gamepadState(handle)` answers null for a stale handle. That null is how a game learns its pad
+  left or was replaced. `isIdle` counts pad buttons. It does not count axes, which are positions
+  like the mouse's.
+- **The interface:** `setGamepadRumble(*P, GamepadHandle, f32, f32, u32)`, nineteen calls in all.
+  `InitOptions.gamepads` defaults to true.
+- **Null:** `connectGamepad(device, PadDescription)`, `disconnectGamepad`, `setGamepadButton`,
+  `setGamepadAxis` (a raw `i16`, normalised as SDL's are) and `lastRumble`. With gamepads off it
+  seats nothing.
+- **SDL3:**
+  - `SDL_InitSubSystem(SDL_INIT_GAMEPAD)` after video, when `InitOptions.gamepads` is set. If SDL
+    refuses, the platform warns and carries on with no pads. It is quit in `releaseSdl`.
+  - A pad is opened when it is seated. A waiting pad is opened only when it takes a slot. If SDL
+    then refuses to open it, it is unseated and the next waiter is offered the slot.
+  - Kind comes from `SDL_GetGamepadType`. The face labels come from
+    `SDL_GetGamepadButtonLabel`, read once when the pad is seated.
+  - SDL's `MISC2`–`MISC6` are dropped.
+  - A joystick SDL cannot map is counted (`unmapped_joysticks`) and logged at info.
+  - `sdl_button_of` is `buttonFromSdl` inverted at compile time, so the two cannot disagree.
+  - `SDL_EVENT_GAMEPAD_REMAPPED` is dropped. A remap that changes a pad's type mid-session keeps
+    the kind and labels it was seated with until it reconnects.
+- **`zig build gamepad-test`** (`engine/tests/gamepad.zig`), beside `native-window-test`, is
+  compiled by `check`. It attaches SDL virtual joysticks, described as gamepads, with real
+  vendor and product IDs (an Xbox One pad, a DualSense). It checks:
+  - kind and labels (`a`/`y`, and `cross` on the second pad);
+  - buttons, including `left_paddle1` against SDL's right-first paddle order;
+  - axes: SDL's -32768 on `left_y` arrives as +1, and 16384 on `right_x` as 0.5;
+  - rumble reaching the driver as 16-bit levels, while a refused request reaches no driver;
+  - four slots in order, a fifth whose buttons go nowhere while it waits, and the fifth taking
+    slot 1 under a new handle when player two unplugs, after which the old handle's rumble is
+    refused;
+  - with `gamepads = false`, no virtual pad can be attached.
+
+  It opens no window. SDL delivers pad events to a process that has none. It skips, with a
+  message, if a physical pad is attached, because that pad would take slot 0.
+
+**Where the code sharpened the design:**
+- **`gamepad_added` carries the pad's kind and face labels.** §4.2 gave it `{ pad }` alone. But the
+  snapshot is built from events only, which is the accumulator's rule, so what a pad is has to
+  arrive in its event. The accumulator never asks a device.
+- **Labels are per pad, not derived from its kind.** SDL reads a face style from each pad's
+  mapping. A GameCube pad and a Switch pad are both `nintendo` yet print different letters in
+  the same places (`AXBY` and `BAYX`). So the slot stores the four labels SDL reports, and
+  `GamepadState.labelOf(button)` returns them, or `none` for any button that is not a face
+  button.
+- **`setGamepadRumble` gains `InvalidRumble`.** §4.3's error set had only `InvalidGamepad` and
+  `Unsupported`, but §13 asks for an out-of-range strength to be refused. A strength outside
+  [0, 1], NaN, or a duration over 10 s now answers `InvalidRumble`. A stale handle is checked
+  first.
+- **The waiting queue is bounded at twelve.** A pad beyond the four seated and twelve waiting is
+  ignored and counted (`Slots.overflowed`), so the queue never allocates.
+- **A slot's edges belong to the pad its handle names.** When a waiting pad takes a slot in the
+  same frame the old pad left it, the new pad starts clean. The old pad's release edges are not
+  shown, and the game sees the handle change instead. When nothing is waiting, the frame a pad
+  leaves reports its held buttons released, as §4.2 says.
+- **Events for a stale handle are dropped** by the accumulator rather than applied to whatever
+  pad now holds the slot.
+- **The null backend scripts in device terms, not raw `pushEvent`s.** A pushed `gamepad_added`
+  with an invented handle would bypass `Slots`. The affordances run the shared rule and then
+  queue the events, so the null backend seats pads exactly as SDL's does.
+- **No initial state is synthesised when a pad is seated.** SDL's drivers send a pad's first
+  report as ordinary events. Reading it again at open time could deliver a second press edge on
+  the next frame.
+
+**The port's gamepad subsystem, read from castholm's `build.zig` (v0.5.3, SDL 3.4.14).** No port
+option is needed on any target, and no dependency changes:
+- **macOS:** joysticks through IOKit, MFi (the GameController framework) and HIDAPI, with
+  IOKit haptics. The port already links `GameController`, `IOKit`, `ForceFeedback` and, weakly,
+  `CoreHaptics`, for SDL's own MFi driver, in every macOS SDL3 build. So Foundry's own
+  `GCMouse` path for raw counts on macOS (Step 1's open decision, the owner's) would add no
+  framework to the link. That is all this step says about it; nothing of `GCMouse` is built.
+- **Windows:** XInput, raw input, DirectInput and HIDAPI, with DirectInput haptics.
+  **Correction to §4.3 and §12: WGI is not built.** The port hard-codes `SDL_JOYSTICK_WGI =
+  false`, and GameInput is built only for MSVC targets. Xbox pads arrive through XInput and raw
+  input, and other pads through HIDAPI. Only trigger rumble is lost, which Foundry does not use.
+  Step 9 proves it on the PC.
+- **Linux:** evdev and HIDAPI, with Linux haptics. `libudev` is compiled in and loaded at run time
+  by its soname, from `sdl_linux_deps`. Without it, SDL enumerates `/dev/input` through inotify,
+  so hotplug still works. Step 10 checks it on the throwaway Ubuntu.
+
+**Each guard was broken once, and each failed its test:**
+- the y negation dropped failed the normalisation test, the null scripted-pad test and the SDL3
+  translation test;
+- focus loss not releasing pads failed the accumulator's and the null backend's focus tests;
+- a release that kept axes failed both focus tests and both removal tests;
+- seating in a slot other than the lowest free one failed two slot tests and two null tests;
+- the waiting pad never promoted failed both queue tests and the null fifth-pad test;
+- stale-handle events applied to the slot failed the removal test;
+- rumble accepting NaN failed the rumble tests in `gamepad.zig` and in null.
+
+**Bar:** the agent hit its usage limit during the bar, so the primary session reran the whole of
+it in the agent's worktree. `zig fmt --check`, every `check` (native, Metal, Linux and Windows
+null, and SDL3 Linux, Windows and Windows ReleaseSafe), the four thirty-frame samples and
+`fdt-check` pass. Tests: null 3,063/3,073 (ten skips), Metal 3,078/3,099 (21 skips),
+`gamepad-test` 3/3, `native-window-test` 3/10 (seven skips, as at Step 1).
+
+Nothing outside `platform` changed except `samples/sandbox/main.zig`, whose `report` gains the
+five pad events in its exhaustive switch, `build.zig`, for `gamepad-test`, and the new test file.
+No Vulkan check applies: no shader, RHI or native-window code changed.

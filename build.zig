@@ -1793,6 +1793,20 @@ pub fn build(b: *std.Build) void {
         check_step.dependOn(&native_window_tests.step);
         b.step("native-window-test", "Open real native windows through SDL3 (needs a desktop session)")
             .dependOn(&b.addRunArtifact(native_window_tests).step);
+
+        // Gamepads through SDL3's virtual joysticks (`input.md` §4.3, M45 Step 2), apart from
+        // `test` for the same reason: SDL's real gamepad subsystem and its HID drivers start, which
+        // a headless build machine may refuse. No window opens, so it needs no focus.
+        const gamepad_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/gamepad.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        gamepad_mod.addImport("platform", platform_module);
+        const gamepad_tests = b.addTest(.{ .root_module = gamepad_mod });
+        check_step.dependOn(&gamepad_tests.step);
+        b.step("gamepad-test", "Drive SDL3's virtual gamepads through the platform (needs a desktop machine)")
+            .dependOn(&b.addRunArtifact(gamepad_tests).step);
     }
 
     // Presentation to real windows through Vulkan (`vulkan.md` §8, M13 Step 7), apart from `test`

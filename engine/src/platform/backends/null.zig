@@ -27,6 +27,7 @@ const core = @import("core");
 
 const audio = @import("../audio.zig");
 const event = @import("../event.zig");
+const gamepad = @import("../gamepad.zig");
 const input = @import("../input.zig");
 const interface = @import("../interface.zig");
 const key = @import("../key.zig");
@@ -74,6 +75,25 @@ const AudioState = struct {
     buffer: std.ArrayList(f32) = .empty,
 };
 
+/// A pad a test has connected: what it reports itself as, and whether it has motors.
+pub const PadDescription = struct {
+    kind: gamepad.GamepadKind = .xbox,
+    face: gamepad.FaceLabels = .{ .a, .b, .x, .y },
+    rumble: bool = true,
+};
+
+/// The last rumble a seated pad was asked for, as the OS would have received it.
+pub const Rumble = struct {
+    low: f32,
+    high: f32,
+    duration_ms: u32,
+};
+
+const KnownPad = struct {
+    device: gamepad.DeviceId,
+    description: PadDescription,
+};
+
 pub const Platform = struct {
     gpa: Allocator,
     windows: core.HandlePool(win.Window, WindowState) = .empty,
@@ -97,10 +117,19 @@ pub const Platform = struct {
     clock_ns: i64 = 0,
     clock_step_ns: i64 = std.time.ns_per_ms,
 
+    /// `InitOptions.gamepads`: off, a connected pad is ignored, as an SDL platform that never
+    /// opened its gamepad subsystem would never hear of it.
+    gamepads_enabled: bool = true,
+    /// Which "device" sits in which slot, by the rule every backend shares.
+    slots: gamepad.Slots = .empty,
+    /// Every connected pad, seated or waiting, in connection order.
+    known_pads: std.ArrayList(KnownPad) = .empty,
+    /// Per slot, the last rumble its pad accepted.
+    rumbles: [gamepad.max_gamepads]?Rumble = @splat(null),
+
     pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
-        _ = options;
         const self = try gpa.create(Platform);
-        self.* = .{ .gpa = gpa };
+        self.* = .{ .gpa = gpa, .gamepads_enabled = options.gamepads };
         self.syncMotionUnit();
         log.info("platform backend: null (headless)", .{});
         return self;
@@ -116,6 +145,7 @@ pub const Platform = struct {
 
         self.incoming.deinit(gpa);
         self.ready.deinit(gpa);
+        self.known_pads.deinit(gpa);
         gpa.destroy(self);
     }
 
@@ -217,6 +247,22 @@ pub const Platform = struct {
         _ = self;
         if (k == .unknown) return buf[0..0];
         return key.boundedLabel(k.name(), buf);
+    }
+
+    /// Validates exactly as a real backend does, then records what the pad would have been told.
+    pub fn setGamepadRumble(self: *Platform, pad: gamepad.GamepadHandle, low: f32, high: f32, duration_ms: u32) interface.GamepadRumbleError!void {
+        const device = self.slots.deviceOf(pad) orelse return error.InvalidGamepad;
+        if (!gamepad.rumbleValid(low, high, duration_ms)) return error.InvalidRumble;
+        const known = self.knownPad(device) orelse return error.InvalidGamepad;
+        if (!known.description.rumble) return error.Unsupported;
+        self.rumbles[pad.index] = .{ .low = low, .high = high, .duration_ms = duration_ms };
+    }
+
+    fn knownPad(self: *Platform, device: gamepad.DeviceId) ?*KnownPad {
+        for (self.known_pads.items) |*known| {
+            if (known.device == device) return known;
+        }
+        return null;
     }
 
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
@@ -412,6 +458,68 @@ pub const Platform = struct {
     pub fn setRawMotionAvailable(self: *Platform, available: bool) void {
         self.raw_motion_available = available;
         self.syncMotionUnit();
+    }
+
+    /// Connects a pad, as the OS would announce one. It is seated by `gamepad.Slots`, the rule
+    /// the SDL backend uses, and its `gamepad_added` is queued; the handle is returned. A pad
+    /// arriving with every slot taken waits and returns null, and so does any pad while gamepads
+    /// are off. `device` is the test's own number for the pad, as SDL has its instance IDs.
+    pub fn connectGamepad(self: *Platform, device: gamepad.DeviceId, description: PadDescription) Allocator.Error!?gamepad.GamepadHandle {
+        if (!self.gamepads_enabled or self.knownPad(device) != null) return null;
+        try self.known_pads.ensureUnusedCapacity(self.gpa, 1);
+        try self.incoming.ensureUnusedCapacity(self.gpa, 1);
+        switch (self.slots.connect(device)) {
+            .seated => |pad| {
+                self.known_pads.appendAssumeCapacity(.{ .device = device, .description = description });
+                self.rumbles[pad.index] = null;
+                self.incoming.appendAssumeCapacity(addedEvent(pad, description));
+                return pad;
+            },
+            .waiting => self.known_pads.appendAssumeCapacity(.{ .device = device, .description = description }),
+            .overflowed, .already => {},
+        }
+        return null;
+    }
+
+    /// Disconnects a pad. A seated one queues its `gamepad_removed`, and the first waiting pad
+    /// takes its slot at once with a `gamepad_added` of its own.
+    pub fn disconnectGamepad(self: *Platform, device: gamepad.DeviceId) Allocator.Error!void {
+        const index = for (self.known_pads.items, 0..) |known, i| {
+            if (known.device == device) break i;
+        } else return;
+        try self.incoming.ensureUnusedCapacity(self.gpa, 2);
+        _ = self.known_pads.orderedRemove(index);
+        const left = self.slots.disconnect(device);
+        if (left.removed) |pad| self.incoming.appendAssumeCapacity(.{ .gamepad_removed = .{ .pad = pad } });
+        if (left.promoted) |next| {
+            self.rumbles[next.pad.index] = null;
+            const description = self.knownPad(next.device).?.description;
+            self.incoming.appendAssumeCapacity(addedEvent(next.pad, description));
+        }
+    }
+
+    /// Presses or releases a button on a pad. A waiting or unknown pad's buttons go nowhere, as a
+    /// real backend never opened it to hear them.
+    pub fn setGamepadButton(self: *Platform, device: gamepad.DeviceId, button: gamepad.GamepadButton, down: bool) Allocator.Error!void {
+        const pad = self.slots.handleOf(device) orelse return;
+        const payload: event.GamepadButtonEvent = .{ .pad = pad, .button = button };
+        try self.pushEvent(if (down) .{ .gamepad_button_down = payload } else .{ .gamepad_button_up = payload });
+    }
+
+    /// Moves an axis to a raw 16-bit reading, normalised as the SDL backend normalises one.
+    pub fn setGamepadAxis(self: *Platform, device: gamepad.DeviceId, axis: gamepad.GamepadAxis, raw: i16) Allocator.Error!void {
+        const pad = self.slots.handleOf(device) orelse return;
+        try self.pushEvent(.{ .gamepad_axis = .{ .pad = pad, .axis = axis, .value = gamepad.normalizeAxis(axis, raw) } });
+    }
+
+    /// The last rumble the pad in a slot accepted, or null if none since it was seated.
+    pub fn lastRumble(self: *Platform, pad: gamepad.GamepadHandle) ?Rumble {
+        if (self.slots.deviceOf(pad) == null) return null;
+        return self.rumbles[pad.index];
+    }
+
+    fn addedEvent(pad: gamepad.GamepadHandle, description: PadDescription) event.Event {
+        return .{ .gamepad_added = .{ .pad = pad, .kind = description.kind, .face = description.face } };
     }
 
     /// Gives or takes keyboard focus, queueing the matching event.
@@ -1007,4 +1115,163 @@ test "a key's label is its own name here, bounded, and empty for unknown" {
         try testing.expect(std.unicode.utf8ValidateSlice(label));
         try testing.expectEqual(k == .unknown, label.len == 0);
     }
+}
+
+// -- gamepads ------------------------------------------------------------------------
+
+test "scripted pads are seated by slot, and their buttons and axes reach the snapshot" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+
+    const first = (try p.connectGamepad(41, .{})).?;
+    const second = (try p.connectGamepad(7, .{ .kind = .playstation, .face = .{ .cross, .circle, .square, .triangle } })).?;
+    try testing.expectEqual(@as(u32, 0), first.index);
+    try testing.expectEqual(@as(u32, 1), second.index);
+    // Not yet: like any event, a connection is seen at the next pump.
+    try testing.expect(!p.captureInput().gamepads[0].connected);
+
+    try p.setGamepadButton(41, .south, true);
+    try p.setGamepadAxis(41, .left_y, -32768);
+    try p.setGamepadAxis(7, .right_trigger, 32767);
+    p.pumpEvents();
+    var saw_added: u32 = 0;
+    while (p.nextEvent()) |ev| if (ev == .gamepad_added) {
+        saw_added += 1;
+    };
+    try testing.expectEqual(@as(u32, 2), saw_added);
+
+    const snap = p.captureInput();
+    const one = snap.gamepadState(first).?;
+    try testing.expect(one.wasPressed(.south));
+    // Pulled toward the player, which a device reports as positive: Foundry's -y.
+    try testing.expectEqual(@as(f32, 1), one.axis(.left_y));
+    const two = snap.gamepadState(second).?;
+    try testing.expectEqual(gamepad.GamepadKind.playstation, two.kind);
+    try testing.expectEqual(gamepad.ButtonLabel.circle, two.labelOf(.east));
+    try testing.expectEqual(@as(f32, 1), two.axis(.right_trigger));
+}
+
+test "a fifth pad waits, takes the first slot freed, and a reconnect is a new handle" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    var handles: [gamepad.max_gamepads]gamepad.GamepadHandle = undefined;
+    for (&handles, 0..) |*h, i| h.* = (try p.connectGamepad(@intCast(i + 1), .{})).?;
+    try testing.expectEqual(@as(?gamepad.GamepadHandle, null), try p.connectGamepad(5, .{ .kind = .nintendo }));
+    // A waiting pad's buttons go nowhere.
+    try p.setGamepadButton(5, .north, true);
+    try p.setGamepadButton(2, .east, true);
+    p.pumpEvents();
+    const before = p.captureInput();
+    try testing.expect(before.gamepadState(handles[1]).?.isHeld(.east));
+    for (before.gamepads) |pad| try testing.expect(!pad.isHeld(.north));
+
+    try p.disconnectGamepad(2);
+    p.pumpEvents();
+    const after = p.captureInput();
+    // The removed pad's button is released in the frame it leaves...
+    // ...but the waiting pad took slot 1 in the same frame, so the slot is the new pad's now.
+    try testing.expectEqual(@as(?*const gamepad.GamepadState, null), after.gamepadState(handles[1]));
+    const fifth = after.gamepads[1];
+    try testing.expect(fifth.connected);
+    try testing.expectEqual(gamepad.GamepadKind.nintendo, fifth.kind);
+    try testing.expect(!fifth.handle.eql(handles[1]));
+    try testing.expect(!fifth.isHeld(.east));
+
+    // Pad 4 reconnects: the lowest free slot, a generation it has not had before.
+    try p.disconnectGamepad(4);
+    const back = (try p.connectGamepad(4, .{})).?;
+    try testing.expectEqual(handles[3].index, back.index);
+    try testing.expectEqual(handles[3].generation + 1, back.generation);
+}
+
+test "a removed pad with nothing waiting reports its held buttons released" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const pad = (try p.connectGamepad(3, .{})).?;
+    try p.setGamepadButton(3, .left_shoulder, true);
+    try p.setGamepadAxis(3, .right_x, 20000);
+    p.pumpEvents();
+    _ = p.captureInput();
+
+    try p.disconnectGamepad(3);
+    p.pumpEvents();
+    const left = p.captureInput().gamepads[pad.index];
+    try testing.expect(!left.connected);
+    try testing.expect(left.wasReleased(.left_shoulder));
+    try testing.expectEqual(@as(f32, 0), left.axis(.right_x));
+}
+
+test "rumble is refused for a stale handle, an out-of-range request, or a pad without motors" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const pad = (try p.connectGamepad(1, .{})).?;
+    try p.setGamepadRumble(pad, 0.25, 1, 400);
+    try testing.expectEqual(Rumble{ .low = 0.25, .high = 1, .duration_ms = 400 }, p.lastRumble(pad).?);
+
+    try testing.expectError(error.InvalidRumble, p.setGamepadRumble(pad, 1.5, 0, 100));
+    try testing.expectError(error.InvalidRumble, p.setGamepadRumble(pad, 0, -0.1, 100));
+    try testing.expectError(error.InvalidRumble, p.setGamepadRumble(pad, std.math.nan(f32), 0, 100));
+    try testing.expectError(error.InvalidRumble, p.setGamepadRumble(pad, 0, 0, gamepad.max_rumble_ms + 1));
+    // A refusal leaves the last accepted request.
+    try testing.expectEqual(@as(f32, 0.25), p.lastRumble(pad).?.low);
+    // Zeros stop the motors, and are accepted.
+    try p.setGamepadRumble(pad, 0, 0, 0);
+
+    try testing.expectError(error.InvalidGamepad, p.setGamepadRumble(.none, 0.5, 0.5, 100));
+    try p.disconnectGamepad(1);
+    try testing.expectError(error.InvalidGamepad, p.setGamepadRumble(pad, 0.5, 0.5, 100));
+    const again = (try p.connectGamepad(1, .{})).?;
+    try testing.expectError(error.InvalidGamepad, p.setGamepadRumble(pad, 0.5, 0.5, 100));
+    try testing.expectEqual(@as(?Rumble, null), p.lastRumble(again));
+
+    const still = (try p.connectGamepad(2, .{ .rumble = false })).?;
+    try testing.expectError(error.Unsupported, p.setGamepadRumble(still, 0.5, 0.5, 100));
+}
+
+test "losing focus releases the pads' buttons and zeroes their axes" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+    const pad = (try p.connectGamepad(9, .{})).?;
+    try p.setGamepadButton(9, .south, true);
+    try p.setGamepadAxis(9, .left_x, 32767);
+    p.pumpEvents();
+    try testing.expect(p.captureInput().gamepadState(pad).?.isHeld(.south));
+
+    try p.setFocus(w, false);
+    p.pumpEvents();
+    const lost = p.captureInput().gamepadState(pad).?;
+    try testing.expect(lost.wasReleased(.south) and !lost.isHeld(.south));
+    try testing.expectEqual(@as(f32, 0), lost.axis(.left_x));
+}
+
+test "with gamepads off, a pad is never seated" {
+    const p = try Platform.init(testing.allocator, .{ .gamepads = false });
+    defer p.deinit();
+    try testing.expectEqual(@as(?gamepad.GamepadHandle, null), try p.connectGamepad(1, .{}));
+    try p.setGamepadButton(1, .south, true);
+    p.pumpEvents();
+    try testing.expect(p.captureInput().isIdle());
+}
+
+test "the same pad script gives the same snapshots" {
+    var snaps: [2][3]input.InputSnapshot = undefined;
+    for (&snaps) |*run| {
+        const p = try Platform.init(testing.allocator, .{});
+        defer p.deinit();
+        _ = try p.connectGamepad(30, .{});
+        _ = try p.connectGamepad(31, .{ .kind = .nintendo, .face = .{ .b, .a, .y, .x } });
+        try p.setGamepadAxis(31, .left_x, -1200);
+        p.pumpEvents();
+        run[0] = p.captureInput();
+        try p.setGamepadButton(30, .dpad_down, true);
+        try p.disconnectGamepad(30);
+        p.pumpEvents();
+        run[1] = p.captureInput();
+        _ = try p.connectGamepad(30, .{});
+        p.pumpEvents();
+        run[2] = p.captureInput();
+    }
+    try testing.expectEqualDeep(snaps[0], snaps[1]);
 }
