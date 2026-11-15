@@ -29,6 +29,38 @@ const Vec2 = core.math.Vec2;
 const Key = key.Key;
 const MouseButton = key.MouseButton;
 
+/// How captured motion is measured, the host's choice (`input.md` §3, ADR-0089).
+///
+/// One mode for the platform, not per window, while the engine has one game window.
+pub const MotionMode = enum {
+    /// The device's own counts: unscaled by the OS pointer speed and without its acceleration,
+    /// so one mouse moved one distance gives one number on every platform that can deliver
+    /// them. The default.
+    raw,
+    /// The OS's own ballistics, as a desktop pointer moves.
+    system,
+};
+
+/// What `MouseState.motion` holds in one snapshot.
+pub const MotionUnit = enum {
+    /// Logical points, as a desktop pointer moves: uncaptured motion, captured motion in
+    /// `system`, and captured motion on a platform that cannot deliver raw counts.
+    points,
+    /// The device's own counts. Counts per inch is the mouse's and no OS reports it, so this
+    /// is not converted to a physical unit.
+    counts,
+};
+
+/// The unit captured motion arrives in, given the mode asked for and whether the backend can
+/// deliver raw counts at all. **What is true, never what was asked for**: a backend that cannot
+/// honour `raw` reports `points` rather than labelling its points counts.
+pub fn capturedUnit(mode: MotionMode, raw_available: bool) MotionUnit {
+    return switch (mode) {
+        .raw => if (raw_available) .counts else .points,
+        .system => .points,
+    };
+}
+
 /// Mouse state for one frame.
 ///
 /// Position is reported in both units for the same reason window size is: UI layout
@@ -40,9 +72,14 @@ pub const MouseState = struct {
     position: Vec2 = .{},
     /// The same position in device pixels.
     position_pixels: Vec2 = .{},
-    /// Total movement since the previous snapshot, in points. Summed across every
+    /// Total movement since the previous snapshot, in `motion_unit`. Summed across every
     /// motion event in the frame, so a fast flick is not lost to sampling.
     motion: Vec2 = .{},
+    /// What `motion` holds: `points` uncaptured, and while captured whatever the backend
+    /// delivers in the platform's `MotionMode`. A sum never mixes units: motion in one unit
+    /// is dropped when motion in another arrives in the same frame, which happens only in the
+    /// frame a capture begins or ends or the mode changes.
+    motion_unit: MotionUnit = .points,
     /// Total wheel movement since the previous snapshot, in notches.
     wheel: Vec2 = .{},
     /// Whether the pointer was captured at snapshot time: hidden, held inside the window,
@@ -124,6 +161,9 @@ pub const Accumulator = struct {
     /// Set by the backend, which knows which window holds the pointer and when the window
     /// system took it back. While it is set, positions do not move.
     captured: bool = false,
+    /// The unit captured motion arrives in, set by the backend from its `MotionMode` and what
+    /// its window system can deliver (`capturedUnit`).
+    captured_unit: MotionUnit = .points,
 
     /// Edges and deltas, cleared every `capture`.
     pressed: key.KeySet = key.empty_keys,
@@ -131,9 +171,16 @@ pub const Accumulator = struct {
     buttons_pressed: key.ButtonSet = key.empty_buttons,
     buttons_released: key.ButtonSet = key.empty_buttons,
     motion: Vec2 = .{},
+    /// The unit `motion` is summed in.
+    motion_unit: MotionUnit = .points,
     wheel: Vec2 = .{},
 
     pub const init: Accumulator = .{};
+
+    /// The unit motion arriving now is in.
+    fn currentUnit(self: *const Accumulator) MotionUnit {
+        return if (self.captured) self.captured_unit else .points;
+    }
 
     pub fn apply(self: *Accumulator, ev: event.Event) void {
         switch (ev) {
@@ -172,6 +219,13 @@ pub const Accumulator = struct {
                     self.position = e.position;
                     self.position_pixels = e.position_pixels;
                 }
+                // Points and counts do not add. The sum restarts in the new unit, losing at
+                // most the motion of the frame a capture or the mode changed in.
+                const unit = self.currentUnit();
+                if (unit != self.motion_unit) {
+                    self.motion = .{};
+                    self.motion_unit = unit;
+                }
                 self.motion = self.motion.add(e.delta);
             },
             .mouse_wheel => |e| self.wheel = self.wheel.add(e.delta),
@@ -206,6 +260,9 @@ pub const Accumulator = struct {
 
     /// Produces this frame's snapshot and starts the next frame.
     pub fn capture(self: *Accumulator) InputSnapshot {
+        // A sum names the unit it was made in. With nothing summed, the unit is the one motion
+        // would arrive in now, so an idle captured frame still says what capture delivers.
+        const still = self.motion.x == 0 and self.motion.y == 0;
         const snapshot: InputSnapshot = .{
             .keys_held = self.held,
             .keys_pressed = self.pressed,
@@ -216,6 +273,7 @@ pub const Accumulator = struct {
                 .position = self.position,
                 .position_pixels = self.position_pixels,
                 .motion = self.motion,
+                .motion_unit = if (still) self.currentUnit() else self.motion_unit,
                 .wheel = self.wheel,
                 .captured = self.captured,
                 .buttons_held = self.buttons_held,
@@ -229,6 +287,7 @@ pub const Accumulator = struct {
         self.buttons_pressed = key.empty_buttons;
         self.buttons_released = key.empty_buttons;
         self.motion = .{};
+        self.motion_unit = self.currentUnit();
         self.wheel = .{};
 
         return snapshot;
@@ -410,4 +469,47 @@ test "a captured pointer keeps accumulating motion while its position stays put"
     try testing.expect(!freed.mouse.captured);
     try testing.expectEqual(@as(f32, 12), freed.mouse.position.x);
     try testing.expectEqual(@as(f32, 18), freed.mouse.position_pixels.y);
+}
+
+test "motion is points uncaptured, and counts or points captured as the mode and backend allow" {
+    try testing.expectEqual(MotionUnit.counts, capturedUnit(.raw, true));
+    try testing.expectEqual(MotionUnit.points, capturedUnit(.raw, false));
+    try testing.expectEqual(MotionUnit.points, capturedUnit(.system, true));
+    try testing.expectEqual(MotionUnit.points, capturedUnit(.system, false));
+
+    var acc: Accumulator = .init;
+    acc.captured_unit = .counts;
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(3, 4) } });
+    try testing.expectEqual(MotionUnit.points, acc.capture().mouse.motion_unit);
+
+    acc.captured = true;
+    // Idle and captured: the unit capture delivers, with nothing in it.
+    try testing.expectEqual(MotionUnit.counts, acc.capture().mouse.motion_unit);
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(40, -2) } });
+    const held = acc.capture();
+    try testing.expectEqual(MotionUnit.counts, held.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 40), held.mouse.motion.x);
+}
+
+test "a frame's motion sum never mixes points and counts" {
+    var acc: Accumulator = .init;
+    acc.captured_unit = .counts;
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(5, 5) } });
+    // The capture begins mid-frame: the points summed before it are not counts.
+    acc.captured = true;
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(100, 0) } });
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(20, 1) } });
+    const began = acc.capture();
+    try testing.expectEqual(MotionUnit.counts, began.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 120), began.mouse.motion.x);
+    try testing.expectEqual(@as(f32, 1), began.mouse.motion.y);
+
+    // The capture ends after counts arrived and nothing moved since: the counts keep their
+    // name rather than being called points.
+    acc.apply(.{ .mouse_moved = .{ .delta = .init(7, 0) } });
+    acc.captured = false;
+    const ended = acc.capture();
+    try testing.expectEqual(MotionUnit.counts, ended.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 7), ended.mouse.motion.x);
+    try testing.expectEqual(MotionUnit.points, acc.capture().mouse.motion_unit);
 }

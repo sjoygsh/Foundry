@@ -26,6 +26,7 @@ const core = @import("core");
 const audio = @import("audio.zig");
 const event = @import("event.zig");
 const input = @import("input.zig");
+const key = @import("key.zig");
 const window = @import("window.zig");
 
 pub const InitError = error{
@@ -157,6 +158,17 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         // Host window policy, so nothing in the public C ABI reaches it (`playable3d.md` §4).
         expectFn(P, label, "setPointerCapture", &.{ *P, window.WindowHandle, bool }, PointerCaptureError!void);
 
+        // How captured motion is measured: the device's counts (`raw`, the default) or the OS's
+        // ballistics (`system`). It cannot fail; `MouseState.motion_unit` reports what the window
+        // system then delivers, which is `points` wherever it cannot deliver counts (`input.md`
+        // §3, ADR-0089). Host policy, like capture, so nothing in the public C ABI reaches it.
+        expectFn(P, label, "setCapturedMotion", &.{ *P, input.MotionMode }, void);
+
+        // What the current layout engraves on a physical key, for a prompt: bounded, valid UTF-8
+        // in the caller's buffer, and empty for `unknown`. Presentation only; a binding keeps the
+        // key's physical name (`input.md` §3).
+        expectFn(P, label, "keyLabel", &.{ *P, key.Key, *[key.label_capacity]u8 }, []const u8);
+
         // The frame's input boundary, in the order it is called:
         //   pumpEvents  — drain the OS queue, once, at one known point in the frame
         //   nextEvent   — read what that produced
@@ -282,6 +294,15 @@ test "the check accepts a conforming implementation" {
                 _ = handle;
                 _ = captured;
             }
+            pub fn setCapturedMotion(self: *@This(), mode: input.MotionMode) void {
+                _ = self;
+                _ = mode;
+            }
+            pub fn keyLabel(self: *@This(), k: key.Key, buf: *[key.label_capacity]u8) []const u8 {
+                _ = self;
+                _ = k;
+                return buf[0..0];
+            }
             pub fn pumpEvents(self: *@This()) void {
                 _ = self;
             }
@@ -327,10 +348,11 @@ test "the interface names every call a frame makes" {
     // A change to the frame's shape should be a deliberate edit here, not something
     // that drifts in one backend at a time.
     const required = [_][]const u8{
-        "init",         "deinit",        "openWindow",     "closeWindow",
-        "windowInfo",   "nativeSurface", "pumpEvents",     "nextEvent",
-        "captureInput", "now",           "setWindowSize",  "openAudio",
-        "closeAudio",   "audioInfo",     "setAudioPaused", "setPointerCapture",
+        "init",              "deinit",        "openWindow",     "closeWindow",
+        "windowInfo",        "nativeSurface", "pumpEvents",     "nextEvent",
+        "captureInput",      "now",           "setWindowSize",  "openAudio",
+        "closeAudio",        "audioInfo",     "setAudioPaused", "setPointerCapture",
+        "setCapturedMotion", "keyLabel",
     };
-    try testing.expectEqual(@as(usize, 16), required.len);
+    try testing.expectEqual(@as(usize, 18), required.len);
 }

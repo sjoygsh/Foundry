@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Step 1 is in progress.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Step 1 is done (2026-11-15); Step 2 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -977,3 +977,110 @@ Each is recommended as written.
 
 Once these are accepted, nothing blocks Step 1. It is one platform call, one snapshot field and one
 hint, on the code as it is.
+
+## Resolution — Step 1: captured motion in counts, and key labels (2026-11-15)
+
+The design was accepted when the owner asked for Step 1. Its status line records that. The four
+ADRs stay Proposed until the close, as §14's Step 11 says.
+
+**What the step pinned:**
+- `input.zig` gains `MotionMode { raw, system }`, `MotionUnit { points, counts }` and
+  `capturedUnit(mode, raw_available)`. `MouseState.motion_unit` names what `motion` holds.
+  `platform` re-exports both enums.
+- The interface gains two calls, eighteen in all:
+  - `setCapturedMotion(*P, MotionMode) void`. It cannot fail. `motion_unit` reports the result.
+  - `keyLabel(*P, Key, *[key.label_capacity]u8) []const u8`, with a capacity of 16.
+- **`key.boundedLabel`** is the one bounded copy. It returns valid UTF-8 with no NUL, cut on a
+  codepoint boundary. Text that is invalid or holds a NUL gives an empty label. Every `Key`
+  name fits whole.
+- **Null:**
+  - `raw` by default;
+  - a key's label is its own name, and `unknown`'s is empty;
+  - `setRawMotionAvailable` is the test affordance that plays a platform which cannot deliver
+    counts.
+- **SDL3:**
+  - `MOUSE_RELATIVE_SYSTEM_SCALE` is set to `0` for `raw` and `1` for `system`. It is applied at
+    `init`, not assumed.
+  - `keyLabel` calls `SDL_GetKeyFromScancode` with no modifiers, then `SDL_GetKeyName`. A key the
+    layout gives no name falls back to its physical name.
+  - Its scancode table is `keyFromScancode` inverted at compile time, so the two cannot disagree.
+  - The two stale "M5" comments now name what is actually deferred: gamepads (Step 2), audio
+    device changes (Step 3) and touch (M139).
+
+**Where the code sharpened the design:**
+- **A frame's sum never mixes units.** A snapshot names one unit, but a capture can begin or end
+  inside a frame. Motion that arrives in a different unit from the running sum replaces the sum
+  instead of being added to it. A sum keeps the unit it was made in, so counts summed before a
+  focus loss still say `counts`. An idle frame reports the unit capture would deliver now. The
+  cost is the motion of one frame at the moment of a change.
+- **The hints are set at `SDL_HINT_OVERRIDE`.** At normal priority, an `SDL_MOUSE_RELATIVE_*`
+  environment variable would win, and `motion_unit` would describe a mode SDL is not using. For
+  the same reason `MOUSE_RELATIVE_SPEED_SCALE` is cleared: SDL applies it after either mode, and
+  sensitivity belongs to the game.
+- **A mode change flushes SDL's queued motion events.** Those events were measured in the old
+  mode. SDL does the same when relative mode itself changes. If a hint cannot be set, the old
+  mode stays, and so does its unit.
+
+**What each platform delivers, from SDL 3.4.14's sources** (`events/SDL_mouse.c`, where
+`ApplySystemScale` runs only when the hint is on):
+
+| Window system | `raw` | `system` |
+| --- | --- | --- |
+| `windows` | raw input's `lLastX`/`lLastY`: **counts** | SDL's model of Windows' ballistics (`WIN_ApplySystemScale`): points |
+| `x11` | XInput2 `raw_values`: **counts** | XInput2 `valuators`, accelerated: points |
+| `wayland` | relative-pointer `dx_unaccel`: **counts** | `dx` times the pointer scale: points |
+| `cocoa` | `-[NSEvent deltaX]`: **points** | the same: points |
+
+- **macOS cannot honour `raw`, and reports `points` in both modes.** Cocoa installs no system-scale
+  model. SDL reads `NSEvent`'s deltas, which macOS has already put through its pointer
+  acceleration, so the hint changes nothing there.
+- X11 and Wayland can capture only through XInput2 or the relative-pointer protocol. Without them
+  capture answers `Unsupported`, so a held capture on those systems always delivers counts.
+- `rawMotionOfDriver` is the table above. Any other driver (`offscreen`, `dummy`, `kmsdrm`, an
+  unknown one) is assumed to deliver points, because calling points counts is the one wrong
+  answer.
+- **A known limit on Windows:** a device that reports absolute positions, such as a remote desktop
+  session, a pen tablet or some virtual machines, gives SDL differences of screen positions.
+  Those are labelled `counts` and are not.
+
+**The macOS limit needs an owner (rule 17), which is the owner's decision.**
+- The fix would be the GameController framework's `GCMouse`, which delivers unaccelerated HID
+  deltas. SDL uses it only on iOS. On macOS it would mean Foundry's own Objective-C in
+  `platform`, beside the framework Step 2 links for pads.
+- It is not built here. The choice is to add it to Step 2 (recommended, since it is the same
+  framework), or to name M146.
+- Until then, a sensitivity tuned on a Mac does not carry to the other platforms. That is
+  exactly the problem §3 set out to remove.
+
+**The check on the Mac:**
+- `zig build native-window-test` gains "this window system's captured-motion unit, and its
+  layout's key labels". It opens no window and takes no pointer. It asserts three things:
+  - Cocoa does not offer counts, while Windows and Linux do;
+  - the unit each mode reports;
+  - every key's label is bounded valid UTF-8, empty only for `unknown`, and `Space`, `Escape` and
+    `Left Shift` are SDL's names.
+- It passed on the M5.
+- **Not measured: what a moving mouse delivers under capture in each mode.** That needs a person
+  moving the mouse. It awaits the owner, who would run `zig build sandbox3d -Drhi=metal`, capture
+  the pointer, move the same distance in each mode and compare. No mode switch is exposed to a
+  sample until Step 6's `Config.captured_motion`. From the sources, both modes are expected to
+  give equal, accelerated points.
+
+**Each guard was broken once, and each failed its test:**
+- `capturedUnit` answering `counts` for a backend without raw failed the input, null and SDL3
+  unit tests;
+- the sum's restart removed failed "a frame's motion sum never mixes points and counts" and the
+  null focus-loss test;
+- the label's codepoint step-back removed failed the label test;
+- `cocoa` added to `rawMotionOfDriver` failed the SDL3 driver test.
+
+**Bar:** every line of `AGENTS.md` §3 passes, plus four extras: `zig build test -Drhi=metal`,
+`native-window-test`, and SDL3 (not null) `check` for Windows and Linux, the Windows one also at
+ReleaseSafe, because the backend's C calls changed. The counts:
+- null 3,033/3,043 (ten skips), nine more than M40 for the new tests;
+- Metal 3,044/3,065 (21 skips);
+- `native-window-test` 3/10 (seven skips: the other tests are for Windows and Linux);
+- every check, the four thirty-frame samples and `fdt-check`.
+
+No Vulkan check applies: no shader, RHI or native-window code changed. Outside
+`engine/src/platform`, only `engine/tests/native_window.zig` changed.
