@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 and 2 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 3 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -818,3 +818,95 @@ thirty-frame samples and `fdt-check` pass. Tests: null 3,050/3,060 (ten skips), 
 
 Next is Step 3: light records, model lights, and glTF import with generated tangents. No light
 record, `foundry:model` v4 or `KHR_lights_punctual` import exists yet.
+
+## Resolution — Step 3: light records, model lights and glTF import (2026-11-15)
+
+**What the step pinned (`asset`, `author`, `render3d`, ADR-0085 and ADR-0086):**
+- **`foundry:light` v1** (`asset/light.zig`) is §6.1's record, registered with the engine's other
+  records (`schemas.records`), so `fpack`, the editor and a load all know it. `decode` reads it
+  into `asset.light.Light` and refuses, by field:
+  - a kind other than directional, point or spot;
+  - a colour component outside 0..1;
+  - a negative or non-finite intensity or range;
+  - cones outside `0 <= inner < outer <= pi/2`;
+  - a source radius that is negative, above pi/8 for a directional light, or not inside a
+    bounded light's range.
+
+  These are `render3d.lighting.valid`'s rules without the world matrix. The compiler refuses a
+  bad record where it is compiled, as it does a particle emitter. An integration test runs both
+  rule sets over 15,552 lights and fails if they disagree on any of them.
+- **`foundry:model` v4** gains `lights`, a list of `{ light, translation, rotation }`. A v3
+  package reads with none.
+- **`render3d.Content.modelLights(model, world, out)`** writes each placed light's
+  `render3d.Light` at `world · placement` into `out`, and returns the part it filled.
+  `lightCount` says how many it needs. The game submits them with `addLight`. Nothing is drawn
+  because a model is, and the sixteen-light limit is unchanged.
+- **`foundry:model_import` v4** gains `lights`, a list of `{ name, casts_shadow, source_radius }`
+  matched by the glTF light's name.
+- **glTF import** reads `KHR_lights_punctual`:
+  - every light in the file becomes `<model>.light<i>`, by glTF index, placed or not, its
+    fields copied;
+  - each node that carries a light adds a `lights` entry at its flattened transform, in the
+    walk's order;
+  - the extension joins the imported set, so a file that requires it imports.
+- **Generated tangents.** A lit, unmapped material with a `normalTexture` and no `TANGENT` now
+  imports with MikkTSpace tangents, and the import's diagnostics say so as a note. A primitive
+  with neither `TANGENT` nor `TEXCOORD_0` is still refused, as §5.2 says.
+- **Pins:** the lamp's import output and a mirrored, split tile's are pinned by hash.
+
+**Where the implementation sharpened the design:**
+- **Each primitive gets its tangents separately**, because glTF's primitives are separate
+  surfaces. Then Step 2's split rule runs over the whole mesh:
+  - added vertices go at the end, copies of every stream (joints and weights included);
+  - the generated stream holds one tangent per final vertex.
+
+  The rule now lives in `tangents.split`, which `Builder.generateTangents` and the import both
+  call, so the two cannot drift. The builder's six tests pass unchanged.
+- **A tangent the method cannot normalize is refused at import.** This answers Step 2's open
+  case. A zero normal, or one along the UV direction, makes a zero tangent. The import refuses
+  it by vertex, naming the fix, instead of compiling a mesh that `finish` or the runtime would
+  refuse.
+- **A model's broken light is dropped, not the model.** A placement that cannot be read, or
+  whose rotation is not a unit quaternion, refuses the model, as a part's does. A light whose
+  record is missing, is not a `foundry:light`, or does not decode is dropped and logged, as a
+  mesh that fails drops its parts.
+- **A model that is not ready places no lights.** A requested model appears whole or not at
+  all (`background.md` §8), its lights included.
+- **The light record keeps no defaults for `kind`, `color` and `intensity`,** as §6.1 wrote it.
+  Every other field defaults to `render3d.Light`'s value. Import always writes all eight fields.
+- **glTF's light defaults are applied at import:**
+  - colour white, intensity 1, and the spot's inner cone 0 and outer π/4;
+  - a written `range` must be positive (glTF's rule), and an absent one is Foundry's 0,
+    unbounded;
+  - a light under uniform positive scale imports with the scale dropped;
+  - one under non-uniform, negative or shearing scale is refused, as §6.3 says.
+- **`front "+z"` turns a light as it turns a part:** the half-turn is composed on the right,
+  as `meshes.md` does for parts.
+- **Limits:** a file's lights and one model's placed lights are capped at 256, which is
+  `render3d.Content.Limits.max_lights`. An import therefore never writes a model that render3d
+  refuses for its length.
+- **Not in this step:** the samples moving onto records and the `dusk` mod (§6.4) are Steps 7
+  and 8. The modding guide's light records and `lights` overrides go with Step 7's mod.
+
+**Guards verified by mutation.** Each was broken and then restored, and each broken version
+failed a test:
+- in `asset`, dropping the cone rule, and dropping the source-radius-inside-range rule;
+- in the importer:
+  - the scale guard;
+  - the zero-tangent guard;
+  - generating no tangents;
+  - copying no stream for an added vertex;
+  - splitting no vertex in the shared rule;
+- in `render3d`, the short-slice refusal (the test crashed past the slice);
+- in the compiler, the light record's meaning check.
+
+Three earlier attempts at mutants did not compile, so they were rewritten into ones that did
+before being counted.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples and `fdt-check` pass. Tests: null 3,092/3,102 (ten skips), Metal
+3,107/3,128 (21 skips); `asset` 276/276, `author` 121/121, the integration graph 162/165 (three
+skips, as before). No shader, Vulkan or ABI code changed.
+
+Next is Step 4: the environment record and its CPU prefilter. No `foundry:environment` exists
+yet.

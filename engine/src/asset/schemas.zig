@@ -210,17 +210,28 @@ const model_clip_type: data.FieldType = .{ .nested = &.{
     .{ .name = "clip", .type = .id },
 } };
 
+/// A light a model places (`environment.md` §6.2): a `foundry:light` record and where it sits,
+/// relative to the model's origin as a part is. No scale, because a light has none.
+const model_light_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "light", .type = .id },
+    .{ .name = "translation", .type = vec3_type },
+    .{ .name = "rotation", .type = quat_type },
+} };
+
 /// Version 3 (M37, `collision-extras.md` §9) names the model's collision: a
 /// `foundry:collision_mesh`, so a game finds what a model collides as from the model alone.
+/// Version 4 (M41, ADR-0085) places lights, which a game submits through
+/// `render3d.Content.modelLights`; none is drawn because a model is.
 pub const model: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_name),
-    .version = 3,
+    .version = 4,
     .fields = &.{
         .{ .name = "slots", .type = model_slots_type },
         .{ .name = "parts", .type = model_parts_type },
         .{ .name = "skeleton", .type = .id, .since = 2, .presence = .optional },
         .{ .name = "clips", .type = .{ .list = &model_clip_type }, .since = 2, .presence = .optional },
         .{ .name = "collision", .type = .id, .since = 3, .presence = .optional },
+        .{ .name = "lights", .type = .{ .list = &model_light_type }, .since = 4, .presence = .optional },
     },
 };
 
@@ -234,10 +245,12 @@ const exclusion_name_type: data.FieldType = .string;
 
 /// The build-only model authoring form (M20 Step 4); v2 adds opt-in collision (M23 Step 3);
 /// v3 (M37, `collision-extras.md` §10) maps materials to surfaces in the derived collision, or
-/// names a proxy instead. No runtime path understands glTF or this record.
+/// names a proxy instead; v4 (M41, `environment.md` §6.3) sets what glTF's
+/// `KHR_lights_punctual` cannot say about a light, matched by the light's name. No runtime path
+/// understands glTF or this record.
 pub const model_import: Schema = .{
     .id = SchemaId.fromStringUnchecked(model_import_name),
-    .version = 3,
+    .version = 4,
     .fields = &.{
         .{ .name = source_field, .type = .string },
         .{ .name = "front", .type = .string, .presence = .{ .default = .{ .string = "-z" } } },
@@ -246,8 +259,16 @@ pub const model_import: Schema = .{
         .{ .name = "collision_exclude", .type = .{ .list = &exclusion_name_type }, .since = 2, .presence = .optional },
         .{ .name = "surfaces", .type = surface_mappings_type, .since = 3, .presence = .optional },
         .{ .name = "collision_mesh", .type = .id, .since = 3, .presence = .optional },
+        .{ .name = "lights", .type = .{ .list = &light_override_type }, .since = 4, .presence = .optional },
     },
 };
+
+/// What an imported light gains that glTF has no field for (`environment.md` §6.3).
+const light_override_type: data.FieldType = .{ .nested = &.{
+    .{ .name = "name", .type = .string },
+    .{ .name = "casts_shadow", .type = .bool, .presence = .{ .default = .{ .bool = false } } },
+    .{ .name = "source_radius", .type = .f32, .presence = .{ .default = .{ .float = 0 } } },
+} };
 
 /// What a glTF material's triangles collide as (`collision-extras.md` §10): a surface ID and
 /// whether they are one-sided. `foundry:collision_import` and `foundry:model_import` version 3
@@ -380,7 +401,10 @@ pub const kinds = [_]Kind{
 };
 
 /// Engine-defined record schemas with no source bytes of their own.
-pub const records = [_]Schema{ material, model };
+pub const records = [_]Schema{ material, model, light.schema };
+
+pub const light = @import("light.zig");
+pub const light_name = light.name;
 
 /// Engine-defined authoring records that are compiled into others and never shipped, beside
 /// `foundry:model_import`, which is a kind because an extension derives it. The compiler checks
@@ -682,8 +706,54 @@ test "model v2 reads under v3 with no collision, and v3 names one" {
     try testing.expectEqual(@as(usize, 4), package.records()[0].values.len);
     try testing.expect(package.records()[0].value(model, 4) == null);
     try compileRecords("foundry:model test:new { slots [] parts [] collision test:new.collision }", &registry, &package, &diags);
-    try testing.expectEqual(@as(usize, 5), package.records()[1].values.len);
+    try testing.expectEqual(model.fields.len, package.records()[1].values.len);
     try testing.expect(package.records()[1].value(model, 4).?.id.eql(core.ContentId.fromString("test:new.collision")));
+}
+
+test "model v3 reads under v4 with no lights, and v4 places them" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    var old_registry: Registry = .init(gpa, .default);
+    defer old_registry.deinit(gpa);
+    _ = try old_registry.register(gpa, .{ .id = model.id, .version = 3, .fields = model.fields[0..5] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    const lights = model.fieldIndex("lights").?;
+    try compileRecords("foundry:model test:old { slots [] parts [] }", &old_registry, &package, &diags);
+    try testing.expect(package.records()[0].value(model, lights) == null);
+    try compileRecords(
+        \\foundry:light test:lamp { kind "point" color { r 1 g 1 b 1 } intensity 10 }
+        \\foundry:model test:new { slots [] parts [] lights [ { light test:lamp translation { x 0 y 2 z 0 } rotation { x 0 y 0 z 0 w 1 } } ] }
+    , &registry, &package, &diags);
+    const placed = package.records()[2].value(model, lights).?.list;
+    try testing.expectEqual(@as(usize, 1), placed.len);
+    try testing.expect(placed[0].nested[0].value.id.eql(core.ContentId.fromString("test:lamp")));
+}
+
+test "model_import v3 reads under v4 with no light overrides, and v4 sets them by name" {
+    const gpa = testing.allocator;
+    var registry: Registry = .init(gpa, .default);
+    defer registry.deinit(gpa);
+    try registerAll(gpa, &registry);
+    var old_registry: Registry = .init(gpa, .default);
+    defer old_registry.deinit(gpa);
+    _ = try old_registry.register(gpa, .{ .id = model_import.id, .version = 3, .fields = model_import.fields[0..7] });
+    var package = try data.Package.init(gpa, "test:package", 1, .default);
+    defer package.deinit(gpa);
+    var diags: data.Diagnostics = .init(gpa, .default);
+    defer diags.deinit(gpa);
+    const lights = model_import.fieldIndex("lights").?;
+    try compileRecords("foundry:model_import test:old { source \"lamp.gltf\" }", &old_registry, &package, &diags);
+    try testing.expect(package.records()[0].value(model_import, lights) == null);
+    try compileRecords("foundry:model_import test:new { source \"lamp.gltf\" lights [ { name \"Bulb\" casts_shadow true } ] }", &registry, &package, &diags);
+    const entry = package.records()[1].value(model_import, lights).?.list[0].nested;
+    try testing.expectEqualStrings("Bulb", entry[0].value.string);
+    try testing.expect(entry[1].value.bool);
+    try testing.expectEqual(@as(f64, 0), entry[2].value.float);
 }
 
 test "collision_import v1 reads under v2 as a mesh, and v2 names its shape" {

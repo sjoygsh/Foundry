@@ -31,6 +31,7 @@ const Allocator = std.mem.Allocator;
 const ContentId = core.ContentId;
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
+const Light = renderer_mod.Light;
 const MaterialDesc = renderer_mod.MaterialDesc;
 const MaterialHandle = renderer_mod.MaterialHandle;
 const Renderer = renderer_mod.Renderer;
@@ -66,6 +67,9 @@ pub const Limits = struct {
     max_parts: u32 = 4096,
     max_clips: u32 = 1024,
     max_clip_name_bytes: u32 = 65_536,
+    /// Placed lights in one record (`environment.md` §6.2). A frame still submits at most
+    /// `max_lights`; this only bounds what a package can make `modelLights` read.
+    max_lights: u32 = 256,
 
     pub const default: Limits = .{};
 };
@@ -180,10 +184,19 @@ const Part = struct {
     reported: bool = false,
 };
 
+/// A light a model places (ADR-0085): its record's values, read when the model is built, and
+/// where it sits relative to the model. A model is rebuilt when content changes, so a mod's
+/// override of the record is followed.
+const PlacedLight = struct {
+    light: Light,
+    local: Mat4,
+};
+
 const ModelEntry = struct {
     id: ContentId,
     refs: u32,
     parts: []Part,
+    lights: []PlacedLight = &.{},
     slots: []EntryHandle,
     /// Each distinct mesh acquired once, in first-use order.
     meshes: []asset.AssetHandle,
@@ -368,6 +381,36 @@ pub const Content = struct {
         }
     }
 
+    /// The model's placed lights at `world`, written into `out` in record order, as the slice
+    /// of `out` they fill (`environment.md` §6.2, ADR-0085). The game submits them through
+    /// `addLight` like any other light, so the frame's limit and placement stay the game's; no
+    /// light is drawn because a model is.
+    ///
+    /// Each light's world matrix is `world · placement`. A light has no scale, and none is
+    /// taken from `world`'s: its direction is normalized where it is packed. A model that is not
+    /// ready places nothing, as it draws nothing. **A refusal writes nothing**: a stale handle,
+    /// a non-finite `world`, or an `out` shorter than the model's lights (`TooManyLights`;
+    /// `lightCount` says how many it needs).
+    pub fn modelLights(self: *Self, handle: ModelHandle, world: Mat4, out: []Light) Error![]Light {
+        const model = self.models.getConst(handle) orelse return error.InvalidModel;
+        for (world.cols) |column| for (column) |value| {
+            if (!std.math.isFinite(value)) return error.InvalidTransform;
+        };
+        if (out.len < model.lights.len) return error.TooManyLights;
+        if (try self.settle(handle) != .ready) return out[0..0];
+        const lights = self.models.getConst(handle).?.lights;
+        for (lights, out[0..lights.len]) |placed, *light| {
+            light.* = placed.light;
+            light.world = Mat4.mul(world, placed.local);
+        }
+        return out[0..lights.len];
+    }
+
+    /// How many lights `modelLights` writes for the model, or null for a stale handle.
+    pub fn lightCount(self: *const Self, handle: ModelHandle) ?u32 {
+        return @intCast((self.models.getConst(handle) orelse return null).lights.len);
+    }
+
     /// Current payloads, borrowed until the next asset/content reload, never retained by us.
     pub fn skeletonOf(self: *Self, handle: ModelHandle) ?*const asset.skeleton.Skeleton {
         const model = self.models.getConst(handle) orelse return null;
@@ -542,6 +585,10 @@ pub const Content = struct {
             part.* = .{ .mesh = .none, .submesh = submesh, .slot = slot, .local = transform.toMat4() };
         }
 
+        const lights = try self.readLights(record);
+        var lights_owned = true;
+        defer if (lights_owned) gpa.free(lights);
+
         // Everything read; now acquire, releasing what was taken if anything fails.
         const slots = try gpa.alloc(EntryHandle, slot_ids.len);
         var retained: usize = 0;
@@ -622,7 +669,7 @@ pub const Content = struct {
                 try clips.append(gpa, .{ .name = owned_name, .handle = clip });
             }
         }
-        var built: ModelEntry = .{ .id = record.id, .refs = 1, .parts = parts, .slots = slots, .meshes = meshes.items, .skeleton = skeleton, .clips = clips.items, .state = if (mode == .request) .pending else .ready };
+        var built: ModelEntry = .{ .id = record.id, .refs = 1, .parts = parts, .lights = lights, .slots = slots, .meshes = meshes.items, .skeleton = skeleton, .clips = clips.items, .state = if (mode == .request) .pending else .ready };
         // A requested model's joint counts are checked once its parts are here.
         if (mode == .acquire) self.checkAnimation(built) catch return refuse(record, "has incompatible mesh, skeleton or clip joint counts");
         const owned_clips = try clips.toOwnedSlice(gpa);
@@ -635,9 +682,50 @@ pub const Content = struct {
         }
         const owned_meshes = try meshes.toOwnedSlice(gpa);
         parts_owned = false;
+        lights_owned = false;
         built.meshes = owned_meshes;
         built.clips = owned_clips;
         return built;
+    }
+
+    /// Version 4's `lights` (ADR-0085). A placement that cannot be read refuses the model, as a
+    /// part's does. A light whose record is missing, is not a `foundry:light`, or is refused by
+    /// its decoder is dropped and said, as a mesh that fails drops its parts: a model whose lamp
+    /// a mod broke still draws.
+    fn readLights(self: *Self, record: asset.Record) Error![]PlacedLight {
+        const list = listField(record.fields, "lights") orelse return &.{};
+        if (list.len > self.limits.max_lights) return refuse(record, "has more lights than render3d's limit");
+        var out: std.ArrayList(PlacedLight) = .empty;
+        errdefer out.deinit(self.gpa);
+        try out.ensureTotalCapacityPrecise(self.gpa, list.len);
+        for (0..list.len) |i| {
+            const fields = (list.nestedAt(@intCast(i)) catch null) orelse return refuse(record, "has a light that cannot be read");
+            const light_id = idField(fields, "light") orelse return refuse(record, "has a light with no record");
+            const translation = vec3Field(fields, "translation") orelse return refuse(record, "has a light with no translation");
+            const r = nestedField(fields, "rotation") orelse return refuse(record, "has a light with no rotation");
+            const rotation = core.math.Quat.validated(
+                floatField(r, "x") orelse std.math.nan(f32),
+                floatField(r, "y") orelse std.math.nan(f32),
+                floatField(r, "z") orelse std.math.nan(f32),
+                floatField(r, "w") orelse std.math.nan(f32),
+            ) catch return refuse(record, "has a light whose rotation is not a unit quaternion");
+            const transform: core.math.Transform = .{ .translation = translation, .rotation = rotation, .scale = .init(1, 1, 1) };
+            if (!transform.isValid()) return refuse(record, "has a light whose transform is not finite");
+            const light_record = self.assets.store.lookup(light_id) orelse {
+                log.warn("model {f}: light {f} is not in the loaded content; it is dropped", .{ record.id, light_id });
+                continue;
+            };
+            if (!light_record.schema_id.eql(asset.light.schema.id)) {
+                log.warn("model {f}: {f} is not a foundry:light; it is dropped", .{ record.id, light_id });
+                continue;
+            }
+            const value = asset.light.decode(light_record.fields) catch |err| {
+                log.warn("model {f}: light '{s}' {s}; it is dropped", .{ record.id, light_record.name, asset.light.describe(err) });
+                continue;
+            };
+            out.appendAssumeCapacity(.{ .light = lightOf(value), .local = transform.toMat4() });
+        }
+        return out.toOwnedSlice(self.gpa);
     }
 
     fn obtain(self: *Self, mode: Mode, id: ContentId, with: asset.Loader) asset.AcquireError!asset.AssetHandle {
@@ -770,6 +858,7 @@ pub const Content = struct {
 
     fn freeModel(self: *Self, model: *ModelEntry) void {
         self.gpa.free(model.parts);
+        self.gpa.free(model.lights);
         self.gpa.free(model.slots);
         self.gpa.free(model.meshes);
         for (model.clips) |clip| self.gpa.free(clip.name);
@@ -951,6 +1040,25 @@ pub const Content = struct {
         entry.built_from = handles;
     }
 };
+
+/// A record's values as the renderer's light, field for field; the world is the caller's.
+pub fn lightOf(value: asset.light.Light) Light {
+    return .{
+        .kind = switch (value.kind) {
+            .directional => .directional,
+            .point => .point,
+            .spot => .spot,
+        },
+        .color = value.color,
+        .intensity = value.intensity,
+        .range = value.range,
+        .inner_cone = value.inner_cone,
+        .outer_cone = value.outer_cone,
+        .casts_shadow = value.casts_shadow,
+        .source_radius = value.source_radius,
+        .world = .identity,
+    };
+}
 
 fn refuse(record: asset.Record, why: []const u8) error{InvalidModelRecord} {
     log.warn("model '{s}' {s}", .{ record.name, why });

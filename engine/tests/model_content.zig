@@ -1345,3 +1345,237 @@ test "a requested model waits for its materials' textures as well as its meshes"
     }
     stack.content.releaseModel(model);
 }
+
+// -- M41 Step 3: lights a model places (`environment.md` §6, ADR-0085) --------------
+
+const light_records =
+    \\foundry:light demo:lights.lamp { kind "spot" color { r 1 g 0.8 b 0.6 } intensity 40 range 8 inner_cone 0.3 outer_cone 0.6 casts_shadow true source_radius 0.05 }
+    \\foundry:light demo:lights.sun { kind "directional" color { r 1 g 1 b 1 } intensity 1000 }
+    \\foundry:material demo:materials.plain {}
+    \\foundry:model demo:models.lamp {
+    \\ slots [] parts []
+    \\ lights [
+    \\  { light demo:lights.lamp translation { x 0 y 2 z 0 } rotation { x 0 y 0.70710678 z 0 w 0.70710678 } }
+    \\  { light demo:materials.plain translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 1 } }
+    \\  { light demo:lights.absent translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 1 } }
+    \\  { light demo:lights.sun translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 1 } }
+    \\ ]
+    \\}
+    \\foundry:model demo:models.twisted {
+    \\ slots [] parts []
+    \\ lights [ { light demo:lights.lamp translation { x 0 y 0 z 0 } rotation { x 0 y 0 z 0 w 2 } } ]
+    \\}
+;
+
+fn lightStack() !*Stack {
+    const stack = try Stack.init(1);
+    errdefer stack.deinit();
+    try stack.write("content.fdt", light_records);
+    try stack.build();
+    return stack;
+}
+
+test "a model's lights are its records' values at its world matrix, and a broken one is dropped" {
+    const stack = try lightStack();
+    defer stack.deinit();
+    const lamp = try stack.content.acquireModel(id("demo:models.lamp"));
+    defer stack.content.releaseModel(lamp);
+
+    // The material and the absent ID are dropped and said; the lamp and the sun remain.
+    try testing.expectEqual(@as(?u32, 2), stack.content.lightCount(lamp));
+    var out: [4]render3d.Light = undefined;
+    const world = Mat4.translation(.init(5, 0, -1));
+    const lights = try stack.content.modelLights(lamp, world, &out);
+    try testing.expectEqual(@as(usize, 2), lights.len);
+
+    const spot = lights[0];
+    try testing.expectEqual(.spot, spot.kind);
+    try testing.expectEqual([3]f32{ 1, 0.8, 0.6 }, spot.color);
+    try testing.expectEqual(@as(f32, 40), spot.intensity);
+    try testing.expectEqual(@as(f32, 8), spot.range);
+    try testing.expectEqual(@as(f32, 0.3), spot.inner_cone);
+    try testing.expectEqual(@as(f32, 0.6), spot.outer_cone);
+    try testing.expect(spot.casts_shadow);
+    try testing.expectEqual(@as(f32, 0.05), spot.source_radius);
+    // At world · placement: (5, 2, -1), turned a quarter about +y, so it looks along -x.
+    try testing.expectApproxEqAbs(@as(f32, 5), spot.world.cols[3][0], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 2), spot.world.cols[3][1], 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, -1), spot.world.cols[3][2], 1e-6);
+    const axis = render3d.lighting.direction(spot.world);
+    try testing.expectApproxEqAbs(@as(f32, -1), axis.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), axis.z, 1e-6);
+    try testing.expectEqual(.directional, lights[1].kind);
+
+    // The game submits them like any other light.
+    try stack.begin();
+    for (lights) |light| {
+        try testing.expect(render3d.lighting.valid(light));
+        try stack.renderer.addLight(light);
+    }
+    try stack.finish(null);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
+test "modelLights refuses a stale handle, a non-finite world and a short slice, and writes nothing" {
+    const stack = try lightStack();
+    defer stack.deinit();
+    const lamp = try stack.content.acquireModel(id("demo:models.lamp"));
+    var out: [4]render3d.Light = undefined;
+    @memset(std.mem.sliceAsBytes(&out), 0xAA);
+    const before = out;
+    try testing.expectError(error.TooManyLights, stack.content.modelLights(lamp, .identity, out[0..1]));
+    var bad = Mat4.identity;
+    bad.cols[3][0] = std.math.nan(f32);
+    try testing.expectError(error.InvalidTransform, stack.content.modelLights(lamp, bad, &out));
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&before), std.mem.sliceAsBytes(&out));
+    stack.content.releaseModel(lamp);
+    try testing.expectError(error.InvalidModel, stack.content.modelLights(lamp, .identity, &out));
+    try testing.expectEqual(@as(?u32, null), stack.content.lightCount(lamp));
+    // A placement that cannot be one refuses the model, as a part's does.
+    try testing.expectError(error.InvalidModelRecord, stack.content.acquireModel(id("demo:models.twisted")));
+}
+
+test "a light record's override is followed by the model that places it" {
+    const stack = try lightStack();
+    defer stack.deinit();
+    const lamp = try stack.content.acquireModel(id("demo:models.lamp"));
+    defer stack.content.releaseModel(lamp);
+    const edited = try std.mem.replaceOwned(u8, stack.gpa, light_records, "intensity 40", "intensity 75");
+    defer stack.gpa.free(edited);
+    try stack.write("content.fdt", edited);
+    try stack.reload();
+    var out: [2]render3d.Light = undefined;
+    const lights = try stack.content.modelLights(lamp, .identity, &out);
+    try testing.expectEqual(@as(f32, 75), lights[0].intensity);
+}
+
+test "a light the renderer would refuse does not compile, by its field" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    try stack.write("content.fdt", "foundry:light demo:lights.wide { kind \"spot\" color { r 1 g 1 b 1 } intensity 1 outer_cone 2 }");
+    try testing.expectError(error.ContentInvalid, stack.build());
+    var found = false;
+    for (stack.diags.items.items) |diag| {
+        if (std.mem.indexOf(u8, diag.message, "outer_cone") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "asset.light's rules are render3d.lighting.valid's, for every light a record can hold" {
+    // The two rule sets cannot see each other (ADR-0085); this stands above both.
+    const kinds = [_]asset.light.Kind{ .directional, .point, .spot };
+    const values = [_]f32{ -1, 0, 0.1, 0.3926990817, 0.4, 0.785398, 1, 1.5707963, 1.6, 8, std.math.inf(f32), std.math.nan(f32) };
+    var checked: usize = 0;
+    for (kinds) |kind| for (values) |a| for (values) |b| for (values) |c| {
+        const cases = [_]asset.light.Light{
+            .{ .kind = kind, .intensity = a, .range = b, .source_radius = c },
+            .{ .kind = kind, .intensity = 1, .inner_cone = a, .outer_cone = b, .range = c },
+            .{ .kind = kind, .intensity = 1, .color = .{ a, b, c } },
+        };
+        for (cases) |value| {
+            var light = render3d.content.lightOf(value);
+            light.world = .identity;
+            const ok = if (value.validate()) |_| true else |_| false;
+            try testing.expectEqual(render3d.lighting.valid(light), ok);
+            checked += 1;
+        }
+    };
+    try testing.expect(checked > 1000);
+}
+
+const lamp_gltf =
+    \\{"asset":{"version":"2.0"},
+    \\ "extensionsUsed":["KHR_lights_punctual"],
+    \\ "extensions":{"KHR_lights_punctual":{"lights":[{"name":"Bulb","type":"point","color":[1,0.9,0.8],"intensity":25,"range":6}]}},
+    \\ "buffers":[{"uri":"quad.bin","byteLength":92}],
+    \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":32},{"buffer":0,"byteOffset":80,"byteLength":12}],
+    \\ "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-1,-1,-2],"max":[1,1,-2]},
+    \\              {"bufferView":1,"componentType":5126,"count":4,"type":"VEC2"},
+    \\              {"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}],
+    \\ "materials":[{"name":"Shade","extensions":{"KHR_materials_unlit":{}}}],
+    \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]}],
+    \\ "nodes":[{"mesh":0,"children":[1]},{"translation":[0,1,0],"extensions":{"KHR_lights_punctual":{"light":0}}}],
+    \\ "scenes":[{"nodes":[0]}],"scene":0}
+;
+
+test "a glTF lamp's light compiles to a record the model places, submitted at the model's world" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    const bin = quadBin();
+    try stack.write("models/quad.bin", &bin);
+    try stack.write("models/lamp.gltf", lamp_gltf);
+    try stack.write("lamp.fdt", "foundry:model_import demo:models.lamp { source \"models/lamp.gltf\" lights [ { name \"Bulb\" casts_shadow true source_radius 0.05 } ] }");
+    try stack.build();
+
+    const lamp = try stack.content.acquireModel(id("demo:models.lamp"));
+    defer stack.content.releaseModel(lamp);
+    var out: [1]render3d.Light = undefined;
+    const lights = try stack.content.modelLights(lamp, Mat4.translation(.init(2, 0, 0)), &out);
+    try testing.expectEqual(@as(usize, 1), lights.len);
+    const bulb = lights[0];
+    try testing.expectEqual(.point, bulb.kind);
+    try testing.expectEqual([3]f32{ 1, 0.9, 0.8 }, bulb.color);
+    try testing.expectEqual(@as(f32, 25), bulb.intensity);
+    try testing.expectEqual(@as(f32, 6), bulb.range);
+    try testing.expect(bulb.casts_shadow);
+    try testing.expectEqual(@as(f32, 0.05), bulb.source_radius);
+    try testing.expectEqual([4]f32{ 2, 1, 0, 1 }, bulb.world.cols[3]);
+
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = lamp, .world = Mat4.translation(.init(2, 0, 0)) });
+    try stack.renderer.addLight(bulb);
+    try stack.finish(null);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}
+
+const tile_gltf =
+    \\{"asset":{"version":"2.0"},
+    \\ "buffers":[{"uri":"tile.bin","byteLength":140}],
+    \\ "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":48},{"buffer":0,"byteOffset":48,"byteLength":48},{"buffer":0,"byteOffset":96,"byteLength":32},{"buffer":0,"byteOffset":128,"byteLength":12}],
+    \\ "accessors":[{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-1,-1,-2],"max":[1,1,-2]},
+    \\              {"bufferView":1,"componentType":5126,"count":4,"type":"VEC3"},
+    \\              {"bufferView":2,"componentType":5126,"count":4,"type":"VEC2"},
+    \\              {"bufferView":3,"componentType":5123,"count":6,"type":"SCALAR"}],
+    \\ "images":[{"uri":"bumps.png","mimeType":"image/png"}],
+    \\ "textures":[{"source":0}],
+    \\ "materials":[{"name":"Bumpy","normalTexture":{"index":0}}],
+    \\ "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],
+    \\ "nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0}
+;
+
+test "a normal-mapped glTF without tangents compiles, and its mesh draws lit with a tangent stream" {
+    const stack = try Stack.init(1);
+    defer stack.deinit();
+    var bin: [140]u8 = undefined;
+    const normals = [_][3]f32{.{ 0, 0, 1 }} ** 4;
+    @memcpy(bin[0..48], std.mem.sliceAsBytes(&quad_positions));
+    @memcpy(bin[48..96], std.mem.sliceAsBytes(&normals));
+    @memcpy(bin[96..128], std.mem.sliceAsBytes(&quad_uvs));
+    @memcpy(bin[128..140], std.mem.sliceAsBytes(&quad_indices));
+    try stack.write("models/tile.bin", &bin);
+    try stack.write("models/tile.gltf", tile_gltf);
+    const png = try checkerPng(stack.gpa, 4);
+    defer stack.gpa.free(png);
+    try stack.install("models/bumps.png", png);
+    try stack.build();
+    var noted = false;
+    for (stack.diags.items.items) |diag| {
+        if (diag.severity == .note and std.mem.indexOf(u8, diag.message, "tangents were generated") != null) noted = true;
+    }
+    try testing.expect(noted);
+
+    const bytes = try readOut(stack, "models/tile/mesh0.fmesh");
+    defer stack.gpa.free(bytes);
+    var view = try asset.mesh_file.read(bytes, .default);
+    var has_tangent = false;
+    for (view.mesh().streams) |stream| has_tangent = has_tangent or stream.semantic == .tangent;
+    try testing.expect(has_tangent);
+
+    const tile = try stack.content.acquireModel(id("demo:models.tile"));
+    defer stack.content.releaseModel(tile);
+    try stack.begin();
+    try stack.content.drawModel(.{ .model = tile, .world = .identity });
+    try stack.finish(null);
+    try testing.expectEqual(@as(u32, 1), stack.renderer.frameStats().draws);
+    try testing.expectEqual(@as(usize, 0), stack.violations());
+}

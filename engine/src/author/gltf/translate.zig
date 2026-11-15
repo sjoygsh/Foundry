@@ -34,6 +34,17 @@ pub const SurfaceMapping = struct {
     one_sided: bool = false,
 };
 
+/// What an imported light gains that glTF has no field for (`environment.md` §6.3), matched by
+/// the glTF light's name.
+pub const LightOverride = struct {
+    name: []const u8,
+    casts_shadow: bool = false,
+    source_radius: f32 = 0,
+};
+
+/// The extensions an import understands. Any other that a file requires is refused.
+const imported_extensions = [_][]const u8{ "KHR_materials_unlit", "KHR_materials_emissive_strength", "KHR_lights_punctual" };
+
 pub const Settings = struct {
     model_id: []const u8,
     source: []const u8,
@@ -50,6 +61,8 @@ pub const Settings = struct {
     /// A proxy whose `shape` is `hull`: the `foundry:collision_hull` of `model_id`'s own ID and
     /// its `.fhul`, the corners of every vertex its triangles use (`collision-scale.md` §9).
     hull: bool = false,
+    /// `foundry:model_import` v4's `lights` (`environment.md` §6.3).
+    lights: []const LightOverride = &.{},
 };
 
 /// A derived or proxy collision mesh with at least this many triangles carries its tree in its
@@ -121,9 +134,14 @@ const Context = struct {
     /// Each mesh's `.fmesh` bytes, by mesh index, which collision is read back from.
     mesh_bytes: []const []const u8 = &.{},
     rig: ?skin_import.Rig = null,
+    /// `KHR_lights_punctual`'s lights, by glTF index, each already a `foundry:light`'s values.
+    lights: []const ImportedLight = &.{},
+
+    const ImportedLight = struct { name: ?[]const u8, value: asset.light.Light };
 
     fn translate(self: *Context) Error!Result {
         try self.validateDocument();
+        if (!self.settings.proxy) self.lights = try self.parseLights();
         self.rig = try (skin_import.Context{ .gpa = self.gpa, .arena = self.arena, .doc = self.doc, .buffers = self.buffers, .source = self.settings.source, .diags = self.diags, .limits = self.limits }).prepare(if (self.settings.front == .plus_z) Mat4.rotationY(std.math.pi) else Mat4.identity);
         var out: std.ArrayList(u8) = .empty;
         var generated: std.ArrayList(GeneratedAsset) = .empty;
@@ -155,6 +173,7 @@ const Context = struct {
 
         const material_ids = try self.emitMaterials(&out);
         try self.emitTextures(&out);
+        try self.emitLights(&out);
         try self.emitModel(&out, material_ids);
         if (self.settings.collision) try self.emitCollision(&out, &generated);
         if (self.rig) |rig| {
@@ -223,12 +242,10 @@ const Context = struct {
             if (!isAtMost20(minimum)) return self.fail("asset.minVersion", null, "requires glTF {s}, newer than the supported 2.0", .{minimum});
         }
         for (self.doc.extensionsRequired) |name| {
-            if (!std.mem.eql(u8, name, "KHR_materials_unlit") and !std.mem.eql(u8, name, "KHR_materials_emissive_strength")) {
-                return self.fail("extensionsRequired", null, "requires unsupported extension '{s}'", .{name});
-            }
+            if (!isImported(name)) return self.fail("extensionsRequired", null, "requires unsupported extension '{s}'", .{name});
         }
         for (self.doc.extensionsUsed) |name| {
-            if (std.mem.eql(u8, name, "KHR_materials_unlit") or std.mem.eql(u8, name, "KHR_materials_emissive_strength")) continue;
+            if (isImported(name)) continue;
             var required = false;
             for (self.doc.extensionsRequired) |required_name| {
                 if (std.mem.eql(u8, name, required_name)) required = true;
@@ -252,6 +269,9 @@ const Context = struct {
         defer submeshes.deinit(self.gpa);
         var layout: ?Layout = null;
         var vertex_count: u32 = 0;
+        var ranges: std.ArrayList(PrimitiveRange) = .empty;
+        defer ranges.deinit(self.gpa);
+        var needs_tangents = false;
         var bounds: ?asset.MeshAabb = null;
         const skinned = if (self.rig) |rig| rig.mesh_skinned[mesh_index] else false;
         const joint_bounds = try self.arena.alloc(asset.MeshAabb, if (skinned) self.rig.?.skeleton.parents.len else 0);
@@ -269,7 +289,12 @@ const Context = struct {
             const material: document.Material = if (material_index == self.doc.materials.len) .{} else self.doc.materials[material_index];
             if (!isUnlit(material) and !self.isMappedMaterial(material)) {
                 if (!primitive_layout.normal) return self.failMesh(mesh_index, at, "lit material needs NORMAL; export normals, or mark the material KHR_materials_unlit", .{});
-                if (material.normalTexture != null and !primitive_layout.tangent) return self.failMesh(mesh_index, at, "normalTexture needs TANGENT; export tangents", .{});
+                if (material.normalTexture != null and !primitive_layout.tangent) {
+                    // From M41 they are generated (ADR-0086), from the UVs the normal map is
+                    // read with; with none there is nothing to build a basis from.
+                    if (!primitive_layout.uv0) return self.failMesh(mesh_index, at, "normalTexture needs TANGENT, or TEXCOORD_0 to generate them from; export UVs or tangents", .{});
+                    needs_tangents = true;
+                }
             }
             if (layout) |expected| {
                 if (!expected.eql(primitive_layout)) return self.failMesh(mesh_index, at, "does not carry the same imported attributes and formats as primitive 0", .{});
@@ -333,14 +358,21 @@ const Context = struct {
             const count: u32 = @intCast(indices.items.len - first_index);
             if (count == 0 or count % 3 != 0) return self.failMesh(mesh_index, at, "has {d} indices; a triangle list needs a non-zero multiple of three", .{count});
             try submeshes.append(self.gpa, .{ .first_index = first_index, .index_count = count });
+            try ranges.append(self.gpa, .{ .base = base_vertex, .vertex_count = positions.count, .first_index = first_index, .index_count = count });
         }
 
         const final_layout = layout.?;
+        var has_tangent = final_layout.tangent;
+        if (needs_tangents) {
+            try self.generateTangents(mesh_index, &streams, &indices, ranges.items, &vertex_count);
+            try self.noteMesh(mesh_index, "has no TANGENT for its normalTexture; MikkTSpace tangents were generated", .{});
+            has_tangent = true;
+        }
         var descriptors: std.ArrayList(asset.MeshStream) = .empty;
         defer descriptors.deinit(self.gpa);
         try descriptors.append(self.gpa, .{ .semantic = .position, .format = .float32x3, .bytes = streams[0].items });
         if (final_layout.normal) try descriptors.append(self.gpa, .{ .semantic = .normal, .format = .float32x3, .bytes = streams[1].items });
-        if (final_layout.tangent) try descriptors.append(self.gpa, .{ .semantic = .tangent, .format = .float32x4, .bytes = streams[5].items });
+        if (has_tangent) try descriptors.append(self.gpa, .{ .semantic = .tangent, .format = .float32x4, .bytes = streams[5].items });
         if (final_layout.uv0) try descriptors.append(self.gpa, .{ .semantic = .uv0, .format = .float32x2, .bytes = streams[2].items });
         if (final_layout.uv1) try descriptors.append(self.gpa, .{ .semantic = .uv1, .format = .float32x2, .bytes = streams[3].items });
         if (final_layout.color) |format| try descriptors.append(self.gpa, .{ .semantic = .color, .format = format, .bytes = streams[4].items });
@@ -369,6 +401,50 @@ const Context = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return self.failMesh(mesh_index, null, "does not form a valid runtime mesh: {s}", .{@errorName(err)}),
         };
+    }
+
+    const PrimitiveRange = struct { base: u32, vertex_count: u32, first_index: u32, index_count: u32 };
+
+    /// Tangents for a mesh whose normal map has none (`environment.md` §5.2, ADR-0086): each
+    /// primitive on its own, as glTF's primitives are separate meshes, then `tangents.split`'s
+    /// rule over the whole, so a vertex whose corners disagree becomes one more vertex at the
+    /// end, a copy of every stream. A tangent the method cannot normalize is refused here.
+    fn generateTangents(self: *Context, mesh_index: u32, streams: *[8]std.ArrayList(u8), indices: *std.ArrayList(u32), ranges: []const PrimitiveRange, vertex_count: *u32) Error!void {
+        const corners = try self.gpa.alloc(asset.tangents.Tangent, indices.items.len);
+        defer self.gpa.free(corners);
+        for (ranges, 0..) |range, at| {
+            const local = try self.gpa.alloc(u32, range.index_count);
+            defer self.gpa.free(local);
+            for (local, indices.items[range.first_index..][0..range.index_count]) |*index, global| index.* = global - range.base;
+            const generated = asset.tangents.generate(self.gpa, .{
+                .positions = std.mem.bytesAsSlice([3]f32, streams[0].items[range.base * 12 ..][0 .. range.vertex_count * 12]),
+                .normals = std.mem.bytesAsSlice([3]f32, streams[1].items[range.base * 12 ..][0 .. range.vertex_count * 12]),
+                .uvs = std.mem.bytesAsSlice([2]f32, streams[2].items[range.base * 8 ..][0 .. range.vertex_count * 8]),
+                .indices = local,
+            }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return self.failMesh(mesh_index, @intCast(at), "cannot generate tangents: {s}", .{@errorName(err)}),
+            };
+            defer self.gpa.free(generated);
+            @memcpy(corners[range.first_index..][0..range.index_count], generated);
+        }
+        const parted = asset.tangents.split(self.gpa, vertex_count.*, indices.items, corners, asset.mesh_file.Limits.default.max_vertices) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.TooManyVertices => return self.failMesh(mesh_index, null, "exceeds the mesh vertex limit once its generated tangents split its seams", .{}),
+        };
+        defer parted.deinit(self.gpa);
+        for (parted.tangents, 0..) |t, v| if (t[0] == 0 and t[1] == 0 and t[2] == 0) {
+            return self.failMesh(mesh_index, null, "has a vertex ({d}) whose generated tangent is zero: its normal is zero or runs along its UV direction; repair the normals or UVs, or export tangents", .{v});
+        };
+        for (streams, 0..) |*stream, slot| {
+            if (slot == 5 or stream.items.len == 0) continue;
+            const stride = stream.items.len / vertex_count.*;
+            try stream.ensureUnusedCapacity(self.gpa, parted.sources.len * stride);
+            for (parted.sources) |source| stream.appendSliceAssumeCapacity(stream.items[source * stride ..][0..stride]);
+        }
+        streams[5].clearRetainingCapacity();
+        try streams[5].appendSlice(self.gpa, std.mem.sliceAsBytes(parted.tangents));
+        vertex_count.* = @intCast(parted.tangents.len);
     }
 
     const Layout = struct {
@@ -737,6 +813,9 @@ const Context = struct {
             self.collision_placements = try self.arena.alloc(?Mat4, self.doc.nodes.len);
             @memset(self.collision_placements, null);
         }
+        const Placed = struct { light: u32, transform: Transform };
+        var placed_lights: std.ArrayList(Placed) = .empty;
+        defer placed_lights.deinit(self.gpa);
         const Stack = struct { node: u32, parent: Mat4, depth: u32, excluded: bool = false };
         var stack: std.ArrayList(Stack) = .empty;
         defer stack.deinit(self.gpa);
@@ -759,6 +838,12 @@ const Context = struct {
             if (node.camera != null) try self.warnNode(entry.node, "camera placement is not imported in M20", .{});
             const local = try self.nodeMatrix(entry.node, node);
             const world = Mat4.mul(entry.parent, local);
+            if (try self.nodeLight(entry.node, node)) |light_index| {
+                var light_matrix = world;
+                if (self.settings.front == .plus_z) light_matrix = Mat4.mul(light_matrix, Mat4.rotationY(std.math.pi));
+                if (placed_lights.items.len == self.limits.max_lights) return self.failNode(entry.node, "places a light past the {d}-light limit of one model", .{self.limits.max_lights});
+                try placed_lights.append(self.gpa, .{ .light = light_index, .transform = try self.lightPlacement(entry.node, light_matrix) });
+            }
             if (node.mesh) |mesh_index| {
                 if (mesh_index >= self.doc.meshes.len) return self.failNode(entry.node, "references meshes[{d}], outside the mesh array", .{mesh_index});
                 var part_matrix = world;
@@ -779,6 +864,19 @@ const Context = struct {
             }
         }
         try out.appendSlice(self.arena, " ]\n");
+        // Version 4 places lights (ADR-0085), in the order the walk reaches their nodes.
+        if (placed_lights.items.len != 0) {
+            try out.appendSlice(self.arena, "    lights [");
+            for (placed_lights.items) |placed| {
+                const t = placed.transform;
+                try out.print(
+                    self.arena,
+                    " {{ light {s} translation {{ x {d} y {d} z {d} }} rotation {{ x {d} y {d} z {d} w {d} }} }}",
+                    .{ try self.generatedId("light", placed.light), t.translation.x, t.translation.y, t.translation.z, t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w },
+                );
+            }
+            try out.appendSlice(self.arena, " ]\n");
+        }
         // Version 3 names what the model collides as, so a game finds it from the model.
         if (self.settings.collision) {
             try out.print(self.arena, "    collision {s}.collision\n", .{self.settings.model_id});
@@ -795,6 +893,122 @@ const Context = struct {
             try out.appendSlice(self.arena, " ]\n");
         }
         try out.appendSlice(self.arena, "}\n");
+    }
+
+    /// `KHR_lights_punctual`'s document-level lights, each copied field for field into a
+    /// `foundry:light`'s values (ADR-0056 chose glTF's units so that this is a copy), with
+    /// `model_import` v4's overrides applied by name, and refused as a light record is.
+    fn parseLights(self: *Context) Error![]const ImportedLight {
+        const path = "extensions.KHR_lights_punctual";
+        for (self.settings.lights, 0..) |override, i| {
+            for (self.settings.lights[0..i]) |earlier| {
+                if (std.mem.eql(u8, earlier.name, override.name)) return self.fail("model import lights", override.name, "is named twice; a light has one override", .{});
+            }
+        }
+        const extensions = self.doc.extensions orelse return self.noLights();
+        const root = extensions.map.get("KHR_lights_punctual") orelse return self.noLights();
+        if (root != .object) return self.fail(path, null, "must be an object", .{});
+        const list = root.object.get("lights") orelse return self.fail(path, null, "has no lights array", .{});
+        if (list != .array) return self.fail(path, null, "lights must be an array", .{});
+        if (list.array.items.len > self.limits.max_lights) return self.fail(path, null, "has more than {d} lights", .{self.limits.max_lights});
+        const lights = try self.arena.alloc(ImportedLight, list.array.items.len);
+        for (list.array.items, lights, 0..) |item, *light, i| {
+            const at = try std.fmt.allocPrint(self.arena, "{s}.lights[{d}]", .{ path, i });
+            if (item != .object) return self.fail(at, null, "must be an object", .{});
+            const object = item.object;
+            const name: ?[]const u8 = if (object.get("name")) |v| switch (v) {
+                .string => |text| text,
+                else => return self.fail(at, null, "name must be a string", .{}),
+            } else null;
+            const kind_text = switch (object.get("type") orelse return self.fail(at, name, "has no type", .{})) {
+                .string => |text| text,
+                else => return self.fail(at, name, "type must be a string", .{}),
+            };
+            const kind = std.meta.stringToEnum(asset.light.Kind, kind_text) orelse return self.fail(at, name, "has type '{s}'; expected directional, point or spot", .{kind_text});
+            var value: asset.light.Light = .{ .kind = kind, .intensity = 1 };
+            if (object.get("color")) |v| {
+                if (v != .array or v.array.items.len != 3) return self.fail(at, name, "color must be three numbers", .{});
+                for (v.array.items, &value.color) |channel, *out| out.* = try self.lightNumber(at, name, "color", channel);
+            }
+            if (object.get("intensity")) |v| value.intensity = try self.lightNumber(at, name, "intensity", v);
+            if (value.intensity < 0) return self.fail(at, name, "has a negative intensity", .{});
+            if (object.get("range")) |v| {
+                value.range = try self.lightNumber(at, name, "range", v);
+                // glTF's range is positive when it is written; absent is unbounded, Foundry's 0.
+                if (!(value.range > 0)) return self.fail(at, name, "has a range that is not positive; leave it out for an unbounded light", .{});
+            }
+            if (kind == .spot) {
+                if (object.get("spot")) |spot| {
+                    if (spot != .object) return self.fail(at, name, "spot must be an object", .{});
+                    if (spot.object.get("innerConeAngle")) |v| value.inner_cone = try self.lightNumber(at, name, "spot.innerConeAngle", v);
+                    if (spot.object.get("outerConeAngle")) |v| value.outer_cone = try self.lightNumber(at, name, "spot.outerConeAngle", v);
+                }
+                if (value.outer_cone > std.math.pi / 2.0) return self.fail(at, name, "has an outer cone past pi/2", .{});
+            }
+            if (name) |text| for (self.settings.lights) |override| if (std.mem.eql(u8, override.name, text)) {
+                value.casts_shadow = override.casts_shadow;
+                value.source_radius = override.source_radius;
+            };
+            value.validate() catch |err| return self.fail(at, name, "{s}", .{asset.light.describe(err)});
+            light.* = .{ .name = name, .value = value };
+        }
+        for (self.settings.lights) |override| {
+            for (lights) |light| if (light.name) |text| {
+                if (std.mem.eql(u8, text, override.name)) break;
+            } else return self.fail("model import lights", override.name, "names no light in the file", .{});
+        }
+        return lights;
+    }
+
+    fn noLights(self: *Context) Error![]const ImportedLight {
+        if (self.settings.lights.len != 0) return self.fail("model import lights", self.settings.lights[0].name, "names no light in the file", .{});
+        return &.{};
+    }
+
+    fn lightNumber(self: *Context, at: []const u8, name: ?[]const u8, field: []const u8, value: std.json.Value) Error!f32 {
+        const number: f64 = switch (value) {
+            .integer => |v| @floatFromInt(v),
+            .float => |v| v,
+            else => return self.fail(at, name, "{s} must be a number", .{field}),
+        };
+        const narrowed: f32 = @floatCast(number);
+        if (!std.math.isFinite(narrowed)) return self.fail(at, name, "{s} must be finite", .{field});
+        return narrowed;
+    }
+
+    /// The `foundry:light` records, `<model>.light<i>` by glTF index (ADR-0055), every light
+    /// in the file whether or not a node places it.
+    fn emitLights(self: *Context, out: *std.ArrayList(u8)) Error!void {
+        for (self.lights, 0..) |light, i| {
+            const v = light.value;
+            try out.print(
+                self.arena,
+                "{s} {s} {{ kind \"{t}\" color {{ r {d} g {d} b {d} }} intensity {d} range {d} inner_cone {d} outer_cone {d} casts_shadow {} source_radius {d} }}\n",
+                .{ asset.light.name, try self.generatedId("light", i), v.kind, v.color[0], v.color[1], v.color[2], v.intensity, v.range, v.inner_cone, v.outer_cone, v.casts_shadow, v.source_radius },
+            );
+        }
+    }
+
+    /// The glTF light a node carries, checked against the file's lights.
+    fn nodeLight(self: *Context, index: u32, node: document.Node) Error!?u32 {
+        if (self.settings.proxy) return null;
+        const extensions = node.extensions orelse return null;
+        const value = extensions.map.get("KHR_lights_punctual") orelse return null;
+        if (value != .object) return self.failNode(index, "KHR_lights_punctual must be an object", .{});
+        const light = value.object.get("light") orelse return self.failNode(index, "KHR_lights_punctual has no light", .{});
+        if (light != .integer or light.integer < 0 or light.integer >= self.lights.len) return self.failNode(index, "KHR_lights_punctual names no light in the file", .{});
+        return @intCast(light.integer);
+    }
+
+    /// A light's place: the node's flattened transform without its scale, which must be
+    /// uniform and positive, or the copy would be silently wrong, since a light has none.
+    fn lightPlacement(self: *Context, index: u32, matrix: Mat4) Error!Transform {
+        const transform = Transform.fromMat4Exact(matrix) catch return self.failNode(index, "places a light under a transform that is not exactly representable as TRS", .{});
+        const s = transform.scale;
+        const lo = @min(s.x, @min(s.y, s.z));
+        const hi = @max(s.x, @max(s.y, s.z));
+        if (!(lo > 0) or hi - lo > 1e-5 * hi) return self.failNode(index, "places a light under non-uniform or negative scale; a light has no scale", .{});
+        return .{ .translation = transform.translation, .rotation = transform.rotation };
     }
 
     fn emitCollision(self: *Context, out: *std.ArrayList(u8), generated: *std.ArrayList(GeneratedAsset)) Error!void {
@@ -1087,6 +1301,16 @@ const Context = struct {
         try self.warn(path, self.doc.meshes[mesh].name, fmt, args);
     }
 
+    fn noteMesh(self: *Context, mesh: u32, comptime fmt: []const u8, args: anytype) Allocator.Error!void {
+        const path = try std.fmt.allocPrint(self.arena, "meshes[{d}]", .{mesh});
+        const detail = try std.fmt.allocPrint(self.arena, fmt, args);
+        if (self.doc.meshes[mesh].name) |name| {
+            try self.diags.addFmt(self.gpa, .note, .whole(self.settings.source), 1, "", "{s} ('{s}') {s}", .{ path, name, detail });
+        } else {
+            try self.diags.addFmt(self.gpa, .note, .whole(self.settings.source), 1, "", "{s} {s}", .{ path, detail });
+        }
+    }
+
     fn failNode(self: *Context, node: u32, comptime fmt: []const u8, args: anytype) Error {
         const path = std.fmt.allocPrint(self.arena, "nodes[{d}]", .{node}) catch return error.OutOfMemory;
         return self.fail(path, self.doc.nodes[node].name, fmt, args);
@@ -1116,6 +1340,11 @@ const Context = struct {
         }
     }
 };
+
+fn isImported(extension: []const u8) bool {
+    for (imported_extensions) |name| if (std.mem.eql(u8, name, extension)) return true;
+    return false;
+}
 
 fn isUnlit(material: document.Material) bool {
     const extensions = material.extensions orelse return false;

@@ -21,6 +21,9 @@ pub const Limits = struct {
     max_animations: usize = 1_024,
     max_animation_channels: usize = 65_536,
     max_animation_keys: usize = 8_388_608,
+    /// `KHR_lights_punctual`'s lights, and the lights one model places: render3d's default
+    /// `Limits.max_lights`, so an import never makes a model that render3d refuses for it.
+    max_lights: usize = 256,
 
     pub const default: Limits = .{};
 };

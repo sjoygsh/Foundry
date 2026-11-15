@@ -923,6 +923,60 @@ fn degenEpilogue(tspaces: []TSpace, infos: []const TriInfo, tri_list: []const i3
 
 // -- tests ----------------------------------------------------------------------------
 
+/// One tangent per vertex, from `generate`'s per-corner tangents (`environment.md`'s Step 2
+/// Resolution). `Builder.generateTangents` and glTF import share it, so both split alike.
+pub const Split = struct {
+    /// One per vertex after the split: each original vertex's first corner's tangent, or
+    /// +x with a sign of +1 for a vertex no index names, then each added vertex's.
+    tangents: []Tangent,
+    /// The original each added vertex copies, in the order they were added.
+    sources: []u32,
+
+    pub fn deinit(self: Split, gpa: Allocator) void {
+        gpa.free(self.tangents);
+        gpa.free(self.sources);
+    }
+};
+
+/// Rewrites `indices` in place: a vertex keeps its index and its first corner's tangent, and
+/// each further tangent its corners need becomes one vertex appended at the end, in
+/// first-need order. More than `max_vertices` in all is `TooManyVertices`; on a refusal
+/// `indices` may be partly rewritten, so a caller that must stay unchanged passes a copy.
+pub fn split(gpa: Allocator, vertex_count: u32, indices: []u32, corners: []const Tangent, max_vertices: u32) (Allocator.Error || error{TooManyVertices})!Split {
+    std.debug.assert(indices.len == corners.len);
+    const first = try gpa.alloc(?Tangent, vertex_count);
+    defer gpa.free(first);
+    @memset(first, null);
+    const Key = struct { vertex: u32, bits: [4]u32 };
+    var added: std.AutoHashMapUnmanaged(Key, u32) = .empty;
+    defer added.deinit(gpa);
+    var sources: std.ArrayList(u32) = .empty;
+    defer sources.deinit(gpa);
+    var extra: std.ArrayList(Tangent) = .empty;
+    defer extra.deinit(gpa);
+    for (indices, corners) |*index, tangent| {
+        const vertex = index.*;
+        if (first[vertex]) |kept| {
+            if (@as(u128, @bitCast(kept)) == @as(u128, @bitCast(tangent))) continue;
+            const entry = try added.getOrPut(gpa, .{ .vertex = vertex, .bits = @bitCast(tangent) });
+            if (!entry.found_existing) {
+                if (vertex_count + sources.items.len >= max_vertices) return error.TooManyVertices;
+                entry.value_ptr.* = @intCast(vertex_count + sources.items.len);
+                try sources.append(gpa, vertex);
+                try extra.append(gpa, tangent);
+            }
+            index.* = entry.value_ptr.*;
+        } else {
+            first[vertex] = tangent;
+        }
+    }
+    const tangents = try gpa.alloc(Tangent, vertex_count + extra.items.len);
+    errdefer gpa.free(tangents);
+    for (first, tangents[0..vertex_count]) |kept, *out| out.* = kept orelse .{ 1, 0, 0, 1 };
+    @memcpy(tangents[vertex_count..], extra.items);
+    return .{ .tangents = tangents, .sources = try sources.toOwnedSlice(gpa) };
+}
+
 const testing = std.testing;
 
 const quad_positions = [_][3]f32{ .{ -1, 0, 1 }, .{ 1, 0, 1 }, .{ 1, 0, -1 }, .{ -1, 0, -1 } };

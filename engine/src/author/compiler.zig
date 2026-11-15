@@ -307,7 +307,7 @@ pub fn compile(
     return identity;
 }
 
-/// Whether every `foundry:particle_emitter`, `foundry:music_playlist`, `foundry:music_stinger`,
+/// Whether every `foundry:light`, `foundry:particle_emitter`, `foundry:music_playlist`, `foundry:music_stinger`,
 /// mixing record and `foundry:sound` in a written package decodes (ADR-0064, ADR-0066, ADR-0067,
 /// ADR-0068). A refusal names the record and its field, at the line that declared it when one
 /// did. IDs resolve across packages, so whether a playlist's tracks are sounds, or a bus's
@@ -332,7 +332,10 @@ fn checkMeanings(
     while (reader.record(i)) |view| : (i += 1) {
         const schema = reader.schemaFor(view.schema_id) orelse continue;
         const fields = reader.fieldsOf(view, schema.*);
-        const what: []const u8, const why: []const u8 = if (view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) blk: {
+        const what: []const u8, const why: []const u8 = if (view.schema_id.eql(asset.light.schema.id)) blk: {
+            _ = asset.light.decode(fields) catch |err| break :blk .{ "light", asset.light.describe(err) };
+            continue;
+        } else if (view.schema_id.eql(asset.particle_emitter.particle_emitter.id)) blk: {
             _ = asset.particle_emitter.decode(fields) catch |err| break :blk .{ "particle emitter", asset.particle_emitter.describe(err) };
             continue;
         } else if (view.schema_id.eql(asset.music.playlist.id)) blk: {
@@ -503,6 +506,7 @@ pub const engine_schema_names = [_][]const u8{
     asset.schemas.material_name,
     asset.schemas.model_name,
     asset.schemas.model_import_name,
+    asset.schemas.light_name,
     asset.schemas.tilegrid_name,
     asset.schemas.sound_name,
     asset.schemas.script_name,
@@ -1328,7 +1332,17 @@ fn importSettings(
         collision_mesh = spelling;
         try references.append(arena, .{ .record = record, .noun = noun, .kind = .collision_mesh, .id = value.id, .spelling = spelling });
     }
-    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings, .collision = collision, .collision_exclude = excluded, .surfaces = surfaces, .collision_mesh = collision_mesh };
+    // Version 4 (`environment.md` §6.3): what glTF cannot say about a light, by its name.
+    var lights: []gltf.translate.LightOverride = &.{};
+    if (record.value(schema, schema.fieldIndex("lights").?)) |value| {
+        lights = try arena.alloc(gltf.translate.LightOverride, value.list.len);
+        for (value.list, lights) |entry, *override| override.* = .{
+            .name = namedValue(entry.nested, "name").?.string,
+            .casts_shadow = namedValue(entry.nested, "casts_shadow").?.bool,
+            .source_radius = @floatCast(namedValue(entry.nested, "source_radius").?.float),
+        };
+    }
+    return .{ .model_id = record.text, .source = source, .front = front, .materials = mappings, .collision = collision, .collision_exclude = excluded, .surfaces = surfaces, .collision_mesh = collision_mesh, .lights = lights };
 }
 
 fn namedValue(values: []const data.NamedValue, name: []const u8) ?data.Value {

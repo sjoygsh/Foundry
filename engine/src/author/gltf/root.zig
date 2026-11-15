@@ -500,7 +500,7 @@ test "lit import refusals name the missing stream or texture repair" {
         .tail = image_tail,
     });
     defer testing.allocator.free(without_tangent);
-    try expectImportFailure(without_tangent, &files, .default, "export tangents");
+    try expectImportFailure(without_tangent, &files, .default, "TEXCOORD_0 to generate them from");
 
     const slot_cases = [_][]const u8{
         "{\"pbrMetallicRoughness\":{\"metallicRoughnessTexture\":{\"index\":0,\"texCoord\":1}}}",
@@ -974,4 +974,228 @@ fn expectMutationOutcome(bytes: []const u8) !void {
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
+}
+
+// -- M41 Step 3: KHR_lights_punctual and generated tangents (`environment.md` §5.2, §6.3) --
+
+const ImportOutcome = struct {
+    arena: std.heap.ArenaAllocator,
+    diags: Diagnostics,
+    result: translate.Result,
+
+    fn deinit(self: *ImportOutcome) void {
+        self.diags.deinit(std.testing.allocator);
+        self.arena.deinit();
+    }
+};
+
+fn importWith(json: []const u8, files: []const TestFile, settings: translate.Settings) !ImportOutcome {
+    var reader: TestReader = .{ .files = files };
+    var outcome: ImportOutcome = .{ .arena = .init(std.testing.allocator), .diags = .init(std.testing.allocator, .default), .result = undefined };
+    errdefer outcome.deinit();
+    outcome.result = try import(std.testing.allocator, outcome.arena.allocator(), settings.source, json, settings, reader.interface(), .default, &outcome.diags);
+    return outcome;
+}
+
+fn lightJson(gpa: Allocator, lights: []const u8, nodes: []const u8, scene_nodes: []const u8) Allocator.Error![]u8 {
+    const tail = try std.fmt.allocPrint(gpa, ",\"extensionsUsed\":[\"KHR_lights_punctual\"],\"extensions\":{{\"KHR_lights_punctual\":{{\"lights\":[{s}]}}}}", .{lights});
+    defer gpa.free(tail);
+    return makeJson(gpa, .{ .nodes = nodes, .scene_nodes = scene_nodes, .tail = tail });
+}
+
+const lamp_lights =
+    "{\"name\":\"Bulb\",\"type\":\"spot\",\"color\":[1,0.5,0.25],\"intensity\":30,\"range\":5,\"spot\":{\"innerConeAngle\":0.2,\"outerConeAngle\":0.5}}," ++
+    "{\"name\":\"Sun\",\"type\":\"directional\",\"intensity\":1000}," ++
+    "{\"type\":\"point\"}";
+
+test "KHR_lights_punctual lights import field for field, as records a model places" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    const files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &triangle }};
+    const json = try lightJson(testing.allocator, lamp_lights, "{\"mesh\":0,\"children\":[1]}," ++
+        "{\"translation\":[0,3,0],\"scale\":[2,2,2],\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}}}," ++
+        "{\"rotation\":[0,0.70710678,0,0.70710678],\"extensions\":{\"KHR_lights_punctual\":{\"light\":1}}}", "0,2");
+    defer testing.allocator.free(json);
+    const overrides = [_]translate.LightOverride{.{ .name = "Bulb", .casts_shadow = true, .source_radius = 0.1 }};
+    var outcome = try importWith(json, &files, .{ .model_id = "demo:models.lamp", .source = "models/lamp.gltf", .lights = &overrides });
+    defer outcome.deinit();
+    const source = outcome.result.source;
+    try testing.expect(!outcome.diags.failed);
+    // Every light in the file is a record, placed or not; the override sets what glTF cannot.
+    try testing.expect(std.mem.indexOf(u8, source, "foundry:light demo:models.lamp.light0 { kind \"spot\" color { r 1 g 0.5 b 0.25 } intensity 30 range 5 inner_cone 0.2 outer_cone 0.5 casts_shadow true source_radius 0.1 }\n") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "foundry:light demo:models.lamp.light1 { kind \"directional\" color { r 1 g 1 b 1 } intensity 1000 range 0 inner_cone 0 outer_cone 0.7853982 casts_shadow false source_radius 0 }\n") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "foundry:light demo:models.lamp.light2 { kind \"point\"") != null);
+    // Placed in walk order at the flattened transform, decomposed as a part's is, a uniform
+    // scale dropped.
+    try testing.expect(std.mem.indexOf(u8, source, "    lights [ { light demo:models.lamp.light0 translation { x 0 y 3 z 0 } rotation { x 0 y 0 z 0 w 1 } } { light demo:models.lamp.light1 translation { x 0 y 0 z 0 } rotation { x 0 y 0.7071067 z 0 w 0.7071068 } } ]\n") != null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, source, "    lights ["));
+}
+
+test "a light the renderer cannot place, or an override with no light, is refused by name" {
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    const files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &triangle }};
+    const placed = "{\"mesh\":0},{\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}}}";
+    const Case = struct { lights: []const u8, nodes: []const u8 = placed, needle: []const u8 };
+    for ([_]Case{
+        .{ .lights = "{\"type\":\"spot\",\"spot\":{\"outerConeAngle\":1.6}}", .needle = "outer cone past pi/2" },
+        .{ .lights = "{\"type\":\"point\",\"intensity\":-1}", .needle = "negative intensity" },
+        .{ .lights = "{\"type\":\"point\",\"range\":0}", .needle = "range that is not positive" },
+        .{ .lights = "{\"type\":\"point\",\"color\":[2,1,1]}", .needle = "colour component" },
+        .{ .lights = "{\"type\":\"area\"}", .needle = "expected directional, point or spot" },
+        .{ .lights = "{\"type\":\"point\"}", .nodes = "{\"mesh\":0},{\"scale\":[1,2,1],\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}}}", .needle = "non-uniform or negative scale" },
+        .{ .lights = "{\"type\":\"point\"}", .nodes = "{\"mesh\":0},{\"scale\":[-1,1,1],\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}}}", .needle = "non-uniform or negative scale" },
+        .{ .lights = "{\"type\":\"point\"}", .nodes = "{\"mesh\":0},{\"extensions\":{\"KHR_lights_punctual\":{\"light\":3}}}", .needle = "names no light in the file" },
+    }) |case| {
+        const json = try lightJson(testing.allocator, case.lights, case.nodes, "0,1");
+        defer testing.allocator.free(json);
+        try expectImportFailure(json, &files, .default, case.needle);
+    }
+
+    const json = try lightJson(testing.allocator, lamp_lights, placed, "0,1");
+    defer testing.allocator.free(json);
+    for ([_][]const translate.LightOverride{
+        &.{.{ .name = "Lantern" }},
+        &.{ .{ .name = "Bulb" }, .{ .name = "Bulb" } },
+        &.{.{ .name = "Sun", .source_radius = 1 }},
+    }, [_][]const u8{ "names no light in the file", "is named twice", "source_radius" }) |overrides, needle| {
+        var reader: TestReader = .{ .files = &files };
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var diags = Diagnostics.init(testing.allocator, .default);
+        defer diags.deinit(testing.allocator);
+        try testing.expectError(error.ContentInvalid, import(testing.allocator, arena.allocator(), "models/lamp.gltf", json, .{ .model_id = "demo:models.lamp", .source = "models/lamp.gltf", .lights = overrides }, reader.interface(), .default, &diags));
+        var found = false;
+        for (diags.items.items) |diag| found = found or std.mem.indexOf(u8, diag.message, needle) != null;
+        try testing.expect(found);
+    }
+}
+
+/// A unit quad in the xy plane facing +z: positions, normals, UVs and indices, 140 bytes.
+fn makeNormalMappedQuadBin(mirrored: bool) [140]u8 {
+    var bytes: [140]u8 = @splat(0);
+    const positions = [_][3]f32{ .{ -1, -1, 0 }, .{ 1, -1, 0 }, .{ 1, 1, 0 }, .{ -1, 1, 0 } };
+    // Mirrored, the second triangle's UVs wind the other way, so the shared corners split.
+    const uvs = [_][2]f32{ .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 }, if (mirrored) .{ 1, 1 } else .{ 0, 0 } };
+    for (positions, 0..) |p, i| for (p, 0..) |v, k| writeTestF32(&bytes, i * 12 + k * 4, v);
+    for (0..4) |i| writeTestF32(&bytes, 48 + i * 12 + 8, 1);
+    for (uvs, 0..) |uv, i| for (uv, 0..) |v, k| writeTestF32(&bytes, 96 + i * 8 + k * 4, v);
+    for ([_]u16{ 0, 1, 2, 0, 2, 3 }, 0..) |index, i| std.mem.writeInt(u16, bytes[128 + i * 2 ..][0..2], index, .little);
+    return bytes;
+}
+
+fn streamOf(mesh: asset.Mesh, semantic: asset.MeshSemantic) ?asset.MeshStream {
+    for (mesh.streams) |stream| if (stream.semantic == semantic) return stream;
+    return null;
+}
+
+fn normalMappedJson(gpa: Allocator, with_uv: bool) Allocator.Error![]u8 {
+    return makeJson(gpa, .{
+        .buffers = "{\"uri\":\"mesh.bin\",\"byteLength\":140}",
+        .buffer_views = "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48}," ++
+            "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},{\"buffer\":0,\"byteOffset\":128,\"byteLength\":12}",
+        .accessors = "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"}," ++
+            "{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},{\"bufferView\":3,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}",
+        .meshes = if (with_uv)
+            "{\"name\":\"Tile\",\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},\"indices\":3,\"material\":0}]}"
+        else
+            "{\"name\":\"Tile\",\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1},\"indices\":3,\"material\":0}]}",
+        .materials = "{\"name\":\"Bumpy\",\"normalTexture\":{\"index\":0}}",
+        .tail = ",\"images\":[{\"uri\":\"normal.png\"}],\"textures\":[{\"source\":0}]",
+    });
+}
+
+test "a normal-mapped primitive without TANGENT imports with the port's tangents, split where they disagree, and says so" {
+    const testing = std.testing;
+    for ([_]bool{ false, true }) |mirrored| {
+        const bin = makeNormalMappedQuadBin(mirrored);
+        const files = [_]TestFile{ .{ .path = "models/mesh.bin", .bytes = &bin }, .{ .path = "models/normal.png", .bytes = &test_png } };
+        const json = try normalMappedJson(testing.allocator, true);
+        defer testing.allocator.free(json);
+        var outcome = try importWith(json, &files, .{ .model_id = "demo:models.tile", .source = "models/tile.gltf" });
+        defer outcome.deinit();
+        try testing.expect(!outcome.diags.failed);
+        var noted = false;
+        for (outcome.diags.items.items) |diag| {
+            if (diag.severity == .note and std.mem.indexOf(u8, diag.message, "MikkTSpace tangents were generated") != null) noted = true;
+        }
+        try testing.expect(noted);
+
+        // The same arithmetic by hand: the port over the primitive, then the split rule.
+        const positions = std.mem.bytesAsSlice([3]f32, bin[0..48]);
+        const normals = std.mem.bytesAsSlice([3]f32, bin[48..96]);
+        const uvs = std.mem.bytesAsSlice([2]f32, bin[96..128]);
+        var indices = [_]u32{ 0, 1, 2, 0, 2, 3 };
+        const corners = try asset.tangents.generate(testing.allocator, .{ .positions = positions, .normals = normals, .uvs = uvs, .indices = &indices });
+        defer testing.allocator.free(corners);
+        const parted = try asset.tangents.split(testing.allocator, 4, &indices, corners, 1 << 20);
+        defer parted.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, if (mirrored) 6 else 4), parted.tangents.len);
+
+        var view = try asset.mesh_file.read(outcome.result.assets[0].bytes, .default);
+        const mesh = view.mesh();
+        try testing.expectEqual(@as(u32, @intCast(parted.tangents.len)), mesh.vertex_count);
+        const tangent = streamOf(mesh, .tangent).?;
+        try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(parted.tangents), tangent.bytes);
+        // An added vertex is a copy of its source in every other stream.
+        const position = streamOf(mesh, .position).?.bytes;
+        for (parted.sources, 4..) |source, added| {
+            try testing.expectEqualSlices(u8, position[source * 12 ..][0..12], position[added * 12 ..][0..12]);
+        }
+        var got: [6]u32 = undefined;
+        for (&got, 0..) |*index, i| index.* = std.mem.readInt(u16, mesh.indices[i * 2 ..][0..2], .little);
+        try testing.expectEqualSlices(u32, &indices, &got);
+    }
+}
+
+test "a normal map with neither TANGENT nor TEXCOORD_0, or a tangent that cannot be one, is refused" {
+    const testing = std.testing;
+    const bin = makeNormalMappedQuadBin(false);
+    const files = [_]TestFile{ .{ .path = "models/mesh.bin", .bytes = &bin }, .{ .path = "models/normal.png", .bytes = &test_png } };
+    const without_uv = try normalMappedJson(testing.allocator, false);
+    defer testing.allocator.free(without_uv);
+    try expectImportFailure(without_uv, &files, .default, "TEXCOORD_0 to generate them from");
+
+    // Normals along +u: MikkTSpace has no tangent to give.
+    var along = bin;
+    for (0..4) |i| {
+        writeTestF32(&along, 48 + i * 12, 1);
+        writeTestF32(&along, 48 + i * 12 + 8, 0);
+    }
+    const along_files = [_]TestFile{ .{ .path = "models/mesh.bin", .bytes = &along }, .{ .path = "models/normal.png", .bytes = &test_png } };
+    const json = try normalMappedJson(testing.allocator, true);
+    defer testing.allocator.free(json);
+    try expectImportFailure(json, &along_files, .default, "generated tangent is zero");
+}
+
+fn outputHash(result: translate.Result) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(result.source);
+    for (result.assets) |generated| {
+        hasher.update(generated.path);
+        hasher.update(generated.bytes);
+    }
+    return hasher.final();
+}
+
+test "the lamp's and the tile's import output bytes are pinned" {
+    // Output depends on the source bytes alone (ADR-0055); a change here is a change to
+    // compiled content and must be deliberate.
+    const testing = std.testing;
+    const triangle = makeTriangleBin();
+    const lamp_files = [_]TestFile{.{ .path = "models/mesh.bin", .bytes = &triangle }};
+    const lamp_json = try lightJson(testing.allocator, lamp_lights, "{\"mesh\":0,\"children\":[1]},{\"translation\":[0,3,0],\"extensions\":{\"KHR_lights_punctual\":{\"light\":0}}}", "0");
+    defer testing.allocator.free(lamp_json);
+    var lamp = try importWith(lamp_json, &lamp_files, .{ .model_id = "demo:models.lamp", .source = "models/lamp.gltf" });
+    defer lamp.deinit();
+
+    const bin = makeNormalMappedQuadBin(true);
+    const tile_files = [_]TestFile{ .{ .path = "models/mesh.bin", .bytes = &bin }, .{ .path = "models/normal.png", .bytes = &test_png } };
+    const tile_json = try normalMappedJson(testing.allocator, true);
+    defer testing.allocator.free(tile_json);
+    var tile = try importWith(tile_json, &tile_files, .{ .model_id = "demo:models.tile", .source = "models/tile.gltf" });
+    defer tile.deinit();
+
+    try testing.expectEqual(@as(u64, 15348253030102526194), outputHash(lamp.result));
+    try testing.expectEqual(@as(u64, 14214493798164461193), outputHash(tile.result));
 }

@@ -63,6 +63,7 @@ pub const tilemap = @import("tilemap.zig");
 pub const ui_theme = @import("ui_theme.zig");
 /// `foundry:particle_emitter`, an effect as content (ADR-0064). Here for `ui_theme`'s reason:
 /// `fpack` checks it with no renderer, and `particles` at L1 holds no schema.
+pub const light = @import("light.zig");
 pub const particle_emitter = @import("particle_emitter.zig");
 pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 /// Ogg, the container a Vorbis file is (ADR-0065).
@@ -181,6 +182,7 @@ test {
     _ = tilemap;
     _ = ui_theme;
     _ = particle_emitter;
+    _ = light;
     _ = ogg;
     _ = vorbis;
     _ = tangents;

@@ -188,55 +188,28 @@ pub const Builder = struct {
         defer self.gpa.free(corners);
 
         // Which vertex each corner ends on, and the vertices the split adds.
-        const first = try self.gpa.alloc(?tangents.Tangent, vertex_count);
-        defer self.gpa.free(first);
-        @memset(first, null);
-        const Key = struct { vertex: u32, bits: [4]u32 };
-        var added: std.AutoHashMapUnmanaged(Key, u32) = .empty;
-        defer added.deinit(self.gpa);
-        var sources: std.ArrayList(u32) = .empty;
-        defer sources.deinit(self.gpa);
-        var extra: std.ArrayList(tangents.Tangent) = .empty;
-        defer extra.deinit(self.gpa);
-        for (indices, corners) |*index, tangent| {
-            const vertex = index.*;
-            if (first[vertex]) |kept| {
-                if (@as(u128, @bitCast(kept)) == @as(u128, @bitCast(tangent))) continue;
-                const entry = try added.getOrPut(self.gpa, .{ .vertex = vertex, .bits = @bitCast(tangent) });
-                if (!entry.found_existing) {
-                    if (vertex_count + sources.items.len >= self.limits.max_vertices) return error.TooManyVertices;
-                    entry.value_ptr.* = @intCast(vertex_count + sources.items.len);
-                    try sources.append(self.gpa, vertex);
-                    try extra.append(self.gpa, tangent);
-                }
-                index.* = entry.value_ptr.*;
-            } else {
-                first[vertex] = tangent;
-            }
-        }
-        const total: u32 = @intCast(vertex_count + sources.items.len);
+        const parted = try tangents.split(self.gpa, vertex_count, indices, corners, self.limits.max_vertices);
+        defer parted.deinit(self.gpa);
+        const sources = parted.sources;
+        const total: u32 = @intCast(parted.tangents.len);
 
         // Every new buffer before anything is replaced, so a refusal changes nothing.
         var grown: [8]?[]u8 = @splat(null);
         defer for (grown) |bytes| if (bytes) |b| self.gpa.free(b);
         for (self.streams, 0..) |slot, at| if (slot) |stream| {
-            if (sources.items.len == 0) continue;
+            if (sources.len == 0) continue;
             const stride = stream.format.size();
             const bytes = try self.gpa.alloc(u8, @as(usize, total) * stride);
             grown[at] = bytes;
             @memcpy(bytes[0..stream.bytes.len], stream.bytes);
-            for (sources.items, 0..) |source, k| {
+            for (sources, 0..) |source, k| {
                 @memcpy(bytes[(vertex_count + k) * stride ..][0..stride], stream.bytes[source * stride ..][0..stride]);
             }
         };
         // Bytes, as every stream is, so `deinit` frees them as it frees the others.
         const tangent_bytes = try self.gpa.alloc(u8, @as(usize, total) * 16);
         grown[Semantic.tangent.slot()] = tangent_bytes;
-        for (first, 0..) |kept, v| {
-            const value: tangents.Tangent = kept orelse .{ 1, 0, 0, 1 };
-            @memcpy(tangent_bytes[v * 16 ..][0..16], std.mem.asBytes(&value));
-        }
-        @memcpy(tangent_bytes[@as(usize, vertex_count) * 16 ..], std.mem.sliceAsBytes(extra.items));
+        @memcpy(tangent_bytes, std.mem.sliceAsBytes(parted.tangents));
 
         const format: IndexFormat = if (self.index_format == .uint16 and total <= 65_536) .uint16 else .uint32;
         const new_indices = try self.gpa.alloc(u8, index_count * format.size());
