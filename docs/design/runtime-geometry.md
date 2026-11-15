@@ -456,7 +456,7 @@ Each item is named with the milestone that owns it, or the measurement that woul
 | Particle geometry | M29 decides whether it uses `updateMesh` or a ring of its own. **Decided in M29 (2026-10-24, tag `m29`):** `updateMeshFromStaged`, written straight into kept staging, no ring (`particles.md` §7, ADR-0064) |
 | Heightfield terrain as an engine feature | M62–M63 |
 | Voxel meshing and remeshing | M65, M67 |
-| Tangent generation, and a `tangents` builder setter | M41 |
+| Tangent generation, and a `tangents` builder setter | M41 ([`environment.md`](environment.md) §5, proposed 2026-11-15) |
 | Morph targets | M77 |
 | Render targets a game draws into | The upper tier's design (Phase 8); no M0–M28 sample draws into a texture |
 | A mesh capacity/reserve option | Added if Step 6 or Step 7 measures reallocation as more than 10% of an update's p95 |

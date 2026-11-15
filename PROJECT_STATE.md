@@ -1,7 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M40 is complete** (2026-11-15, tag `m40`; [`docs/design/shadows-local.md`](docs/design/shadows-local.md), ADR-0080/0081 accepted and implemented). Stop before M41's design (Environment: sky, cubemaps, image-based lighting), which waits for the owner. **From M41, milestones advance in pairs (ADR-0082):** M41's design stop first picks its unrelated partner (likely M45 Input), and both are designed at once, one by a spawned Opus agent. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+**Current handoff: M41's design is proposed** ([`docs/design/environment.md`](docs/design/environment.md), ADR-0083–0086); awaiting acceptance of §14. Stop before Step 1. Under ADR-0082 it is paired with **M45 Input**, whose design is proposed beside it ([`docs/design/input.md`](docs/design/input.md)); each "Begin" now advances both by one step, M45's by an Opus agent in its own worktree. M40 is complete (2026-11-15, tag `m40`). Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+
+**M41's design (2026-11-15):** ten steps — RHI layers, kinds and cube views; a MikkTSpace port; light records, model lights and glTF light import; the environment record and its CPU prefilter; image-based lighting; the sky pass; `sandbox3d`; the court; Windows/Vulkan; and the joint close with M45. M45 was chosen over M42 (same field), M43 (texture arrays, `asset`) and M44 (needs M43's text).
 
 **M40 Step 10 is done (2026-11-15): the close.** Every document names M40 complete; dated notes resolve `light.md` §7.1/§9/§14, `shadows-cascaded.md` §4/§13, `3d.md`, `render3d.md`, `debug-overlay.md` and `public3d.md`; §15's items are in the rows of M48, M73, M79, M82 and M99; `AGENTS.md` gains M40's runs and costs. Only documents changed after Step 8, whose bar stands (null 3,024/3,034, Metal 3,035/3,056).
 

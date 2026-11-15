@@ -561,7 +561,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | A hierarchy authored in content | **M103**, Prefabs |
 | An animation component saved with a world | **Done in M34** (2026-11-06, [`animation-logic.md`](animation-logic.md)): `foundry:animator`, saved by the sandbox's pacer. The court still saves no pose, and its warden plays through `anim.Player` |
 | A third-person player body | **M50**, the second 3D sample |
-| A sky, image-based lighting | **M41**, Environment |
+| A sky, image-based lighting | **M41**, Environment ([`environment.md`](environment.md), proposed 2026-11-15) |
 | A save game | **M47**, Saves II, proved in M50's sample |
 | A mod screen and profiles in a 3D sample | **M50**, the second 3D sample |
 | A Linux release artifact | **M137**, Linux releases |

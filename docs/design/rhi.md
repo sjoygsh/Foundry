@@ -720,6 +720,7 @@ stencil sampling or multisampled depth resolve was added.
 * **MSAA beyond M19's.** Counts other than 1 and 4, depth resolve, memoryless attachments and
   alpha-to-coverage. Each waits on its trigger in `render3d.md` §4.4.
 * **Mipmap generation on the GPU, texture arrays, cubemaps, 3D textures.** 3D-phase concerns.
+  *(2026-11-15: cubemaps and texture arrays are proposed in M41's [`environment.md`](environment.md) §3.)*
   M20 needed none of them. Its mip chains are built on the CPU at load and uploaded level by
   level through the existing texture upload, which Metal and Vulkan now sample across every
   level (`meshes.md` §4 and its Step 3 Resolution).

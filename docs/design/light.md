@@ -952,7 +952,7 @@ M22 closes at tag `m22` and is pushed at the owner's request. Stop before M23's 
   for a game — metals reflecting nothing in an outdoor scene is the likely first — or M26's sample
   needs a sky. Cubemaps enter the RHI then. **M26 did not fire it** (2026-10-18): the court is lit by its
   content's constant ambient, one directional light and its beacons' point lights, and needed no
-  sky. It is M41's.
+  sky. It is M41's. *(2026-11-15: M41's design, [`environment.md`](environment.md), is proposed for the sky, cubemaps, image-based lighting, the light record, glTF light import and tangent generation.)*
 - ~~**Point and spot shadows,** cascades~~: `3d.md` §11. **Point and spot shadows done in M40**
   (2026-11-15, [`shadows-local.md`](shadows-local.md), ADR-0080). **Cascades done in M39** (2026-11-14,
   [`shadows-cascaded.md`](shadows-cascaded.md)): the trigger was measured in the yard, where one 2048
