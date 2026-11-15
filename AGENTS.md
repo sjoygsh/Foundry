@@ -572,6 +572,30 @@ unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from
 task.
 Run it from a scheduled task, not over SSH alone: a dropped session ends what it started.
 
+### The MikkTSpace reference (M41)
+
+`asset/tangents.zig` is a Zig port of MikkTSpace, and its corpus test holds every tangent to
+the reference's bits (ADR-0086, `docs/design/environment.md` §5.1). The reference is a
+developer tool, never part of the build, and nothing of it ships or links.
+`scripts/m41/reference.py` fetches the two files at commit
+`3e895b49d05ea07e4c2133156cfa94369e19e409` of `https://github.com/mmikk/MikkTSpace` into a
+scratch directory, checks them against these hashes, and builds
+`scripts/m41/reference/mikktspace_ref.c` against them with `zig cc -O2 -ffp-contract=off`:
+
+| File | SHA-256 |
+| --- | --- |
+| `mikktspace.c` | `de87e74107df766ce68108801262bd8d53899414236b59810509a8fc2a51e288` |
+| `mikktspace.h` | `17fc433894f24c73753d548086cc4d8c5c0379f4a6edfb98b5da243e4f0bc3d0` |
+
+```sh
+python3 -I scripts/m41/make_tangent_corpus.py <scratch-dir>   # rewrites engine/src/asset/testdata/tangents/
+```
+
+`-ffp-contract=off` is load-bearing: without it clang fuses multiplies and adds into FMAs on
+arm64, and the reference stops being plain IEEE `float` arithmetic, which is what the port
+evaluates. The same inputs give the same bytes, so a rerun that changes a file means the tool,
+the flags or the script changed.
+
 ### Staging a release
 
 `dist` builds exactly one configuration and refuses every other, naming each wrong thing at

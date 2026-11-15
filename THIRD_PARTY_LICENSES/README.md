@@ -19,7 +19,7 @@ painful; maintaining it as you go costs a few minutes per dependency.
 SDL3, Lua, Mbed TLS and Vulkan-Headers, plus glslang, SPIRV-Tools and the Vulkan validation
 layer as build-time tools from the pinned Vulkan SDK, and RenderDoc as a hand-run capture tool
 on the Vulkan target, plus the adapted Khronos PBR Neutral tone-map formula compiled into
-`render3d` (ADR-0056). Their exact versions, provenance, elected licenses and distribution
+`render3d` (ADR-0056), and MikkTSpace, ported to Zig in `asset` (ADR-0086). Their exact versions, provenance, elected licenses and distribution
 status are recorded in the entries beside this file.
 
 ## What to record

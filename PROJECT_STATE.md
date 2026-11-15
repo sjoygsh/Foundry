@@ -1,7 +1,14 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M41 Step 1 and M45 Step 1 are done** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), done by an Opus agent and merged). Both designs and ADR-0083–0090 were accepted 2026-11-15. Stop before the pair's Step 2s: M41's MikkTSpace port in `asset`, and M45's gamepads in `platform`. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+**Current handoff: M41 Step 2 is done; M45 Step 2 is with its agent** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md)). Stop before the pair's Step 3s: M41's light records, model lights and glTF import; M45's audio outputs. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+
+**M41 Step 2 is done (2026-11-15): MikkTSpace tangents** (ADR-0086).
+- `asset/tangents.zig` is a Zig port of `mikktspace.c` for triangle lists. Every tangent in a thirteen-mesh corpus (`asset/testdata/tangents/`, 388 KB) is bit-equal to the reference, which `scripts/m41/` fetches at a pinned commit and hash and builds with `zig cc -ffp-contract=off`.
+- `Builder.generateTangents()` adds a tangent stream. A vertex whose corners disagree is split at the end, and 16-bit indices widen when they must. A tangent that cannot be normalized is refused at `finish`.
+- `THIRD_PARTY_LICENSES/mikktspace.md` (zlib) records the port. `AGENTS.md` has the reference's section.
+- Seven guards broken, each failing.
+- Bar: null 3,050/3,060 (ten skips), Metal 3,065/3,086 (21 skips), every check, the four samples and `fdt-check`.
 
 **M41 Step 1 is done (2026-11-15): cube and array textures in the RHI** (ADR-0084).
 - `TextureDesc` gains `kind` and `layers`, copies and colour attachments name a layer, and a binding declares its dimension.

@@ -17,6 +17,7 @@ const std = @import("std");
 const core = @import("core");
 
 const mesh_mod = @import("mesh.zig");
+const tangents = @import("tangents.zig");
 
 const Allocator = std.mem.Allocator;
 const Vec3 = core.math.Vec3;
@@ -44,6 +45,10 @@ pub const Error = mesh_mod.Error || Allocator.Error || error{
     TooManySubmeshes,
     /// Indices were given twice.
     IndicesAlreadySet,
+    /// `generateTangents` needs normals, UV0 and indices, each already set.
+    TangentsNeedNormals,
+    TangentsNeedUv0,
+    TangentsNeedIndices,
 };
 
 /// A validated mesh whose every slice was allocated by the builder's allocator. It may be
@@ -130,6 +135,131 @@ pub const Builder = struct {
     pub fn submesh(self: *Self, first_index: u32, index_count: u32) Error!void {
         if (self.submeshes.items.len >= self.limits.max_submeshes) return error.TooManySubmeshes;
         try self.submeshes.append(self.gpa, .{ .first_index = first_index, .index_count = index_count });
+    }
+
+    /// MikkTSpace tangents from the positions, normals, UV0 and indices already set
+    /// (ADR-0086, `docs/design/environment.md` §5.2), as a `float32x4` tangent stream.
+    ///
+    /// MikkTSpace gives each corner its own tangent, and corners of one vertex differ at a UV
+    /// seam or a mirror. A vertex keeps its index and its first corner's tangent; each other
+    /// tangent its corners need becomes one new vertex at the end, a copy of every stream,
+    /// in the order of the corners that first need it. So a mesh whose corners agree gains
+    /// only the tangent stream, and the same input gives the same bytes. A vertex no index
+    /// names gets +x with a sign of +1. 16-bit indices become 32-bit if the new vertices
+    /// pass their range.
+    ///
+    /// A tangent MikkTSpace cannot normalize, from a normal along the UV's direction or a
+    /// zero normal, is written as it is and refused by `finish` as `InvalidTangent`. On any
+    /// refusal the builder is unchanged.
+    pub fn generateTangents(self: *Self) Error!void {
+        if (self.streams[Semantic.tangent.slot()] != null) return error.DuplicateSemantic;
+        const position = self.streams[Semantic.position.slot()] orelse return error.MissingPosition;
+        const normal = self.streams[Semantic.normal.slot()] orelse return error.TangentsNeedNormals;
+        const uv = self.streams[Semantic.uv0.slot()] orelse return error.TangentsNeedUv0;
+        const index_bytes = self.indices orelse return error.TangentsNeedIndices;
+        const vertex_count = self.vertex_count.?;
+        if (normal.bytes.len != @as(usize, vertex_count) * 12 or uv.bytes.len != @as(usize, vertex_count) * 8) {
+            return error.InvalidStreamLength;
+        }
+
+        const index_count = index_bytes.len / self.index_format.size();
+        const indices = try self.gpa.alloc(u32, index_count);
+        defer self.gpa.free(indices);
+        for (indices, 0..) |*index, i| index.* = switch (self.index_format) {
+            .uint16 => std.mem.readInt(u16, index_bytes[i * 2 ..][0..2], .little),
+            .uint32 => std.mem.readInt(u32, index_bytes[i * 4 ..][0..4], .little),
+        };
+
+        const corners = tangents.generate(self.gpa, .{
+            .positions = std.mem.bytesAsSlice([3]f32, position.bytes),
+            .normals = std.mem.bytesAsSlice([3]f32, normal.bytes),
+            .uvs = std.mem.bytesAsSlice([2]f32, uv.bytes),
+            .indices = indices,
+        }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.StreamLengthMismatch => error.InvalidStreamLength,
+            error.InvalidIndexCount => error.InvalidIndexCount,
+            error.IndexOutOfRange => error.IndexOutOfRange,
+            error.TooManyTriangles => error.TooManyIndices,
+            error.NonFinitePosition => error.NonFinitePosition,
+            error.NonFiniteNormal => error.InvalidNormal,
+            error.NonFiniteTexcoord => error.InvalidTexcoord,
+        };
+        defer self.gpa.free(corners);
+
+        // Which vertex each corner ends on, and the vertices the split adds.
+        const first = try self.gpa.alloc(?tangents.Tangent, vertex_count);
+        defer self.gpa.free(first);
+        @memset(first, null);
+        const Key = struct { vertex: u32, bits: [4]u32 };
+        var added: std.AutoHashMapUnmanaged(Key, u32) = .empty;
+        defer added.deinit(self.gpa);
+        var sources: std.ArrayList(u32) = .empty;
+        defer sources.deinit(self.gpa);
+        var extra: std.ArrayList(tangents.Tangent) = .empty;
+        defer extra.deinit(self.gpa);
+        for (indices, corners) |*index, tangent| {
+            const vertex = index.*;
+            if (first[vertex]) |kept| {
+                if (@as(u128, @bitCast(kept)) == @as(u128, @bitCast(tangent))) continue;
+                const entry = try added.getOrPut(self.gpa, .{ .vertex = vertex, .bits = @bitCast(tangent) });
+                if (!entry.found_existing) {
+                    if (vertex_count + sources.items.len >= self.limits.max_vertices) return error.TooManyVertices;
+                    entry.value_ptr.* = @intCast(vertex_count + sources.items.len);
+                    try sources.append(self.gpa, vertex);
+                    try extra.append(self.gpa, tangent);
+                }
+                index.* = entry.value_ptr.*;
+            } else {
+                first[vertex] = tangent;
+            }
+        }
+        const total: u32 = @intCast(vertex_count + sources.items.len);
+
+        // Every new buffer before anything is replaced, so a refusal changes nothing.
+        var grown: [8]?[]u8 = @splat(null);
+        defer for (grown) |bytes| if (bytes) |b| self.gpa.free(b);
+        for (self.streams, 0..) |slot, at| if (slot) |stream| {
+            if (sources.items.len == 0) continue;
+            const stride = stream.format.size();
+            const bytes = try self.gpa.alloc(u8, @as(usize, total) * stride);
+            grown[at] = bytes;
+            @memcpy(bytes[0..stream.bytes.len], stream.bytes);
+            for (sources.items, 0..) |source, k| {
+                @memcpy(bytes[(vertex_count + k) * stride ..][0..stride], stream.bytes[source * stride ..][0..stride]);
+            }
+        };
+        // Bytes, as every stream is, so `deinit` frees them as it frees the others.
+        const tangent_bytes = try self.gpa.alloc(u8, @as(usize, total) * 16);
+        grown[Semantic.tangent.slot()] = tangent_bytes;
+        for (first, 0..) |kept, v| {
+            const value: tangents.Tangent = kept orelse .{ 1, 0, 0, 1 };
+            @memcpy(tangent_bytes[v * 16 ..][0..16], std.mem.asBytes(&value));
+        }
+        @memcpy(tangent_bytes[@as(usize, vertex_count) * 16 ..], std.mem.sliceAsBytes(extra.items));
+
+        const format: IndexFormat = if (self.index_format == .uint16 and total <= 65_536) .uint16 else .uint32;
+        const new_indices = try self.gpa.alloc(u8, index_count * format.size());
+        errdefer self.gpa.free(new_indices);
+        for (indices, 0..) |index, i| switch (format) {
+            .uint16 => std.mem.writeInt(u16, new_indices[i * 2 ..][0..2], @intCast(index), .little),
+            .uint32 => std.mem.writeInt(u32, new_indices[i * 4 ..][0..4], index, .little),
+        };
+
+        // Nothing below fails.
+        for (&self.streams, &grown) |*slot, *bytes| if (bytes.*) |b| {
+            if (slot.*) |*stream| {
+                self.gpa.free(stream.bytes);
+                stream.bytes = b;
+            } else {
+                slot.* = .{ .semantic = .tangent, .format = .float32x4, .bytes = b };
+            }
+            bytes.* = null;
+        };
+        self.gpa.free(index_bytes);
+        self.indices = new_indices;
+        self.index_format = format;
+        self.vertex_count = total;
     }
 
     /// Bounds from the positions, then `Mesh.validate`. On success the bytes are the returned
@@ -384,6 +514,159 @@ test "a refusal leaves the builder owning its bytes, and a finish leaves it empt
     defer owned.deinit(testing.allocator);
     try testing.expect(builder.indices == null);
     for (builder.streams) |slot| try testing.expect(slot == null);
+}
+
+const quad_uvs = [_][2]f32{ .{ 0, 1 }, .{ 1, 1 }, .{ 1, 0 }, .{ 0, 0 } };
+
+test "generated tangents on a quad add only the tangent stream" {
+    var builder = Builder.init(testing.allocator, .default);
+    defer builder.deinit();
+    try builder.positions(&quad_positions);
+    try builder.normals(&quad_normals);
+    try builder.uv0(&quad_uvs);
+    try builder.colors8(&quad_colors);
+    try builder.indices16(&quad_indices);
+    try builder.generateTangents();
+    var owned = try builder.finish();
+    defer owned.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 4), owned.mesh.vertex_count);
+    try testing.expectEqual(IndexFormat.uint16, owned.mesh.index_format);
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&quad_indices), owned.mesh.indices);
+    try testing.expectEqual(Semantic.tangent, owned.mesh.streams[2].semantic);
+    const want = [_][4]f32{.{ 1, 0, 0, -1 }} ** 4;
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&want), owned.mesh.streams[2].bytes);
+}
+
+test "a vertex whose corners disagree is split, every stream copied" {
+    // Two triangles share vertices 0 and 2, but the second is UV-mirrored, so its corners
+    // need the opposite tangent there.
+    const positions = [_]Vec3{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 0, -1), .init(-1, 0, 0) };
+    const normals = [_]Vec3{.up} ** 4;
+    const uvs = [_][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 } };
+    const colors = [_][4]u8{ .{ 1, 2, 3, 4 }, .{ 5, 6, 7, 8 }, .{ 9, 10, 11, 12 }, .{ 13, 14, 15, 16 } };
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    var builder = Builder.init(testing.allocator, .default);
+    defer builder.deinit();
+    try builder.positions(&positions);
+    try builder.normals(&normals);
+    try builder.uv0(&uvs);
+    try builder.colors8(&colors);
+    try builder.indices16(&indices);
+    try builder.generateTangents();
+    var owned = try builder.finish();
+    defer owned.deinit(testing.allocator);
+
+    const mesh = owned.mesh;
+    try testing.expectEqual(@as(u32, 6), mesh.vertex_count);
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&[_]u16{ 0, 1, 2, 4, 5, 3 }), mesh.indices);
+    const new_positions = std.mem.bytesAsSlice(Vec3, mesh.streams[0].bytes);
+    try testing.expectEqual(positions[0], new_positions[4]);
+    try testing.expectEqual(positions[2], new_positions[5]);
+    const new_colors = std.mem.bytesAsSlice([4]u8, mesh.streams[4].bytes);
+    try testing.expectEqual(colors[0], new_colors[4]);
+    try testing.expectEqual(colors[2], new_colors[5]);
+    const new_tangents = std.mem.bytesAsSlice([4]f32, mesh.streams[2].bytes);
+    for ([_]usize{ 0, 1, 2 }) |v| try testing.expectEqual(@as(f32, 1), new_tangents[v][0]);
+    for ([_]usize{ 3, 4, 5 }) |v| try testing.expectEqual(@as(f32, -1), new_tangents[v][0]);
+}
+
+test "a split past 65536 vertices widens the indices" {
+    // 65,535 vertices, and a mirrored triangle that needs two more.
+    const count = 65_535;
+    const positions = try testing.allocator.alloc(Vec3, count);
+    defer testing.allocator.free(positions);
+    const normals = try testing.allocator.alloc(Vec3, count);
+    defer testing.allocator.free(normals);
+    const uvs = try testing.allocator.alloc([2]f32, count);
+    defer testing.allocator.free(uvs);
+    for (positions, normals, uvs, 0..) |*p, *n, *t, i| {
+        p.* = .init(@floatFromInt(i % 251), 0, -@as(f32, @floatFromInt(i / 251)));
+        n.* = .up;
+        t.* = .{ p.x, -p.z };
+    }
+    // Two triangles on vertices 0, 1, 251: the second mirrors u.
+    uvs[252] = .{ 1, 0 };
+    positions[252] = .init(-1, 0, 0);
+    var builder = Builder.init(testing.allocator, .default);
+    defer builder.deinit();
+    try builder.positions(positions);
+    try builder.normals(normals);
+    try builder.uv0(uvs);
+    try builder.indices16(&.{ 0, 1, 251, 0, 251, 252 });
+    try builder.generateTangents();
+    try testing.expectEqual(IndexFormat.uint32, builder.index_format);
+    var owned = try builder.finish();
+    defer owned.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, count + 2), owned.mesh.vertex_count);
+}
+
+test "generateTangents refuses missing inputs, a second tangent stream and a split past the limit" {
+    var builder = Builder.init(testing.allocator, .default);
+    defer builder.deinit();
+    try testing.expectError(error.MissingPosition, builder.generateTangents());
+    try builder.positions(&quad_positions);
+    try testing.expectError(error.TangentsNeedNormals, builder.generateTangents());
+    try builder.normals(&quad_normals);
+    try testing.expectError(error.TangentsNeedUv0, builder.generateTangents());
+    try builder.uv0(&quad_uvs);
+    try testing.expectError(error.TangentsNeedIndices, builder.generateTangents());
+    try builder.indices16(&quad_indices);
+    try builder.generateTangents();
+    try testing.expectError(error.DuplicateSemantic, builder.generateTangents());
+
+    const positions = [_]Vec3{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 0, -1), .init(-1, 0, 0) };
+    const uvs = [_][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 } };
+    var tight = Builder.init(testing.allocator, .{ .max_vertices = 5 });
+    defer tight.deinit();
+    try tight.positions(&positions);
+    try tight.normals(&quad_normals);
+    try tight.uv0(&uvs);
+    try tight.indices16(&.{ 0, 1, 2, 0, 2, 3 });
+    try testing.expectError(error.TooManyVertices, tight.generateTangents());
+    // Unchanged by the refusal.
+    try testing.expectEqual(@as(u32, 4), tight.vertex_count.?);
+    try testing.expect(tight.streams[Semantic.tangent.slot()] == null);
+
+    var bad = Builder.init(testing.allocator, .default);
+    defer bad.deinit();
+    try bad.positions(&quad_positions);
+    try bad.normals(&quad_normals);
+    try bad.uv0(&quad_uvs);
+    try bad.indices16(&.{ 0, 1, 7 });
+    try testing.expectError(error.IndexOutOfRange, bad.generateTangents());
+}
+
+test "a tangent MikkTSpace cannot normalize is refused at finish" {
+    // Normals along +x, the UV's u direction: the projected tangent is zero.
+    const along = [_]Vec3{.init(1, 0, 0)} ** 4;
+    var builder = Builder.init(testing.allocator, .default);
+    defer builder.deinit();
+    try builder.positions(&quad_positions);
+    try builder.normals(&along);
+    try builder.uv0(&quad_uvs);
+    try builder.indices16(&quad_indices);
+    try builder.generateTangents();
+    try testing.expectError(error.InvalidTangent, builder.finish());
+}
+
+test "every allocation failure while generating tangents leaks nothing" {
+    try testing.checkAllAllocationFailures(testing.allocator, struct {
+        fn run(gpa: Allocator) !void {
+            const positions = [_]Vec3{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 0, -1), .init(-1, 0, 0) };
+            const uvs = [_][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 0 } };
+            var builder = Builder.init(gpa, .default);
+            defer builder.deinit();
+            try builder.positions(&positions);
+            try builder.normals(&quad_normals);
+            try builder.uv0(&uvs);
+            try builder.colors8(&quad_colors);
+            try builder.indices16(&.{ 0, 1, 2, 0, 2, 3 });
+            try builder.generateTangents();
+            var owned = try builder.finish();
+            owned.deinit(gpa);
+        }
+    }.run, .{});
 }
 
 test "every allocation failure is reported and leaks nothing" {

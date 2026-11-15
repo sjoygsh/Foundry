@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Step 1 is done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 and 2 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -732,3 +732,89 @@ Each item names the milestone that owns it (CLAUDE.md §2, rule 17):
 
 Next is Step 2, the MikkTSpace port. No environment, light record or tangent generation exists
 yet.
+
+## Resolution — Step 2: tangents, a MikkTSpace port (2026-11-15)
+
+**What the step pinned (`asset`, ADR-0086):**
+- `asset/tangents.zig`, `tangents.generate(gpa, input)`: positions, normals, UV0 and a
+  triangle list in; one `[4]f32` per index out, the tangent and the bitangent's sign as
+  `setTSpaceBasic` gives them. It keeps the reference's structure function for function:
+  - the grid-hashed weld by position, normal and UV;
+  - degenerate triangles moved behind the good ones and given a good corner's space after;
+  - triangle info, neighbours from the three-key edge sort, and the four-rule groups;
+  - subgroups, and the angle-weighted average at each vertex.
+- It refuses by name a stream count that differs, an index count of zero or not a multiple of
+  three, an index out of range, more than 2^29 triangles, and a non-finite position, normal or
+  UV. The reference's behaviour on non-finite input depends on its compiler, so it is not a
+  contract to match.
+- **The reference:** `scripts/m41/reference.py` fetches `mikktspace.c` and `.h` at commit
+  `3e895b4…`, checks their SHA-256s (also in `AGENTS.md`), and builds
+  `scripts/m41/reference/mikktspace_ref.c` with `zig cc -O2 -ffp-contract=off`.
+  `make_tangent_corpus.py` writes thirteen meshes and the reference's tangents for each into
+  `asset/testdata/tangents/` (388 KB):
+  - plain surfaces: a quad, a wavy grid, a cube, a UV sphere with degenerate poles, and a
+    48 × 24 torus;
+  - mirrored UVs, collapsed UVs (no UV area, so group-with-any), random soup with repeated
+    indices and non-manifold edges, and the sphere fully unwelded;
+  - degenerate triangles among good ones, an all-degenerate mesh, four triangles on one edge,
+    and normals along the UV direction, including a zero normal.
+- **Every corpus tangent is bit-equal to the reference's**, which is the exit.
+- **`Builder.generateTangents()`** runs it over the builder's positions, normals, UV0 and
+  indices, and adds a `float32x4` tangent stream.
+- `THIRD_PARTY_LICENSES/mikktspace.md` records the port as an altered version under zlib's
+  terms. The port's header marks it as altered, as clause 2 requires.
+
+**Where the implementation sharpened the design:**
+- **Triangles only.** Every Foundry mesh is a triangle list, so the reference's quad paths
+  never run, and the port leaves them out:
+  - the shorter-diagonal split;
+  - `QUAD_ONE_DEGEN_TRI`;
+  - the forced quad orientation;
+  - `AvgTSpace`, which only a corner shared by a quad's two triangles reaches.
+
+  Also left out are the angular threshold (only the default 180°, whose cosine the reference
+  rounds to exactly -1) and the slow fallbacks for a failed `malloc`.
+- **The reference is plain IEEE `float` arithmetic.** Clang fuses multiplies and adds into
+  FMAs on arm64 by default, and Zig never does, so the tool is built with
+  `-ffp-contract=off`. The one double-precision call, `acos`, uses Zig's `std.math.acos` on
+  `f64`, and no libm is linked.
+- **C's undefined behaviour, pinned:**
+  - `(int)` of a NaN grid cell gives cell 0 on every target;
+  - the seed's 32-bit shift by 32 is a rotation.
+
+  The sort pivots the seed picks cannot change a result, because every key sorted is distinct
+  by the end.
+- **One tangent per vertex.** §5.2 did not say how per-corner tangents become a vertex stream,
+  so:
+  - a vertex keeps its index and its first corner's tangent;
+  - each further tangent its corners need becomes one new vertex at the end, a copy of every
+    stream, in first-need order;
+  - a mesh whose corners agree gains only the stream;
+  - a vertex no index names gets +x with a sign of +1;
+  - 16-bit indices widen to 32-bit past 65,536 vertices;
+  - a split past `Limits.max_vertices` is `TooManyVertices`;
+  - a refusal leaves the builder unchanged.
+- **A tangent MikkTSpace cannot normalize stays as it is.** A normal along the UV direction, or
+  a zero normal, gives a zero vector, and `finish` refuses it as `InvalidTangent`. Step 3
+  decides what glTF import does with such a primitive.
+- **The sign convention:** on the quad whose +v runs along +z under a +y normal, the reference
+  gives -1, as glTF's `w` means: the bitangent is `w · cross(n, t)`.
+
+**Guards verified by mutation.** Each was broken and then restored:
+- In the port, an `f32` `acos`, a disabled weld and a disabled degenerate copy each failed the
+  corpus test.
+- Dropping the index guard crashed two tests.
+- In the builder:
+  - splitting on agreement instead of disagreement failed four tests;
+  - not widening the indices crashed one;
+  - dropping the vertex limit failed one.
+- Two mutations changed nothing, and that was explained rather than tested:
+  - dropping the seed's `+ 3`: the sorts' results do not depend on the pivot;
+  - forcing the average: it is unreachable for triangles, so it was removed.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples and `fdt-check` pass. Tests: null 3,050/3,060 (ten skips), Metal
+3,065/3,086 (21 skips); `asset` alone 270/270. No Vulkan, shader or ABI code changed.
+
+Next is Step 3: light records, model lights, and glTF import with generated tangents. No light
+record, `foundry:model` v4 or `KHR_lights_punctual` import exists yet.

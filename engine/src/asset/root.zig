@@ -69,6 +69,8 @@ pub const ParticleEmitter = particle_emitter.ParticleEmitter;
 pub const ogg = @import("ogg.zig");
 /// Vorbis I, the codec inside it (ADR-0065).
 pub const vorbis = @import("vorbis.zig");
+/// MikkTSpace tangents, a Zig port of the reference (ADR-0086).
+pub const tangents = @import("tangents.zig");
 /// `foundry:music_playlist` and `foundry:music_stinger`, a soundtrack as content (ADR-0066).
 /// Here for `particle_emitter`'s reason: `fpack` checks them with no mixer.
 pub const music = @import("music.zig");
@@ -181,6 +183,7 @@ test {
     _ = particle_emitter;
     _ = ogg;
     _ = vorbis;
+    _ = tangents;
     _ = music;
     _ = mix;
     _ = nav_mesh;
