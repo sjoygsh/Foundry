@@ -566,6 +566,7 @@ opportunistically.
 >    memory and is decoded into a ring per stream on the background pool. The voice model
 >    gained a source, as ADR-0023 promised, and was not redesigned.
 > 4. Device change and enumeration go to **M45**, beside input's device handling.
+>    *(2026-11-15: proposed in [`input.md`](input.md) §5.)*
 > 5. `foundry:sound` grew one field in M30: version 2's `stream` (music.md §4). Loop points
 >    within a file go to **M31**, with seeking.
 >

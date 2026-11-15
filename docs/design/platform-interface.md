@@ -425,6 +425,7 @@ of the snapshot design in §4.
 1. **Gamepad support timing.** SDL3 provides it well and it is tempting to expose early. Not
    needed before M5, and exposing it early risks shaping the input snapshot around SDL's
    gamepad model. Deferred, but the snapshot is designed to accept additional device state.
+   *(2026-11-15: M45's design, [`input.md`](input.md) §4, proposes the answer.)*
 2. **File watching granularity.** Hot reload (M2+) needs change notification; whether that is
    per-file, per-directory or a polling fallback depends on what the OS APIs make cheap.
    Deferred until hot reload is actually built.
