@@ -1,7 +1,9 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-15
-**Current handoff: M41 Step 2 is done; M45 Step 2 is with its agent** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md)). Stop before the pair's Step 3s: M41's light records, model lights and glTF import; M45's audio outputs. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+**Current handoff: M41 Step 2 and M45 Step 2 are done** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), by an Opus agent, merged). Stop before the pair's Step 3s: M41's light records, model lights and glTF import; M45's audio outputs. macOS raw mouse counts (`GCMouse` in M45, or M146) still await the owner. Nothing is pushed: `main` and tag `m40` are local. The PC holds no Foundry clone.
+
+**M45 Step 2 is done (2026-11-15): gamepads.** `platform/gamepad.zig` adds positional buttons and axes, per-pad face labels, the normalisation rule, rumble bounds and `Slots` (four seats and a queue bounded at twelve). It also adds five events, `InputSnapshot.gamepads`, and `setGamepadRumble` as the nineteenth interface call. Null scripts pads in device terms, and SDL3 opens its gamepad subsystem. `zig build gamepad-test` drives virtual Xbox and DualSense pads headless. Correction: the SDL port builds no WGI on Windows; XInput and raw input carry Xbox pads. The agent hit its usage limit during the bar, so the primary session reran it. Bar: null 3,063/3,073 (ten skips), Metal 3,078/3,099 (21 skips), `gamepad-test` 3/3, `native-window-test` 3/10, every check including SDL3 Windows (also ReleaseSafe) and Linux, the four samples and `fdt-check`.
 
 **M41 Step 2 is done (2026-11-15): MikkTSpace tangents** (ADR-0086).
 - `asset/tangents.zig` is a Zig port of `mikktspace.c` for triangle lists. Every tangent in a thirteen-mesh corpus (`asset/testdata/tangents/`, 388 KB) is bit-equal to the reference, which `scripts/m41/` fetches at a pinned commit and hash and builds with `zig cc -ffp-contract=off`.
