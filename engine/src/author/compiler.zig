@@ -31,6 +31,7 @@ const platform = @import("platform");
 const dependency = @import("dependency.zig");
 const gltf = @import("gltf/root.zig");
 const physics3d = @import("physics3d");
+const input = @import("input");
 
 const Allocator = std.mem.Allocator;
 const Diagnostics = data.Diagnostics;
@@ -332,6 +333,8 @@ fn checkMeanings(
     while (reader.record(i)) |view| : (i += 1) {
         const schema = reader.schemaFor(view.schema_id) orelse continue;
         const fields = reader.fieldsOf(view, schema.*);
+        var input_fault: input.schemas.Fault = .{};
+        var input_why: [96]u8 = undefined;
         const what: []const u8, const why: []const u8 = if (view.schema_id.eql(asset.light.schema.id)) blk: {
             _ = asset.light.decode(fields) catch |err| break :blk .{ "light", asset.light.describe(err) };
             continue;
@@ -361,6 +364,9 @@ fn checkMeanings(
             continue;
         } else if (view.schema_id.eql(asset.animation_machine.schema.id)) blk: {
             asset.animation_machine.check(fields) catch |err| break :blk .{ "animation machine", asset.animation_machine.describe(err) };
+            continue;
+        } else if (input.schemas.check(view.schema_id, fields, &input_fault)) |result| blk: {
+            result catch |err| break :blk .{ input.schemas.noun(view.schema_id).?, input.schemas.describeAt(err, input_fault, &input_why) };
             continue;
         } else continue;
         ok = false;
@@ -484,6 +490,14 @@ pub fn registerAvailableSchemas(
             return error.ContentInvalid;
         },
     };
+
+    input.schemas.registerAll(gpa, registry) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try diags.addFmt(gpa, .err, .whole("<engine>"), 1, "", "the engine's input schemas did not register: {s}", .{data.schema.describeRegisterError(err)});
+            return error.ContentInvalid;
+        },
+    };
 }
 
 /// Every schema `registerAvailableSchemas` registers without a dependency, by the spelling
@@ -532,6 +546,8 @@ pub const engine_schema_names = [_][]const u8{
     scene.schemas.scene_name,
     scene.hierarchy.transform_name,
     scene.animation.animator_name,
+    input.schemas.action_name,
+    input.schemas.context_name,
 };
 
 /// Reads `mod.fdt` and takes the package's id and version from the manifest record in it.
@@ -2573,6 +2589,42 @@ test "an unknown particle facing is refused by name, as the engine would refuse 
     // Both are reported, not only the first.
     try testing.expect(std.mem.containsAtLeast(u8, text, 1, "'demo:a' has a facing that is not camera, velocity or up"));
     try testing.expect(std.mem.containsAtLeast(u8, text, 1, "'demo:b' has a space that is not world or local"));
+}
+
+test "a package with actions compiles, and a malformed action is refused by name at its line" {
+    var f = try Fixture.init();
+    defer f.deinit();
+    try f.write("input.fdt",
+        \\foundry:input_context demo:context.walk { priority 10 }
+        \\foundry:input_action demo:action.move {
+        \\    kind "vector"
+        \\    contexts [ demo:context.walk ]
+        \\    bindings [ { source "key.w" axis "y" } { source "pad.left_stick" deadzone 0.2 } { source "pad.gyro" } ]
+        \\}
+    );
+    try f.compileIt("demo:content");
+    var reader = try f.open();
+    defer reader.deinit();
+    const view = recordNamed(&reader, "demo:action.move").?;
+    var fault: input.schemas.Fault = .{};
+    const move = try input.schemas.decodeAction(reader.fieldsOf(view, reader.schemaFor(view.schema_id).?.*), &fault);
+    try testing.expectEqual(input.Kind.vector, move.kind);
+    // A source this build does not know compiles: a later engine may know it (§6.5).
+    try testing.expectEqual(@as(usize, 2), move.bindings().len);
+
+    try f.write("input.fdt",
+        \\foundry:input_context demo:context.walk {}
+        \\
+        \\foundry:input_action demo:action.jump { kind "button" contexts [ demo:context.walk ] bindings [ { source "key.space" } { source "pad.left_stick" } ] }
+        \\foundry:input_action demo:action.spin { kind "rotate" contexts [ demo:context.walk ] }
+    );
+    try testing.expectError(error.ContentInvalid, f.compileIt("demo:content"));
+    try testing.expectEqual(@as(usize, 0), f.bytes.items.len);
+    var buf: [2048]u8 = undefined;
+    const text = try f.rendered(&buf);
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "input.fdt:3:"));
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "input action 'demo:action.jump' has a binding whose source cannot feed its kind (binding 1)"));
+    try testing.expect(std.mem.containsAtLeast(u8, text, 1, "input action 'demo:action.spin' has a kind that is not button, axis, vector or delta"));
 }
 
 test "every schema the engine registers has a spelling an author can write" {

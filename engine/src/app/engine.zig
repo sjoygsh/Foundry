@@ -28,6 +28,7 @@ const data = @import("data");
 const platform = @import("platform");
 const rhi = @import("rhi");
 const asset = @import("asset");
+const input = @import("input");
 
 const log_sink = @import("log_sink.zig");
 
@@ -724,6 +725,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
                     log.warn("the engine's own animation set schema was refused: {t}", .{err});
+                    return error.ContentUnavailable;
+                },
+            };
+            // `foundry:input_action` and `foundry:input_context` (ADR-0087): what a player can
+            // do is content, so its record types are the engine's to declare.
+            input.schemas.registerAll(gpa, &out.schemas) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.warn("the engine's own input schemas were refused: {t}", .{err});
                     return error.ContentUnavailable;
                 },
             };
@@ -2120,6 +2130,10 @@ test "the engine's own asset schemas are registered before any package is" {
     // hot reload, or a mod — is checked against them rather than defining them.
     try testing.expect(engine.schemas.lookup(asset.schemas.texture.id) != null);
     try testing.expectEqual(@as(u32, 0), engine.store.packageCount());
+    // `input`'s two, which `author` registers as well, so a package `fpack` compiled with
+    // actions is checked against the same declarations at load (ADR-0087).
+    try testing.expect(engine.schemas.lookup(input.schemas.action.id) != null);
+    try testing.expect(engine.schemas.lookup(input.schemas.context.id) != null);
 }
 
 test "a package that is not there stops startup and says which one" {
