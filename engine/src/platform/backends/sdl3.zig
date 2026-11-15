@@ -124,12 +124,18 @@ pub const Platform = struct {
     cursor: usize = 0,
     accumulator: input.Accumulator = .init,
 
+    /// How captured motion is measured, as last applied to SDL's hints.
+    motion_mode: input.MotionMode = .raw,
+    /// Whether the running window system delivers the device's counts in relative mode
+    /// (`rawMotionOfDriver`). Fixed at `init`, because SDL picks its video driver once.
+    raw_motion_available: bool = false,
+
     pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
         _ = options;
 
-        // Video implies events. Audio is not requested: the audio decision is postponed
-        // to M5, and initialising a subsystem nothing uses would open a device and a
-        // thread for nothing.
+        // Video implies events. Audio is not requested here: `openAudio` initialises it on
+        // first use, so a game that plays no sound costs no device and no thread. Gamepads
+        // are M45 Step 2's (`input.md` §4).
         if (!c.SDL_Init(c.SDL_INIT_VIDEO)) {
             log.err("SDL_Init failed: {s}", .{sdlError()});
             return error.PlatformInitFailed;
@@ -138,7 +144,11 @@ pub const Platform = struct {
         errdefer releaseSdl();
 
         const self = try gpa.create(Platform);
-        self.* = .{ .gpa = gpa };
+        self.* = .{ .gpa = gpa, .raw_motion_available = rawMotionOfDriver(currentVideoDriver()) };
+        // `raw` is the default on every backend, applied rather than assumed: an environment
+        // variable could otherwise have set SDL's hints for this process before it started.
+        if (!applyMotionHints(.raw)) log.warn("could not set the captured-motion hints: {s}", .{sdlError()});
+        self.syncMotionUnit();
 
         log.info("platform backend: SDL3 {d}.{d}.{d}, video driver '{s}'", .{
             c.SDL_VERSIONNUM_MAJOR(c.SDL_GetVersion()),
@@ -340,6 +350,47 @@ pub const Platform = struct {
         self.syncPointerCapture();
     }
 
+    /// SDL's `MOUSE_RELATIVE_SYSTEM_SCALE` hint: `0` passes the window system's relative deltas
+    /// on unscaled, `1` runs them through SDL's model of the OS's ballistics. What each window
+    /// system's unscaled deltas are is `rawMotionOfDriver`'s.
+    ///
+    /// Motion SDL has queued but this platform has not pumped was measured in the old mode, so
+    /// it is flushed, as SDL itself flushes motion when relative mode changes.
+    pub fn setCapturedMotion(self: *Platform, mode: input.MotionMode) void {
+        if (mode == self.motion_mode) return;
+        if (!applyMotionHints(mode)) {
+            // The old mode is still SDL's, so the unit reported stays true.
+            log.warn("could not set the captured-motion hints: {s}", .{sdlError()});
+            return;
+        }
+        c.SDL_FlushEvent(c.SDL_EVENT_MOUSE_MOTION);
+        self.motion_mode = mode;
+        self.syncMotionUnit();
+    }
+
+    fn syncMotionUnit(self: *Platform) void {
+        self.accumulator.captured_unit = input.capturedUnit(self.motion_mode, self.raw_motion_available);
+    }
+
+    /// The layout's own character for a physical key: the keycode the current layout puts on
+    /// its scancode, with no modifiers held, then SDL's name for that keycode (an engraving such
+    /// as `A` or `É`, or a word such as `Left Shift`). A key the layout gives no name falls
+    /// back to its physical name, so a prompt is never blank for a key that can be bound.
+    pub fn keyLabel(self: *Platform, k: key.Key, buf: *[key.label_capacity]u8) []const u8 {
+        _ = self;
+        if (k == .unknown) return buf[0..0];
+        const keycode = c.SDL_GetKeyFromScancode(scancode_of_key[@intFromEnum(k)], c.SDL_KMOD_NONE, false);
+        if (keycode != c.SDLK_UNKNOWN) {
+            // SDL's string, valid until its next call; copied into the caller's buffer here.
+            const name = c.SDL_GetKeyName(keycode);
+            if (name != null) {
+                const label = key.boundedLabel(std.mem.span(name), buf);
+                if (label.len != 0) return label;
+            }
+        }
+        return key.boundedLabel(k.name(), buf);
+    }
+
     pub fn setWindowIcon(self: *Platform, handle: win.WindowHandle, icon: win.WindowIcon) interface.WindowIconError!void {
         try icon.validate();
         const state = self.windows.getConst(handle) orelse return error.InvalidWindow;
@@ -497,10 +548,10 @@ pub const Platform = struct {
                 } });
             },
 
-            // Everything else SDL reports, Foundry has no use for: joystick and gamepad
-            // events (deferred to M5), pen and touch, audio and camera device changes,
-            // clipboard, drop, render targets reset. Dropped here rather than passed
-            // upward to be ignored.
+            // Everything else SDL reports, Foundry has no use for yet: joystick and gamepad
+            // events (M45 Step 2, `input.md` §4), audio device changes (M45 Step 3, §5), touch
+            // (M139), pen, camera devices, clipboard, drop, render targets reset.
+            // Dropped here rather than passed upward to be ignored.
             else => {},
         }
     }
@@ -728,6 +779,35 @@ fn nativeKindOfDriver(driver: []const u8) ?win.SurfaceKind {
     return null;
 }
 
+/// Whether a window system's relative-mode deltas are the device's counts when SDL is told not
+/// to scale them, read from SDL 3.4.14's sources (`input.md`, Step 1's Resolution):
+/// - `windows`: raw input's `lLastX`/`lLastY`, the mouse's counts;
+/// - `x11`: XInput2's raw events, `raw_values` rather than the accelerated `valuators`;
+/// - `wayland`: relative-pointer's `dx_unaccel`/`dy_unaccel`;
+/// - `cocoa`: **no**. SDL reads `-[NSEvent deltaX]`, which macOS has already run through its
+///   pointer acceleration, and installs no system-scale model there, so the hint changes
+///   nothing and captured motion is points in both modes.
+/// Anything else (`offscreen`, `dummy`, a driver this table has never met) is assumed not to,
+/// because calling points counts would be the one wrong answer.
+fn rawMotionOfDriver(driver: []const u8) bool {
+    for ([_][]const u8{ "windows", "x11", "wayland" }) |name| {
+        if (std.mem.eql(u8, driver, name)) return true;
+    }
+    return false;
+}
+
+/// Sets SDL's two relative-motion hints for `mode`, above any environment variable, so that what
+/// `motion_unit` reports is what SDL does. The speed scale, an extra factor SDL would apply after
+/// either mode, is cleared: sensitivity is the game's (`input.md` §3).
+fn applyMotionHints(mode: input.MotionMode) bool {
+    const system_scale: [*:0]const u8 = switch (mode) {
+        .raw => "0",
+        .system => "1",
+    };
+    return c.SDL_SetHintWithPriority(c.SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, system_scale, c.SDL_HINT_OVERRIDE) and
+        c.SDL_SetHintWithPriority(c.SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE, "", c.SDL_HINT_OVERRIDE);
+}
+
 /// The concrete kind a native request receives from the running window system. An automatic
 /// request takes whatever it provides; an explicit one must name exactly that, because a
 /// Wayland session hands out no X11 window however it is asked.
@@ -939,6 +1019,19 @@ fn keyFromScancode(scancode: c.SDL_Scancode) key.Key {
     };
 }
 
+/// `keyFromScancode` run backwards, built from it at compile time so the two cannot disagree.
+/// `unknown`'s entry is SDL's unknown scancode, which `keyLabel` never asks about.
+const scancode_of_key: [key.Key.count]c.SDL_Scancode = blk: {
+    @setEvalBranchQuota(200_000);
+    var table = [_]c.SDL_Scancode{c.SDL_SCANCODE_UNKNOWN} ** key.Key.count;
+    var scancode: c.SDL_Scancode = 0;
+    while (scancode < c.SDL_SCANCODE_COUNT) : (scancode += 1) {
+        const k = keyFromScancode(scancode);
+        if (k != .unknown) table[@intFromEnum(k)] = scancode;
+    }
+    break :blk table;
+};
+
 // -- tests ---------------------------------------------------------------------------
 //
 // These run headlessly: nothing here calls SDL_Init, so the suite does not need a
@@ -982,6 +1075,28 @@ test "the scancode mapping is injective" {
         try testing.expect(!key.keyIsSet(seen, k));
         key.setKey(&seen, k, true);
     }
+}
+
+test "every key's label is asked of the scancode that key came from" {
+    for (std.enums.values(key.Key)) |k| {
+        if (k == .unknown) continue;
+        try testing.expectEqual(k, keyFromScancode(scancode_of_key[@intFromEnum(k)]));
+    }
+    try testing.expectEqual(@as(c.SDL_Scancode, c.SDL_SCANCODE_UNKNOWN), scancode_of_key[@intFromEnum(key.Key.unknown)]);
+}
+
+test "only the window systems whose relative deltas are counts are said to deliver them" {
+    try testing.expect(rawMotionOfDriver("windows"));
+    try testing.expect(rawMotionOfDriver("x11"));
+    try testing.expect(rawMotionOfDriver("wayland"));
+    // macOS's deltas are already accelerated, and the headless drivers have no mouse.
+    for ([_][]const u8{ "cocoa", "offscreen", "dummy", "kmsdrm", "" }) |driver| {
+        try testing.expect(!rawMotionOfDriver(driver));
+    }
+    // And what that means for a snapshot: a capture on macOS says points in either mode.
+    try testing.expectEqual(input.MotionUnit.points, input.capturedUnit(.raw, rawMotionOfDriver("cocoa")));
+    try testing.expectEqual(input.MotionUnit.counts, input.capturedUnit(.raw, rawMotionOfDriver("windows")));
+    try testing.expectEqual(input.MotionUnit.points, input.capturedUnit(.system, rawMotionOfDriver("wayland")));
 }
 
 test "unmapped scancodes become unknown, not a wrong key" {

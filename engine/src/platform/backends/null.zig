@@ -29,6 +29,7 @@ const audio = @import("../audio.zig");
 const event = @import("../event.zig");
 const input = @import("../input.zig");
 const interface = @import("../interface.zig");
+const key = @import("../key.zig");
 const win = @import("../window.zig");
 
 const Allocator = std.mem.Allocator;
@@ -87,6 +88,12 @@ pub const Platform = struct {
 
     accumulator: input.Accumulator = .init,
 
+    /// How captured motion is measured. `raw` by default, as on every backend.
+    motion_mode: input.MotionMode = .raw,
+    /// Whether this "window system" can deliver raw counts. A test clears it to play a platform
+    /// that cannot (`setRawMotionAvailable`); motion pushed while captured is then points.
+    raw_motion_available: bool = true,
+
     clock_ns: i64 = 0,
     clock_step_ns: i64 = std.time.ns_per_ms,
 
@@ -94,6 +101,7 @@ pub const Platform = struct {
         _ = options;
         const self = try gpa.create(Platform);
         self.* = .{ .gpa = gpa };
+        self.syncMotionUnit();
         log.info("platform backend: null (headless)", .{});
         return self;
     }
@@ -191,6 +199,24 @@ pub const Platform = struct {
         var it = self.windows.iterator();
         while (it.next()) |entry| any = any or entry.value.pointer_captured;
         self.accumulator.captured = any;
+    }
+
+    /// Effective at once, for motion pushed from here on. The motion a test pushes is whatever
+    /// it says it is; this backend only names it, as a real one names what its OS delivers.
+    pub fn setCapturedMotion(self: *Platform, mode: input.MotionMode) void {
+        self.motion_mode = mode;
+        self.syncMotionUnit();
+    }
+
+    fn syncMotionUnit(self: *Platform) void {
+        self.accumulator.captured_unit = input.capturedUnit(self.motion_mode, self.raw_motion_available);
+    }
+
+    /// There is no layout, so a key's label is its own physical name, and `unknown` has none.
+    pub fn keyLabel(self: *Platform, k: key.Key, buf: *[key.label_capacity]u8) []const u8 {
+        _ = self;
+        if (k == .unknown) return buf[0..0];
+        return key.boundedLabel(k.name(), buf);
     }
 
     pub fn nativeSurface(self: *Platform, handle: win.WindowHandle) ?win.NativeSurfaceHandle {
@@ -378,6 +404,14 @@ pub const Platform = struct {
     pub fn pointerCaptured(self: *Platform, handle: win.WindowHandle) ?bool {
         const state = self.windows.getConst(handle) orelse return null;
         return state.pointer_captured;
+    }
+
+    /// Plays a window system that cannot deliver raw counts (macOS's, `input.md` §3's
+    /// Resolution), or one that can again. Captured motion is then reported as points in either
+    /// mode, which is how a real backend answers when it cannot honour `raw`.
+    pub fn setRawMotionAvailable(self: *Platform, available: bool) void {
+        self.raw_motion_available = available;
+        self.syncMotionUnit();
     }
 
     /// Gives or takes keyboard focus, queueing the matching event.
@@ -882,4 +916,95 @@ test "setPointerCapture validates the window, and a closed window holds nothing"
     try testing.expectEqual(@as(?bool, null), p.pointerCaptured(w));
     p.pumpEvents();
     try testing.expect(!p.captureInput().mouse.captured);
+}
+
+/// One frame of captured motion through a platform, returning its snapshot.
+fn moveOnce(p: *Platform, dx: f32) !input.InputSnapshot {
+    try p.pushEvent(.{ .mouse_moved = .{ .delta = .init(dx, 0) } });
+    p.pumpEvents();
+    return p.captureInput();
+}
+
+test "captured motion is counts in raw, points in system, and points uncaptured" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+
+    const loose = try moveOnce(p, 3);
+    try testing.expectEqual(input.MotionUnit.points, loose.mouse.motion_unit);
+
+    // `raw` is the default: no call needed.
+    try p.setPointerCapture(w, true);
+    const raw = try moveOnce(p, 120);
+    try testing.expect(raw.mouse.captured);
+    try testing.expectEqual(input.MotionUnit.counts, raw.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 120), raw.mouse.motion.x);
+
+    p.setCapturedMotion(.system);
+    const system = try moveOnce(p, 40);
+    try testing.expectEqual(input.MotionUnit.points, system.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 40), system.mouse.motion.x);
+
+    p.setCapturedMotion(.raw);
+    try testing.expectEqual(input.MotionUnit.counts, (try moveOnce(p, 1)).mouse.motion_unit);
+
+    // Released, the same mode reports points again.
+    try p.setPointerCapture(w, false);
+    try testing.expectEqual(input.MotionUnit.points, (try moveOnce(p, 1)).mouse.motion_unit);
+}
+
+test "a backend that cannot honour raw reports points rather than calling them counts" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+    try p.setPointerCapture(w, true);
+
+    p.setRawMotionAvailable(false);
+    for ([_]input.MotionMode{ .raw, .system }) |mode| {
+        p.setCapturedMotion(mode);
+        const snap = try moveOnce(p, 9);
+        try testing.expect(snap.mouse.captured);
+        try testing.expectEqual(input.MotionUnit.points, snap.mouse.motion_unit);
+    }
+
+    p.setRawMotionAvailable(true);
+    p.setCapturedMotion(.raw);
+    try testing.expectEqual(input.MotionUnit.counts, (try moveOnce(p, 9)).mouse.motion_unit);
+}
+
+test "losing focus ends a capture's counts with it" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{});
+    try p.setFocus(w, true);
+    try p.setPointerCapture(w, true);
+    try testing.expectEqual(input.MotionUnit.counts, (try moveOnce(p, 50)).mouse.motion_unit);
+
+    // Counts, then the loss, then desktop motion in the same pump: the counts are dropped
+    // rather than added to points.
+    try p.pushEvent(.{ .mouse_moved = .{ .delta = .init(50, 0) } });
+    try p.setFocus(w, false);
+    try p.pushEvent(.{ .mouse_moved = .{ .delta = .init(2, 0) } });
+    p.pumpEvents();
+    const lost = p.captureInput();
+    try testing.expect(!lost.mouse.captured);
+    try testing.expectEqual(input.MotionUnit.points, lost.mouse.motion_unit);
+    try testing.expectEqual(@as(f32, 2), lost.mouse.motion.x);
+}
+
+test "a key's label is its own name here, bounded, and empty for unknown" {
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    var buf: [key.label_capacity]u8 = undefined;
+    try testing.expectEqualStrings("q", p.keyLabel(.q, &buf));
+    try testing.expectEqualStrings("right_bracket", p.keyLabel(.right_bracket, &buf));
+    try testing.expectEqualStrings("", p.keyLabel(.unknown, &buf));
+    for (std.enums.values(key.Key)) |k| {
+        const label = p.keyLabel(k, &buf);
+        try testing.expect(label.len <= key.label_capacity);
+        try testing.expect(std.unicode.utf8ValidateSlice(label));
+        try testing.expectEqual(k == .unknown, label.len == 0);
+    }
 }

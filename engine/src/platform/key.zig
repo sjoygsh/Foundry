@@ -184,6 +184,25 @@ pub fn setKey(set: *KeySet, k: Key, value: bool) void {
     set.setValue(@intFromEnum(k), value);
 }
 
+/// The most bytes a key's label takes (`Platform.keyLabel`).
+pub const label_capacity: usize = 16;
+
+/// Copies `text` into `buf` as a key label: valid UTF-8, no NUL, at most `label_capacity`
+/// bytes, cut on a codepoint boundary. Text that is not valid UTF-8 or holds a NUL gives an
+/// empty label, because a window system's name for a key is external input, validated rather
+/// than trusted.
+///
+/// **A label is presentation.** It says what the current layout engraves on a physical key, for
+/// a prompt; a binding keeps the key's physical `name` (`input.md` §3).
+pub fn boundedLabel(text: []const u8, buf: *[label_capacity]u8) []const u8 {
+    if (!std.unicode.utf8ValidateSlice(text) or std.mem.indexOfScalar(u8, text, 0) != null) return buf[0..0];
+    var end = @min(text.len, label_capacity);
+    // Valid UTF-8 cut before a continuation byte would split a codepoint; step back to its lead.
+    while (end > 0 and end < text.len and (text[end] & 0xC0) == 0x80) end -= 1;
+    @memcpy(buf[0..end], text[0..end]);
+    return buf[0..end];
+}
+
 /// Mouse buttons. `back` and `forward` are the side buttons; higher-numbered buttons
 /// that some mice report are mapped to nothing rather than invented here.
 pub const MouseButton = enum(u8) {
@@ -301,4 +320,28 @@ test "modifiers are one byte with a fixed layout" {
     try testing.expectEqual(@as(u8, 0b0000_0011), @as(u8, @bitCast(m)));
     try testing.expect(m.eql(.{ .shift = true, .ctrl = true }));
     try testing.expect(!m.eql(.{ .shift = true }));
+}
+
+test "a label is bounded, valid UTF-8, and cut on a codepoint" {
+    var buf: [label_capacity]u8 = undefined;
+    try testing.expectEqualStrings("A", boundedLabel("A", &buf));
+    try testing.expectEqualStrings("", boundedLabel("", &buf));
+    try testing.expectEqualStrings("Left Shift", boundedLabel("Left Shift", &buf));
+    // Exactly the capacity, and one byte over it.
+    try testing.expectEqualStrings("0123456789abcdef", boundedLabel("0123456789abcdef", &buf));
+    try testing.expectEqualStrings("0123456789abcdef", boundedLabel("0123456789abcdefg", &buf));
+    // Fifteen bytes and a two-byte `é` straddling the end: the `é` goes whole.
+    try testing.expectEqualStrings("0123456789abcde", boundedLabel("0123456789abcde\u{e9}", &buf));
+    // Four-byte codepoints: four fit, a fifth does not, and one shifted by a byte loses one.
+    const four = "\u{1F600}\u{1F600}\u{1F600}\u{1F600}";
+    try testing.expectEqualStrings(four, boundedLabel(four ++ "\u{1F600}", &buf));
+    try testing.expectEqualStrings("x\u{1F600}\u{1F600}\u{1F600}", boundedLabel("x" ++ four, &buf));
+    // External text that is not UTF-8, or that holds a NUL, gives nothing.
+    try testing.expectEqualStrings("", boundedLabel("\xff\xfe", &buf));
+    try testing.expectEqualStrings("", boundedLabel("A\x00B", &buf));
+
+    for (std.enums.values(Key)) |k| {
+        // Every key's own name fits whole, so the null backend's labels are never cut.
+        try testing.expectEqualStrings(k.name(), boundedLabel(k.name(), &buf));
+    }
 }

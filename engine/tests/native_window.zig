@@ -307,6 +307,37 @@ test "a window system without a native window kind refuses every native request"
     }
 }
 
+test "this window system's captured-motion unit, and its layout's key labels" {
+    // No window: SDL's video and keyboard are enough, so nothing takes the pointer.
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+
+    // macOS's relative deltas are already accelerated, so it cannot honour `raw`; Windows' raw
+    // input, X11's XInput2 and Wayland's relative pointer can (`input.md`, Step 1's Resolution).
+    const counts = builtin.os.tag != .macos;
+    try testing.expectEqual(counts, p.raw_motion_available);
+    const raw_unit: platform.MotionUnit = if (counts) .counts else .points;
+    // The unit a capture would report, read where the backend sets it: capturing here would
+    // take a person's pointer.
+    try testing.expectEqual(raw_unit, p.accumulator.captured_unit);
+    p.setCapturedMotion(.system);
+    try testing.expectEqual(platform.MotionUnit.points, p.accumulator.captured_unit);
+    p.setCapturedMotion(.raw);
+    try testing.expectEqual(raw_unit, p.accumulator.captured_unit);
+
+    var buf: [platform.key.label_capacity]u8 = undefined;
+    for (std.enums.values(platform.Key)) |k| {
+        const label = p.keyLabel(k, &buf);
+        try testing.expect(std.unicode.utf8ValidateSlice(label));
+        try testing.expect(label.len <= platform.key.label_capacity);
+        try testing.expectEqual(k == .unknown, label.len == 0);
+    }
+    // Keys no layout re-engraves have SDL's names on every machine.
+    try testing.expectEqualStrings("Space", p.keyLabel(.space, &buf));
+    try testing.expectEqualStrings("Escape", p.keyLabel(.escape, &buf));
+    try testing.expectEqualStrings("Left Shift", p.keyLabel(.left_shift, &buf));
+}
+
 test "the system Vulkan loader opens by name from the system location" {
     const name = switch (builtin.os.tag) {
         .windows => "vulkan-1.dll",
