@@ -3396,6 +3396,10 @@ fn report(ev: platform.Event) void {
         .gamepad_button_up => |e| log.debug("gamepad {d} up: {s}", .{ e.pad.index, e.button.name() }),
         // Every frame a stick moves, so it stays at trace.
         .gamepad_axis => |e| log.trace("gamepad {d} {s}: {d:.3}", .{ e.pad.index, e.axis.name(), e.value }),
+
+        // Outputs by count, never by name: a name is often a person's (`input.md` §5).
+        .audio_outputs_changed => log.info("audio outputs changed", .{}),
+        .audio_output_lost => log.info("audio output lost; following the default", .{}),
     }
 }
 

@@ -60,6 +60,10 @@ pub const Options = struct {
     /// thread; a game hands its background pool's (`platform.Background`) so the decode
     /// happens beside the frame. Must outlive the mixer.
     tasks: core.Tasks = core.tasks.immediate,
+    /// The output to play through, from `platform`'s list; null follows the system default
+    /// (`input.md` §5). An ID is valid for one session, so a game keeps a player's choice by
+    /// name and looks it up again.
+    output: ?platform.OutputId = null,
 };
 
 pub const PlayParams = struct {
@@ -566,6 +570,7 @@ pub fn MixerOf(comptime P: type) type {
                 .buffer_frames = options.buffer_frames,
                 .callback = callback,
                 .ctx = self,
+                .output = options.output,
             });
             errdefer plat.closeAudio(self.device);
 
@@ -1539,6 +1544,24 @@ pub fn MixerOf(comptime P: type) type {
             return slot.started_at;
         }
 
+        /// Moves the sound to an output, or back to following the system default.
+        ///
+        /// **Nothing in mixing changes.** The platform binds the same device to another output,
+        /// so the handle, `info` and the callback stay, and `clock` keeps counting the frames
+        /// this mixer rendered: a start scheduled on a frame still lands on it, although what
+        /// is heard of it is later or sooner by the new hardware's latency. A refused move
+        /// leaves the sound where it was.
+        pub fn selectOutput(self: *Self, choice: ?platform.OutputId) platform.AudioError!void {
+            return self.plat.setAudioOutput(self.device, choice);
+        }
+
+        /// The output asked for, or null when following the system default, which is also the
+        /// answer after a chosen output was lost (`audio_output_lost`) and for a mixer whose
+        /// device is closed.
+        pub fn output(self: *const Self) ?platform.OutputId {
+            return self.plat.audioOutput(self.device) catch null;
+        }
+
         /// Scheduled starts whose frame had already passed when the command reached the
         /// callback. Each of them started at once instead.
         pub fn lateStarts(self: *const Self) u32 {
@@ -2371,6 +2394,38 @@ test "a scheduled start lands on its frame mid-buffer, sample-exact, and reports
     _ = try f.step(4);
     f.mixer.update();
     try testing.expectEqual(@as(?u64, 13), f.mixer.startedAt(looped));
+}
+
+test "selectOutput moves the device and keeps its handle, its clock and a scheduled start" {
+    const f = try Fixture.init(testing.allocator, .{ .channels = 1, .buffer_frames = 4 });
+    defer f.deinit();
+    const device = f.mixer.device;
+    const info = f.mixer.info;
+    try testing.expectEqual(@as(?platform.OutputId, null), f.mixer.output());
+
+    const source = [_]f32{ 0.25, -0.5, 0.75 };
+    const sound = try f.add(&source, 1, 48_000);
+    const v = try f.mixer.playSound(sound, .{ .start_at = 10 });
+    _ = try f.step(4);
+
+    // Moved before the start, lost while it waits: neither moves its frame.
+    const phones = (try f.plat.addOutput("Headphones", false)).?;
+    try f.mixer.selectOutput(phones);
+    try testing.expectEqual(phones, f.mixer.output().?);
+    _ = try f.step(4);
+    try f.plat.removeOutput(phones);
+    try testing.expectEqual(@as(?platform.OutputId, null), f.mixer.output());
+    try testing.expectEqualSlices(f32, &[_]f32{ 0, 0, 0.25, -0.5 }, try f.step(4));
+    f.mixer.update();
+    try testing.expectEqual(@as(?u64, 10), f.mixer.startedAt(v));
+    try testing.expectEqual(@as(u64, 12), f.mixer.clock());
+    try testing.expectEqual(@as(u32, 0), f.mixer.lateStarts());
+    try testing.expectEqual(device, f.mixer.device);
+    try testing.expectEqual(info, f.plat.audioInfo(f.mixer.device).?);
+
+    // A refused move leaves it where it was.
+    try testing.expectError(error.InvalidAudioOutput, f.mixer.selectOutput(phones));
+    try testing.expectEqual(@as(?platform.OutputId, null), f.mixer.output());
 }
 
 test "a start already past starts at once and counts as late" {

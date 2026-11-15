@@ -101,14 +101,33 @@ fn scaleOf(logical: win.Size, pixels: win.Size) f32 {
     return @as(f32, @floatFromInt(pixels.width)) / @as(f32, @floatFromInt(logical.width));
 }
 
-/// One open output device: SDL's stream, and the scratch buffer Foundry's callback fills.
+/// One open output device: SDL's stream, the logical device it is bound to, and what the
+/// device thread reads.
 ///
-/// The scratch is allocated once, at open, on the game thread — because the only thread
-/// that touches it afterwards is the device's, and that one may not allocate.
+/// **A Foundry device is the stream, not the SDL device under it** (`input.md` §5). The stream
+/// is created on its own and bound to a logical device opened on the default or on one
+/// output, so a move opens another logical device, rebinds the stream to it and closes the
+/// old one. `SDL_OpenAudioDeviceStream`, which M5 used, makes a "simplified" stream SDL refuses
+/// to rebind, which is why it is gone.
 const AudioState = struct {
     stream: *c.SDL_AudioStream,
-    config: audio.AudioConfig,
+    /// The logical device the stream is bound to now.
+    logical: c.SDL_AudioDeviceID,
+    /// What the device thread reads. Its own allocation, so a second device growing
+    /// `audio_devices` never moves memory a callback holds a pointer to.
+    feed: *Feed,
     info: audio.AudioInfo,
+    /// The output asked for; null follows the system default.
+    chosen: ?audio.OutputId,
+    /// Carried across a move, since pausing is per logical device in SDL.
+    paused: bool = false,
+};
+
+/// The device thread's whole view of a device: the callback and the scratch buffer it fills.
+/// Allocated once, at open, on the game thread, because the only thread that touches it
+/// afterwards is the device's, and that one may not allocate.
+const Feed = struct {
+    config: audio.AudioConfig,
     scratch: []f32,
 };
 
@@ -141,6 +160,19 @@ pub const Platform = struct {
     pads: [gamepad.max_gamepads]?*c.SDL_Gamepad = @splat(null),
     /// Joysticks SDL found but cannot map as a gamepad: ignored, and counted, until M146.
     unmapped_joysticks: u32 = 0,
+
+    /// Whether this platform holds a reference to SDL's audio subsystem. Taken by the first
+    /// `openAudio` or `audioOutputs` and held until `deinit`, so a game that never plays a sound
+    /// or lists an output costs no audio thread, and one that does keeps hearing about outputs
+    /// between devices.
+    audio_on: bool = false,
+    /// An output was added or removed this frame; one `audio_outputs_changed` goes out at the
+    /// pump's end, however many SDL reported.
+    outputs_dirty: bool = false,
+    /// The system default's name as last seen, since SDL reports no event when the default
+    /// moves: the pump compares it each frame (`input.md` §5, Step 3's Resolution).
+    default_name: [audio.max_output_name]u8 = undefined,
+    default_name_len: usize = 0,
 
     pub fn init(gpa: Allocator, options: interface.InitOptions) interface.InitError!*Platform {
         // Video implies events. Audio is not requested here: `openAudio` initialises it on
@@ -200,6 +232,7 @@ pub const Platform = struct {
         };
 
         self.ready.deinit(gpa);
+        if (self.audio_on) c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
         releaseSdl(self.gamepads_on);
         gpa.destroy(self);
     }
@@ -541,6 +574,14 @@ pub const Platform = struct {
         while (c.SDL_PollEvent(&raw)) {
             self.translate(raw);
         }
+
+        // SDL says when an output comes or goes, but not when the default moves, so the
+        // default's name is compared each frame. Either way, one event: a consumer lists again.
+        if (self.audio_on) {
+            if (self.defaultMoved()) self.outputs_dirty = true;
+            if (self.outputs_dirty) self.emit(.audio_outputs_changed);
+        }
+        self.outputs_dirty = false;
     }
 
     fn emit(self: *Platform, ev: event.Event) void {
@@ -660,6 +701,18 @@ pub const Platform = struct {
                 } });
             },
 
+            // Outputs only; recording devices are M132's. A removal naming one of our logical
+            // devices is a chosen output lost: SDL sends one for each logical device opened on
+            // an output that went, and none for one following the default, which it migrates.
+            c.SDL_EVENT_AUDIO_DEVICE_ADDED => if (!raw.adevice.recording) {
+                self.outputs_dirty = true;
+            },
+            c.SDL_EVENT_AUDIO_DEVICE_REMOVED => if (!raw.adevice.recording) {
+                if (c.SDL_IsAudioDevicePhysical(raw.adevice.which)) {
+                    self.outputs_dirty = true;
+                } else self.outputLost(raw.adevice.which);
+            },
+
             // A joystick SDL cannot map as a gamepad, such as a wheel or a flight stick. A gamepad
             // arrives as both this and `GAMEPAD_ADDED`, and is counted here only when it is not one.
             c.SDL_EVENT_JOYSTICK_ADDED => if (!c.SDL_IsGamepad(raw.jdevice.which)) {
@@ -668,9 +721,10 @@ pub const Platform = struct {
             },
 
             // Everything else SDL reports, Foundry has no use for yet: raw joystick events, a
-            // gamepad's remapping, touchpads and sensors (M146), audio device changes (M45 Step 3,
-            // `input.md` §5), touch (M139), pen, camera devices, clipboard, drop, render targets
-            // reset. Dropped here rather than passed upward to be ignored.
+            // gamepad's remapping, touchpads and sensors (M146), an output's format changing
+            // (SDL converts, and `AudioInfo` is the source's), recording devices (M132), touch
+            // (M139), pen, camera devices, clipboard, drop, render targets reset. Dropped here
+            // rather than passed upward to be ignored.
             else => {},
         }
     }
@@ -708,38 +762,32 @@ pub const Platform = struct {
         return self.accumulator.capture();
     }
 
-    /// Opens the default output device and starts it.
+    /// Opens a device on the system default, or on `config.output`, and starts it.
     ///
-    /// **The subsystem is initialised here rather than in `init`**, because a game that
-    /// never plays a sound should not cost a device and a thread. `SDL_InitSubSystem` is
-    /// reference counted, so opening a second device is not a second initialisation.
+    /// **The subsystem is initialised on first use rather than in `init`**, because a game
+    /// that never plays a sound should not cost a device and a thread. The platform then holds
+    /// it until `deinit`.
     ///
-    /// **The device's own sample rate wins over the requested one.** Foundry's voices
+    /// **The output's own sample rate wins over the requested one.** Foundry's voices
     /// already resample — that machinery exists for pitch and cannot be avoided
     /// (ADR-0023) — so adopting the hardware rate costs nothing and removes SDL's
     /// resampler from the path entirely. The channel count is the requested one: SDL
     /// maps two channels onto whatever the hardware has, and a mixer that had to know
-    /// about 5.1 to be heard on a 5.1 machine would be a worse trade.
+    /// about 5.1 to be heard on a 5.1 machine would be a worse trade. A later move keeps
+    /// the rate it opened with, and SDL converts to the new output's.
     pub fn openAudio(self: *Platform, config: audio.AudioConfig) interface.AudioError!audio.AudioDeviceHandle {
         if (!audio.supportable(config)) return error.AudioFormatUnsupported;
-
-        if (!c.SDL_InitSubSystem(c.SDL_INIT_AUDIO)) {
-            log.err("SDL_InitSubSystem(AUDIO) failed: {s}", .{sdlError()});
-            return error.AudioUnavailable;
-        }
-        errdefer c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
+        if (!self.ensureAudio()) return error.AudioUnavailable;
+        if (config.output) |output| if (!outputPresent(output)) return error.InvalidAudioOutput;
+        const target = sdlTarget(config.output);
 
         var device_spec: c.SDL_AudioSpec = undefined;
-        const rate: u32 = if (c.SDL_GetAudioDeviceFormat(
-            c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-            &device_spec,
-            null,
-        ) and device_spec.freq > 0)
+        const rate: u32 = if (c.SDL_GetAudioDeviceFormat(target, &device_spec, null) and device_spec.freq > 0)
             @intCast(device_spec.freq)
         else
             // No device to ask, or SDL declined to say. The request is as good an answer
-            // as exists, and `SDL_OpenAudioDeviceStream` below will fail if there is
-            // genuinely nothing there.
+            // as exists, and `SDL_OpenAudioDevice` below will fail if there is genuinely
+            // nothing there.
             config.sample_rate;
 
         const info: audio.AudioInfo = .{
@@ -748,50 +796,53 @@ pub const Platform = struct {
             .buffer_frames = config.buffer_frames,
         };
 
-        const scratch = try self.gpa.alloc(f32, info.bufferSamples());
-        errdefer self.gpa.free(scratch);
-
-        // Reserved before the stream is opened, so that the pointer the callback is
-        // handed is stable before there is any thread to hand it to.
-        const handle = try self.audio_devices.add(self.gpa, .{
-            .stream = undefined,
-            .config = config,
-            .info = info,
-            .scratch = scratch,
-        });
-        errdefer _ = self.audio_devices.remove(handle);
-        const state = self.audio_devices.get(handle).?;
+        const feed = try self.gpa.create(Feed);
+        errdefer self.gpa.destroy(feed);
+        feed.* = .{ .config = config, .scratch = try self.gpa.alloc(f32, info.bufferSamples()) };
+        errdefer self.gpa.free(feed.scratch);
 
         // The source spec, which is what Foundry produces. SDL converts to whatever the
         // hardware wants, which is how `f32` interleaved stays a promise rather than a
         // switch in the mixer.
-        var spec: c.SDL_AudioSpec = .{
-            .format = c.SDL_AUDIO_F32,
-            .channels = @intCast(info.channels),
-            .freq = @intCast(info.sample_rate),
-        };
-        const stream = c.SDL_OpenAudioDeviceStream(
-            c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-            &spec,
-            streamCallback,
-            state,
-        ) orelse {
-            log.err("SDL_OpenAudioDeviceStream failed: {s}", .{sdlError()});
+        const spec = sourceSpec(info);
+        const stream = c.SDL_CreateAudioStream(&spec, null) orelse {
+            log.err("SDL_CreateAudioStream failed: {s}", .{sdlError()});
             return error.AudioUnavailable;
         };
-        state.stream = stream;
-
-        // A device opens running. SDL's streams start paused, and a backend that left it
-        // that way would be an engine that ships with no sound until someone noticed.
-        if (!c.SDL_ResumeAudioStreamDevice(stream)) {
-            log.warn("SDL_ResumeAudioStreamDevice failed: {s}", .{sdlError()});
+        errdefer c.SDL_DestroyAudioStream(stream);
+        // The callback before the binding, so the device thread's first pull finds it.
+        if (!c.SDL_SetAudioStreamGetCallback(stream, streamCallback, feed)) {
+            log.err("SDL_SetAudioStreamGetCallback failed: {s}", .{sdlError()});
+            return error.AudioUnavailable;
         }
+
+        // A logical device opens running. A backend that left it paused would be an engine
+        // that ships with no sound until someone noticed.
+        const logical = c.SDL_OpenAudioDevice(target, &spec);
+        if (logical == 0) {
+            log.err("SDL_OpenAudioDevice failed: {s}", .{sdlError()});
+            return error.AudioUnavailable;
+        }
+        errdefer c.SDL_CloseAudioDevice(logical);
+        if (!c.SDL_BindAudioStream(logical, stream)) {
+            log.err("SDL_BindAudioStream failed: {s}", .{sdlError()});
+            return error.AudioUnavailable;
+        }
+
+        const handle = try self.audio_devices.add(self.gpa, .{
+            .stream = stream,
+            .logical = logical,
+            .feed = feed,
+            .info = info,
+            .chosen = config.output,
+        });
 
         log.info("audio device: {d} Hz, {d} channel(s), {d}-frame buffer", .{
             info.sample_rate,
             info.channels,
             info.buffer_frames,
         });
+        self.logChoice(config.output);
         return handle;
     }
 
@@ -799,7 +850,6 @@ pub const Platform = struct {
         const state = self.audio_devices.get(device) orelse return;
         destroyAudio(self.gpa, state);
         _ = self.audio_devices.remove(device);
-        c.SDL_QuitSubSystem(c.SDL_INIT_AUDIO);
     }
 
     pub fn audioInfo(self: *Platform, device: audio.AudioDeviceHandle) ?audio.AudioInfo {
@@ -808,14 +858,116 @@ pub const Platform = struct {
     }
 
     pub fn setAudioPaused(self: *Platform, device: audio.AudioDeviceHandle, paused: bool) void {
-        const state = self.audio_devices.getConst(device) orelse return;
+        const state = self.audio_devices.get(device) orelse return;
+        state.paused = paused;
         const ok = if (paused)
-            c.SDL_PauseAudioStreamDevice(state.stream)
+            c.SDL_PauseAudioDevice(state.logical)
         else
-            c.SDL_ResumeAudioStreamDevice(state.stream);
+            c.SDL_ResumeAudioDevice(state.logical);
         // Nothing above can act on this, and a game asking twice for the same state is
         // not an error. Said once, in the log, rather than pushed into a signature.
         if (!ok) log.warn("audio pause({}) failed: {s}", .{ paused, sdlError() });
+    }
+
+    /// The machine's outputs, in SDL's order, which is the OS's. The default is marked by name,
+    /// since SDL names the default's device but not its ID: of two outputs with one name, the
+    /// first is marked (Step 3's Resolution).
+    pub fn audioOutputs(self: *Platform, out: []audio.OutputInfo) usize {
+        if (out.len == 0 or !self.ensureAudio()) return 0;
+        var count: c_int = 0;
+        const ids = c.SDL_GetAudioPlaybackDevices(&count) orelse return 0;
+        defer c.SDL_free(ids);
+
+        var default_buf: [audio.max_output_name]u8 = undefined;
+        const default_name = defaultName(&default_buf);
+        var marked = false;
+        var n: usize = 0;
+        for (ids[0..@intCast(@max(count, 0))]) |id| {
+            if (n == out.len) break;
+            const name: []const u8 = if (c.SDL_GetAudioDeviceName(id)) |text| std.mem.span(text) else "";
+            var info = audio.OutputInfo.init(.fromInt(id), name, false);
+            if (!marked and default_name != null and std.mem.eql(u8, info.name(), default_name.?)) {
+                info.is_default = true;
+                marked = true;
+            }
+            out[n] = info;
+            n += 1;
+        }
+        return n;
+    }
+
+    /// Moves a running device to an output, or back to following the default, by binding its
+    /// stream to a new logical device and closing the old one. **Not a reopen**: the stream,
+    /// its callback, `AudioInfo` and the mixer's clock carry on, and what the stream had queued
+    /// plays on the new output. If SDL refuses the new binding, the old one stays and the
+    /// answer is `AudioUnavailable`.
+    pub fn setAudioOutput(self: *Platform, device: audio.AudioDeviceHandle, output: ?audio.OutputId) interface.AudioError!void {
+        const state = self.audio_devices.get(device) orelse return error.InvalidAudioDevice;
+        if (output) |o| if (!outputPresent(o)) return error.InvalidAudioOutput;
+        if (!rebind(state, sdlTarget(output))) return error.AudioUnavailable;
+        state.chosen = output;
+        self.logChoice(output);
+    }
+
+    pub fn audioOutput(self: *Platform, device: audio.AudioDeviceHandle) interface.AudioError!?audio.OutputId {
+        const state = self.audio_devices.getConst(device) orelse return error.InvalidAudioDevice;
+        return state.chosen;
+    }
+
+    /// Takes the audio subsystem once, for the platform's life.
+    fn ensureAudio(self: *Platform) bool {
+        if (self.audio_on) return true;
+        if (!c.SDL_InitSubSystem(c.SDL_INIT_AUDIO)) {
+            log.err("SDL_InitSubSystem(AUDIO) failed: {s}", .{sdlError()});
+            return false;
+        }
+        self.audio_on = true;
+        // The default as it is now, so the first frame does not report it as moved.
+        self.default_name_len = if (defaultName(&self.default_name)) |name| name.len else 0;
+        return true;
+    }
+
+    /// Whether the default's name differs from the one last seen, remembering the new one.
+    fn defaultMoved(self: *Platform) bool {
+        var buf: [audio.max_output_name]u8 = undefined;
+        const now_name: []const u8 = defaultName(&buf) orelse "";
+        if (std.mem.eql(u8, now_name, self.default_name[0..self.default_name_len])) return false;
+        @memcpy(self.default_name[0..now_name.len], now_name);
+        self.default_name_len = now_name.len;
+        return true;
+    }
+
+    /// SDL reported a logical device's output gone. If it is one of ours, it falls back to the
+    /// default, keeping its handle, and the game hears `audio_output_lost`. Until then SDL keeps
+    /// pulling its stream into a zombie device, so the callback, and the clock, never stopped.
+    fn outputLost(self: *Platform, logical: c.SDL_AudioDeviceID) void {
+        var it = self.audio_devices.iterator();
+        while (it.next()) |entry| {
+            if (entry.value.logical != logical) continue;
+            if (!rebind(entry.value, c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK)) {
+                log.warn("could not move a lost output's device to the default: {s}", .{sdlError()});
+            }
+            entry.value.chosen = null;
+            self.logChoice(null);
+            self.outputs_dirty = true;
+            self.emit(.{ .audio_output_lost = .{ .device = entry.id } });
+            return;
+        }
+    }
+
+    fn logChoice(self: *Platform, chosen: ?audio.OutputId) void {
+        _ = self;
+        var count: c_int = 0;
+        const ids = c.SDL_GetAudioPlaybackDevices(&count);
+        defer if (ids) |list| c.SDL_free(list);
+        const n: usize = @intCast(@max(count, 0));
+        const index: ?usize = if (chosen) |want| blk: {
+            const list = ids orelse break :blk null;
+            for (list[0..n], 0..) |id, i| if (id == want.toInt()) break :blk i;
+            break :blk null;
+        } else null;
+        var buf: [96]u8 = undefined;
+        log.info("{s}", .{audio.describeChoice(&buf, n, index)});
     }
 
     /// Monotonic time since SDL was initialised.
@@ -932,11 +1084,64 @@ pub const VirtualGamepad = struct {
 };
 
 /// Destroys a stream and frees what was allocated for it. **The stream goes first**: it
-/// is what the device thread holds, and `SDL_DestroyAudioStream` does not return until
-/// that thread is no longer inside the callback.
+/// is what the device thread holds, and `SDL_DestroyAudioStream` unbinds it, not returning
+/// until that thread is no longer inside the callback. Then its logical device.
 fn destroyAudio(gpa: Allocator, state: *AudioState) void {
     c.SDL_DestroyAudioStream(state.stream);
-    gpa.free(state.scratch);
+    c.SDL_CloseAudioDevice(state.logical);
+    gpa.free(state.feed.scratch);
+    gpa.destroy(state.feed);
+}
+
+/// The spec Foundry's stream produces: `f32`, interleaved, at the device's rate.
+fn sourceSpec(info: audio.AudioInfo) c.SDL_AudioSpec {
+    return .{
+        .format = c.SDL_AUDIO_F32,
+        .channels = @intCast(info.channels),
+        .freq = @intCast(info.sample_rate),
+    };
+}
+
+/// The SDL device a logical device is opened on: the default, which SDL migrates when the
+/// system's moves, or one output, which it does not.
+fn sdlTarget(output: ?audio.OutputId) c.SDL_AudioDeviceID {
+    return if (output) |o| o.toInt() else c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+}
+
+/// Whether an ID names an output present now. SDL would open a stale physical ID only to fail,
+/// and `InvalidAudioOutput` is the better sentence.
+fn outputPresent(output: audio.OutputId) bool {
+    var count: c_int = 0;
+    const ids = c.SDL_GetAudioPlaybackDevices(&count) orelse return false;
+    defer c.SDL_free(ids);
+    for (ids[0..@intCast(@max(count, 0))]) |id| if (id == output.toInt()) return true;
+    return false;
+}
+
+/// The default output's name, bounded, or null if SDL knows of none.
+fn defaultName(buf: *[audio.max_output_name]u8) ?[]const u8 {
+    const text = c.SDL_GetAudioDeviceName(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) orelse return null;
+    return audio.boundedName(std.mem.span(text), buf);
+}
+
+/// Binds a device's stream to a new logical device on `target` and closes the old one: the
+/// move, and the fallback. The stream is unbound and bound again under one game-thread call,
+/// so the device thread misses at most the one pull in between, and what the stream had
+/// queued is kept. On failure the old binding is restored and nothing changes.
+fn rebind(state: *AudioState, target: c.SDL_AudioDeviceID) bool {
+    const spec = sourceSpec(state.info);
+    const next = c.SDL_OpenAudioDevice(target, &spec);
+    if (next == 0) return false;
+    if (state.paused) _ = c.SDL_PauseAudioDevice(next);
+    c.SDL_UnbindAudioStream(state.stream);
+    if (!c.SDL_BindAudioStream(next, state.stream)) {
+        _ = c.SDL_BindAudioStream(state.logical, state.stream);
+        c.SDL_CloseAudioDevice(next);
+        return false;
+    }
+    c.SDL_CloseAudioDevice(state.logical);
+    state.logical = next;
+    return true;
 }
 
 /// SDL asking for more audio. **This is the device thread**, and everything
@@ -957,13 +1162,13 @@ fn streamCallback(
     _ = total_amount;
     if (additional_amount <= 0) return;
 
-    const state: *AudioState = @ptrCast(@alignCast(userdata.?));
-    const block_bytes: c_int = @intCast(state.scratch.len * @sizeOf(f32));
+    const feed: *Feed = @ptrCast(@alignCast(userdata.?));
+    const block_bytes: c_int = @intCast(feed.scratch.len * @sizeOf(f32));
 
     var remaining = additional_amount;
     while (remaining > 0) {
-        state.config.callback(state.config.ctx, state.scratch);
-        _ = c.SDL_PutAudioStreamData(stream, state.scratch.ptr, block_bytes);
+        feed.config.callback(feed.config.ctx, feed.scratch);
+        _ = c.SDL_PutAudioStreamData(stream, feed.scratch.ptr, block_bytes);
         remaining -= block_bytes;
     }
 }
@@ -1584,6 +1789,47 @@ test "SDL's pad events reach the snapshot by slot, with a stick's y turned up" {
     try testing.expect(state.isHeld(.east));
     try testing.expect(!state.isHeld(.north));
     try testing.expectEqual(@as(usize, 3), p.ready.items.len);
+}
+
+test "SDL's output events mark the list changed, a stranger's loss is not ours, and recording is ignored" {
+    // No SDL here either: these events, for devices this platform never opened, call nothing in
+    // SDL but its ID arithmetic.
+    var p: Platform = .{ .gpa = testing.allocator };
+    defer p.ready.deinit(testing.allocator);
+
+    // SDL's IDs carry their kind in the low bits: 1 << 0 playback, 1 << 1 physical.
+    const physical_playback: c.SDL_AudioDeviceID = (5 << 2) | 0b11;
+    const logical_playback: c.SDL_AudioDeviceID = (6 << 2) | 0b01;
+    const physical_recording: c.SDL_AudioDeviceID = (7 << 2) | 0b10;
+
+    var ev: c.SDL_Event = .{ .adevice = std.mem.zeroes(c.SDL_AudioDeviceEvent) };
+    ev.adevice.type = c.SDL_EVENT_AUDIO_DEVICE_ADDED;
+    ev.adevice.which = physical_recording;
+    ev.adevice.recording = true;
+    p.translate(ev);
+    try testing.expect(!p.outputs_dirty);
+
+    ev.adevice.recording = false;
+    ev.adevice.which = physical_playback;
+    p.translate(ev);
+    try testing.expect(p.outputs_dirty);
+
+    // A logical device's removal that names none of ours: nothing is lost, nothing emitted.
+    p.outputs_dirty = false;
+    ev.adevice.type = c.SDL_EVENT_AUDIO_DEVICE_REMOVED;
+    ev.adevice.which = logical_playback;
+    p.translate(ev);
+    try testing.expect(!p.outputs_dirty);
+    try testing.expectEqual(@as(usize, 0), p.ready.items.len);
+
+    ev.adevice.which = physical_playback;
+    p.translate(ev);
+    try testing.expect(p.outputs_dirty);
+    // The list's event waits for the pump's end, so a frame's several changes are one.
+    try testing.expectEqual(@as(usize, 0), p.ready.items.len);
+
+    try testing.expectEqual(c.SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, sdlTarget(null));
+    try testing.expectEqual(physical_playback, sdlTarget(.fromInt(physical_playback)));
 }
 
 test "scale is the ratio of the two sizes, and never divides by zero" {

@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 and 2 are done (2026-11-15); Step 3 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15); Step 4 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1201,3 +1201,131 @@ null, and SDL3 Linux, Windows and Windows ReleaseSafe), the four thirty-frame sa
 Nothing outside `platform` changed except `samples/sandbox/main.zig`, whose `report` gains the
 five pad events in its exhaustive switch, `build.zig`, for `gamepad-test`, and the new test file.
 No Vulkan check applies: no shader, RHI or native-window code changed.
+
+## Resolution — Step 3: outputs (2026-11-15)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 3.
+
+**What the step pinned:**
+- **`platform/audio.zig`:**
+  - `OutputId` is a non-exhaustive `enum(u32)`, so it cannot be confused with a handle's index
+    or a count. On SDL it is the physical device's instance ID, valid for one session.
+  - `OutputInfo` has `id`, `is_default` and a name of at most `max_output_name` (128) bytes,
+    read through `name()`. `OutputInfo.init` and `boundedName` keep valid UTF-8 cut on a
+    codepoint, and give an empty name for text that is invalid or holds a NUL.
+  - `max_outputs = 32` sizes a caller's list. `AudioConfig.output: ?OutputId = null`.
+  - `describeChoice(buf, count, chosen)` is the one log line about outputs. It takes numbers
+    only, so no name can reach it.
+- **The interface:** three calls, 22 in all:
+  - `audioOutputs(*P, []OutputInfo) usize`, in the OS's order, returning how many were written;
+  - `setAudioOutput(*P, AudioDeviceHandle, ?OutputId) AudioError!void`;
+  - `audioOutput(*P, AudioDeviceHandle) AudioError!?OutputId`.
+- **`AudioError` gains `InvalidAudioOutput`.** It means an ID that names no output present
+  now. A stale handle is still `InvalidAudioDevice`, and is checked first.
+- **Two events:** `audio_outputs_changed`, with no payload, and `audio_output_lost { device }`.
+  The accumulator lists both as changing no input state.
+- **Null:**
+  - it starts with one output, `Null Output`, the default;
+  - test affordances: `addOutput(name, make_default)`, `removeOutput`, `setDefaultOutput`,
+    `boundOutput` (where a device plays now, which a game cannot ask), `outputMoves` and
+    `lastOutputLog`;
+  - a removed default hands over to the first output left, as an OS picks one.
+- **SDL3:** `openAudio` creates its stream with `SDL_CreateAudioStream`, sets the get-callback,
+  opens a logical device on the default or the chosen output, and binds the stream to it. A move
+  (`rebind`) opens the new logical device, unbinds and rebinds the stream, then closes the old
+  one. If the bind is refused, the old binding is restored and the answer is `AudioUnavailable`.
+- **`audio.Mixer`:** `Options.output`, `selectOutput(?OutputId)` and `output()`, which forward
+  to the platform. Nothing in mixing changed.
+
+**Where the code sharpened the design:**
+- **A third call, `audioOutput`.** §5 gave `Mixer.output()` but no platform call behind it.
+  The mixer cannot remember its own choice, because a loss changes it inside the platform and the
+  mixer never sees events. So the platform answers what the device follows now: null after a
+  loss. Putting it in `AudioInfo` was rejected, because "a move keeps `AudioInfo`" is the rule.
+- **`SDL_OpenAudioDeviceStream` could not have been kept.** It makes a "simplified" stream, and
+  `SDL_BindAudioStreams` refuses to rebind one (`SDL_audio.c`, 3.4.14). §5's rebinding needs the
+  stream created on its own, as written.
+- **SDL reports no event when the default moves.** `SDL_DefaultAudioDeviceChanged` migrates the
+  logical devices opened on the default, and posts only `FORMAT_CHANGED`, and only when the
+  format differs. SDL also names the default's device but not its ID. So:
+  - the pump compares the default's name each frame, and a change is an `audio_outputs_changed`;
+  - `is_default` marks the first output whose name is the default's.
+  - **Limit:** with two outputs of one name, such as two identical USB headsets, the first is
+    marked, and a default moving between them is not reported. Following the default is
+    unaffected, since SDL migrates by ID.
+- **At most one `audio_outputs_changed` a frame**, at the pump's end, on both backends. SDL sends
+  `ADDED` for every device it finds when the audio subsystem starts, so the first pump after the
+  first `openAudio` or `audioOutputs` reports one change. That is harmless, because a consumer
+  only lists the outputs again.
+- **A loss is SDL's `REMOVED` naming one of our logical devices.** SDL sends one for each
+  logical device opened on an output that went. That includes an output that was also the
+  default, since it was opened by ID. A device following the default gets none, because SDL
+  migrates it. Until the pump hears it, SDL keeps pulling the stream into a zombie device, so the
+  callback and the clock never stop. `audio_output_lost` is emitted before that frame's
+  `audio_outputs_changed`, in SDL's order, and the null backend keeps the same order.
+- **Pausing is per logical device in SDL**, so `setAudioPaused` records it, and a move carries it
+  to the new logical device. A logical device opens running.
+- **The audio subsystem is held from the first `openAudio` or `audioOutputs` until `deinit`.**
+  Before, each `closeAudio` released it. Keeping it lets a menu list outputs before a mixer exists
+  and keeps hotplug events coming between devices. A game that never touches audio still starts
+  no audio thread.
+- **A latent hazard fixed in passing.** The callback was handed a pointer into the
+  `audio_devices` pool. Opening a second device could grow the pool and move that memory under a
+  running device thread. The callback's view (`Feed`: config and scratch) is now its own
+  allocation.
+- **What is never logged:** a name. The SDL backend logs `describeChoice` after an open, a move
+  and a loss, and the sandbox's event report gives the two events no name either.
+
+**`zig build audio-output-test`** (`engine/tests/audio_output.zig`) is new, beside
+`gamepad-test`, compiled by `check`. It plays silence throughout, so nothing is heard. It:
+- lists the outputs, checks the names are valid UTF-8 and that at most one is the default, and
+  prints counts, never names;
+- opens a silent device that counts the frames it is asked for, then moves it to each output and
+  back to following the default, checking the handle, `AudioInfo`, `audioOutput` and that the
+  count keeps rising after every move;
+- tolerates an output the OS lists but will not open: the move is refused, and the device must
+  still be running where it was;
+- checks the refusals: a missing ID (`InvalidAudioOutput`) and a closed handle
+  (`InvalidAudioDevice`).
+
+**On the M5 it passed** with the one output the machine has, its speakers: moved to 1 of 1, and
+3,072 frames pulled. A move between two physical outputs, and a real loss, need headphones or a
+display plugged in and a person to unplug them. That is Step 8's run of the court, as §13
+already says. Until then the null backend's script proves the loss headless.
+
+**The exit, met:**
+- the output tests pass headless: names, the list, a move, a loss, a moved default, one event
+  a frame, every refusal, and no name in the log;
+- `audio-output-test` passes on the Mac;
+- `sequencedMix(.moves)` replays M30's pinned mix under a script: headphones chosen before the
+  stinger is scheduled, unplugged while it waits for its beat, another output chosen across the
+  switch's bar line, back to the default, then the default moved under a looping track. Every
+  start lands on its arithmetic frame, none is late, and the hash is M30's pin,
+  `2692657964278199496`.
+- `selectOutput`'s own mixer test checks the same rules for one scheduled start.
+
+**Each guard was broken once, and each failed its test:**
+- the pump's coalescing removed failed "the default moving carries a following device … one
+  event a frame" (three events, not one);
+- the null `setAudioOutput` not checking the output is present failed the loss test, the
+  refusal test and the mixer's `selectOutput` test;
+- the log line carrying the output's name failed "no output's name reaches the log";
+- SDL's `ADDED` counted for a recording device failed the SDL3 output-events test;
+- a move that left the stream silent (the null device paused by it) failed the move test, the
+  loss test, the mixer's test and the music test across moves;
+- SDL's `rebind` skipping the new binding failed `audio-output-test` with a timeout, the count
+  stopping after the first move.
+
+**Bar:** every line of `AGENTS.md` §3 passes, plus the extras the backend's change calls for:
+`zig build test -Drhi=metal`, SDL3 (not null) `check` for Linux and Windows, the Windows one also
+at ReleaseSafe, and the three desktop tests. The counts:
+- null 3,086/3,096 (ten skips);
+- Metal 3,101/3,122 (21 skips);
+- `audio-output-test` 1/1, `gamepad-test` 3/3, `native-window-test` 3/10 (seven skips, as at
+  Step 1);
+- every check, the four thirty-frame samples and `fdt-check`, each exit 0.
+
+No Vulkan check applies: no shader, RHI or native-window code changed. Outside
+`engine/src/platform` and `engine/src/audio/mixer.zig`, only `engine/tests/music_sequencing.zig`,
+the new `engine/tests/audio_output.zig`, `build.zig` (its step), `samples/sandbox/main.zig` (the
+two events in its exhaustive report) and `AGENTS.md` (the two desktop tests) changed.

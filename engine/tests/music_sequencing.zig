@@ -223,10 +223,20 @@ fn sequenceStack() !*Stack {
     return s;
 }
 
+/// What happens to the outputs while `sequencedMix` plays (M45 Step 3, `input.md` §5).
+const OutputScript = enum {
+    /// Nothing: the mix as M30 pinned it.
+    none,
+    /// Headphones chosen before the stinger is scheduled, unplugged while it waits for its
+    /// beat, another output chosen across the switch's bar line, and the default moved under
+    /// the device following it again.
+    moves,
+};
+
 /// Criterion 5's mix: a playlist, its crossfade, a stinger on the beat with its duck, and a
 /// switch on the bar line, then the new playlist looping into itself. Returns the hash of every
 /// sample, and checks each start against arithmetic written out here.
-fn sequencedMix() !u64 {
+fn sequencedMix(script: OutputScript) !u64 {
     const s = try sequenceStack();
     defer s.deinit();
     var music = Music.init(s.gpa, s.mixer, &s.assets, .{ .lookahead_frames = 1024, .stinger_lookahead_frames = 512 });
@@ -236,10 +246,35 @@ fn sequencedMix() !u64 {
     var checked: u64 = 0;
     try music.play(id("t:music.a"));
     var buffers: u32 = 0;
+    var phones: ?platform.OutputId = null;
+    var lost: u32 = 0;
     while (buffers < 270) : (buffers += 1) {
         // Clock 12,800, then 28,160: the stinger, then the switch.
         if (buffers == 50) try music.stinger(id("t:music.s"));
         if (buffers == 110) try music.play(id("t:music.b"));
+        if (script == .moves) switch (buffers) {
+            // a2 has been scheduled (10,624) and is still to start when the move happens.
+            30 => {
+                phones = (try s.plat.addOutput("Headphones", false)).?;
+                try s.mixer.selectOutput(phones);
+            },
+            // The stinger waits for 18,624 (buffer 72) when its output is unplugged.
+            60 => try s.plat.removeOutput(phones.?),
+            // The switch waits for its bar line, 42,624 (buffer 166), across a move and back.
+            120 => {
+                const dock = (try s.plat.addOutput("Dock", false)).?;
+                try s.mixer.selectOutput(dock);
+            },
+            150 => try s.mixer.selectOutput(null),
+            // b1 loops into itself at 61,664 (buffer 240) while the default moves under it.
+            200 => try s.plat.setDefaultOutput((try s.plat.addOutput("Monitor", false)).?),
+            else => {},
+        };
+        s.plat.pumpEvents();
+        while (s.plat.nextEvent()) |ev| if (ev == .audio_output_lost) {
+            try testing.expectEqual(s.mixer.device, ev.audio_output_lost.device);
+            lost += 1;
+        };
         const out = try frame(s, &music);
         hash.update(std.mem.sliceAsBytes(out));
         try checkStarts(s, &music, &checked);
@@ -272,14 +307,30 @@ fn sequencedMix() !u64 {
     try testing.expectEqual(@as(u64, expected.len), checked);
     try testing.expectEqual(@as(u32, 0), s.mixer.lateStarts());
     try testing.expectEqual(@as(u32, 0), s.mixer.commandsDropped());
+    if (script == .moves) {
+        // One loss, heard as an event; five rebindings, the default's move among them; and the
+        // device ends following the default, where it began.
+        try testing.expectEqual(@as(u32, 1), lost);
+        try testing.expectEqual(@as(u32, 5), s.plat.outputMoves(s.mixer.device));
+        try testing.expectEqual(@as(?platform.OutputId, null), s.mixer.output());
+    }
     return hash.final();
 }
 
+const sequenced_pin: u64 = 2692657964278199496;
+
 test "a sequenced mix starts every track and stinger on the frame the arithmetic gives, and is pinned" {
-    const first = try sequencedMix();
+    const first = try sequencedMix(.none);
     // The same samples every run (criterion 5), and the same as the pin.
-    try testing.expectEqual(first, try sequencedMix());
-    try testing.expectEqual(@as(u64, 2692657964278199496), first);
+    try testing.expectEqual(first, try sequencedMix(.none));
+    try testing.expectEqual(sequenced_pin, first);
+}
+
+test "the sequenced mix's starts and samples hold across output moves, a loss and a moved default" {
+    // M45's exit for Step 3: the mixer's clock counts frames it rendered, so a start scheduled on
+    // a frame lands on it whichever output the device is bound to. `sequencedMix` checks every
+    // start against its arithmetic and none late; the pin says not a sample moved.
+    try testing.expectEqual(sequenced_pin, try sequencedMix(.moves));
 }
 
 test "a setGain during a stinger's duck holds once the duck is over" {

@@ -1807,6 +1807,20 @@ pub fn build(b: *std.Build) void {
         check_step.dependOn(&gamepad_tests.step);
         b.step("gamepad-test", "Drive SDL3's virtual gamepads through the platform (needs a desktop machine)")
             .dependOn(&b.addRunArtifact(gamepad_tests).step);
+
+        // Audio outputs through SDL3 (`input.md` §5, M45 Step 3), apart from `test` because it
+        // opens the machine's real outputs, which a headless build machine may not have. The
+        // device plays silence, so nothing is heard.
+        const audio_output_mod = b.createModule(.{
+            .root_source_file = b.path("engine/tests/audio_output.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        audio_output_mod.addImport("platform", platform_module);
+        const audio_output_tests = b.addTest(.{ .root_module = audio_output_mod });
+        check_step.dependOn(&audio_output_tests.step);
+        b.step("audio-output-test", "Move a silent device across this machine's audio outputs through SDL3 (needs a desktop machine)")
+            .dependOn(&b.addRunArtifact(audio_output_tests).step);
     }
 
     // Presentation to real windows through Vulkan (`vulkan.md` §8, M13 Step 7), apart from `test`

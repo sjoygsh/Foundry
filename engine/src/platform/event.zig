@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const core = @import("core");
+const audio = @import("audio.zig");
 const gamepad = @import("gamepad.zig");
 const key = @import("key.zig");
 const window = @import("window.zig");
@@ -124,6 +125,12 @@ pub const GamepadAxisEvent = struct {
     value: f32 = 0,
 };
 
+/// A chosen output disappeared, and the device now follows the system default. The sound carried
+/// on; this says so (`input.md` §5).
+pub const AudioOutputLost = struct {
+    device: audio.AudioDeviceHandle,
+};
+
 pub const WindowEvent = struct {
     window: window.WindowHandle,
 };
@@ -167,6 +174,12 @@ pub const Event = union(enum) {
     gamepad_button_down: GamepadButtonEvent,
     gamepad_button_up: GamepadButtonEvent,
     gamepad_axis: GamepadAxisEvent,
+
+    /// The outputs changed: one was added or removed, or the system default moved. One variant
+    /// for all three, at most one a frame; a consumer lists them again (`audioOutputs`).
+    audio_outputs_changed,
+    /// A device's chosen output disappeared, and the device fell back to following the default.
+    audio_output_lost: AudioOutputLost,
 };
 
 // -- tests -------------------------------------------------------------------------

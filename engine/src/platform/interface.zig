@@ -104,6 +104,10 @@ pub const AudioError = error{
     AudioFormatUnsupported,
     /// The handle does not name a live device — closed, or from before a reopen (I1).
     InvalidAudioDevice,
+    /// The `OutputId` names no output present now: unplugged since it was listed, or from an
+    /// earlier session, since an ID is valid for one session only (`audio.OutputId`). A game
+    /// usually has it from a preference or a menu, so it is reported rather than asserted.
+    InvalidAudioOutput,
 };
 
 pub const GamepadRumbleError = error{
@@ -207,6 +211,16 @@ pub fn check(comptime Impl: type, comptime label: []const u8) void {
         expectFn(P, label, "closeAudio", &.{ *P, audio.AudioDeviceHandle }, void);
         expectFn(P, label, "audioInfo", &.{ *P, audio.AudioDeviceHandle }, ?audio.AudioInfo);
         expectFn(P, label, "setAudioPaused", &.{ *P, audio.AudioDeviceHandle, bool }, void);
+
+        // Outputs (`input.md` §5). The list, in the OS's order, into the caller's buffer; how
+        // many were written. A device follows the system default (null) or plays through one
+        // output, and a move rebinds the device's stream rather than reopening it, so the handle,
+        // `AudioInfo` and the callback's clock carry on. A chosen output that disappears drops
+        // the device back to following the default, with `audio_output_lost`. Host policy, so
+        // nothing in the public C ABI reaches it before M48.
+        expectFn(P, label, "audioOutputs", &.{ *P, []audio.OutputInfo }, usize);
+        expectFn(P, label, "setAudioOutput", &.{ *P, audio.AudioDeviceHandle, ?audio.OutputId }, AudioError!void);
+        expectFn(P, label, "audioOutput", &.{ *P, audio.AudioDeviceHandle }, AudioError!?audio.OutputId);
 
         // The monotonic clock. Backend-provided because the null backend's is
         // synthetic, which is what makes loop tests reproducible.
@@ -360,6 +374,21 @@ test "the check accepts a conforming implementation" {
                 _ = device;
                 _ = paused;
             }
+            pub fn audioOutputs(self: *@This(), out: []audio.OutputInfo) usize {
+                _ = self;
+                _ = out;
+                return 0;
+            }
+            pub fn setAudioOutput(self: *@This(), device: audio.AudioDeviceHandle, output: ?audio.OutputId) AudioError!void {
+                _ = self;
+                _ = device;
+                _ = output;
+            }
+            pub fn audioOutput(self: *@This(), device: audio.AudioDeviceHandle) AudioError!?audio.OutputId {
+                _ = self;
+                _ = device;
+                return null;
+            }
             pub fn now(self: *@This()) core.time.Instant {
                 _ = self;
                 return .{ .ns = 0 };
@@ -379,7 +408,8 @@ test "the interface names every call a frame makes" {
         "windowInfo",        "nativeSurface", "pumpEvents",       "nextEvent",
         "captureInput",      "now",           "setWindowSize",    "openAudio",
         "closeAudio",        "audioInfo",     "setAudioPaused",   "setPointerCapture",
-        "setCapturedMotion", "keyLabel",      "setGamepadRumble",
+        "setCapturedMotion", "keyLabel",      "setGamepadRumble", "audioOutputs",
+        "setAudioOutput",    "audioOutput",
     };
-    try testing.expectEqual(@as(usize, 19), required.len);
+    try testing.expectEqual(@as(usize, 22), required.len);
 }

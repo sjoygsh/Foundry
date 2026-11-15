@@ -287,6 +287,7 @@ pub const Accumulator = struct {
             // Nothing here changes input state. Listed rather than caught by `else` so
             // that adding an event variant is a compile error until it is considered.
             .quit_requested, .window_closed, .window_resized, .text_input => {},
+            .audio_outputs_changed, .audio_output_lost => {},
         }
     }
 
