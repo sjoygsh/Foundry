@@ -1429,3 +1429,123 @@ counts:
 
 No platform backend, shader, RHI, ABI header or sample content changed, so no SDL3 cross-check,
 Vulkan check or C header compile applies.
+
+## Resolution — Step 5: evaluation, the tick view and rebinding (2026-11-16)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 5. No
+M41 code was read or changed, and nothing here depends on it.
+
+**What the step pinned.** Four new files in `engine/src/input/`, and additions to two:
+- `actions.zig`: `ActionState { held, pressed, released, value }`, `Frame` (a fixed array of at
+  most 256, in the map's content-ID order, with each action's ID and kind, found by a sorted
+  search; an unknown ID reads as rest), `Devices`, `Blocked`, `Options` and `Actions`, with
+  `init`, `setMap`, `enable`, `disable`, `disableAll`, `isEnabled`, `enabled`, `current` and
+  `evaluate`. `deadzone1` and `deadzoneRadial` are public for Step 8's prompts and tests.
+- `tick.zig`: `TickView` with `feed(frame, snapshot)` once a frame and `take()` once a step,
+  answering a `Tick { actions, input }`.
+- `rebind.zig`: `Override`, `Overrides` (`set`, `remove`, `get`, `slice`; 256 actions, kept in
+  content-ID order), `Capture` (`start`, `cancel`, `feed`), `CaptureOptions` and `Captured`.
+- `map.zig` gains `Map.apply(gpa, overrides)`, `Map.conflicts(source, action, out)`,
+  `Map.readsFirst` and the problem `NotRebindable`. Its test `Fixture` is public, for
+  `tests.zig`.
+- `source.zig` gains `Physical`, `markPhysical`, `physicalOf` and `overlaps`.
+- `tests.zig` holds the oracle tests and the pinned digest.
+
+**Where the code sharpened the design:**
+- **A button's edges are the action's own.** §7's "pressed if any button source was pressed"
+  read literally makes a second key on Jump jump again while the first is held. Instead: held is
+  any binding holding it; pressed is going from not held to held, or a source tapped inside the
+  frame; while one binding holds it *steadily* through the frame (held, with no edge of its
+  own), no other binding's edge is the action's. A release is reported only after a press or an
+  earlier held frame, so a key let go in the frame its context returns ends nothing. A
+  hand-over from one key to another in one frame is a release and a press. A property test
+  holds the four consequences over 4,000 random frames: no held change without its edge, no
+  release without a press or a held frame, and a press without held is also a release.
+- **An action held across a context change is not pressed again.** The court's pause, in both
+  the walk and the menu, stays held when the menu opens.
+- **A pad axis feeding a button** compares its raw value, times the sign of `scale`, with
+  `>=` against `threshold`. The deadzone is not applied first, since a threshold already says
+  where the button begins.
+- **The wheel's four directions are taps**, held in no frame, so they press and release a
+  button and never move an axis or a vector.
+- **Pads:** a pad source reads every selected, connected slot. A button is held on any of them;
+  an axis comes from the slot where it is largest in magnitude, and a stick from the slot where
+  it is pushed furthest, ties to the lowest slot. Summing would let two pads cancel.
+- **Blocking compares physical inputs** (`source.Physical`), not spellings. A stick is its two
+  axes and the wheel's directions are the one wheel, so blocking `pad.left_stick` hides
+  `pad.left_x`. Conflicts and a capture's `ignore` use the same rule. A pad source is every
+  slot's: which pad is a device selection.
+- **Enabling:** idempotent, at most eight (`TooManyEnabled`). An ID the map does not hold is
+  kept and matches nothing, so a game's enabled set survives a reload whose content briefly
+  lacks a context.
+- **`Actions` borrows its map** rather than owning it. The base map and the effective map are
+  the caller's (Step 6's `app`), and `setMap` replaces it, carrying each surviving action's held
+  state by ID. A pad axis's threshold memory belonged to the old bindings, so the first
+  evaluation after `setMap` takes each axis's side as it finds it: a trigger held through a
+  rebinding is held, not pressed again. Until the next `evaluate`, `current()` is the old frame
+  matched by ID.
+- **`Frame` carries kinds**, because the tick view sums a delta and keeps a level.
+- **The tick view:** a button's edges are kept until taken; levels are the latest frame's; a
+  delta's value is summed across untaken frames and held if any was, then zero and not held
+  once taken. In the raw snapshot, key, mouse and pad edges are kept, motion and wheel summed,
+  everything else the latest. Motion in one unit is dropped when motion in another arrives (the
+  snapshot's own rule), and a pad slot whose handle changes starts its edges again from the new
+  pad. A frame whose map changed is matched by ID.
+- **`Map.apply`:** an override's numbers are checked by `Overrides.set` (`TooManyBindings`,
+  `InvalidScale`, `InvalidThreshold`, `InvalidDeadzone`, `TooManyOverrides`), and its kind by
+  `apply`, which has the map. Zero bindings is an action the player unbound. An override for an
+  action the map does not hold is ignored without a warning, because the bindings file keeps it
+  for content that is not loaded (§8). The applied map's `warnings` are the overrides' alone,
+  each once for each `apply`.
+- **`Map.conflicts`** names the rule §8 left as "contexts that can be enabled with one of this
+  action's": every pair of contexts can be enabled together, so two actions conflict when they
+  share a physical input and some pair of their contexts is either the same context or one
+  whose first-read context does not block. Answered in content-ID order, as many as `out`
+  holds; an unknown action conflicts with nothing.
+- **`Capture`:** the wheel captures as its four buttons, between the mouse buttons and the pads.
+  An axis captures only when it leaves rest: the first snapshot after `start`, and the first
+  after a pad is seated, set where each axis is, so a stick still held from the menu does not
+  bind itself. A capture answers the pad's slot too, and disarms once it answers. At most eight
+  ignored sources (`TooManyIgnored`).
+
+**The digest:** 600 frames of seeded input over the court-shaped test map, the menu toggled every
+97 frames, the keyboard blocked every 150th frame, a second pad from frame 400 and only it from
+500, an override of two actions applied by `setMap` at frame 300, and zero to three steps a
+frame, folded with FNV-1a from every frame and every tick view, is **`0x003888cb676c2786`** on
+the Mac under both the null and the Metal test builds. Steps 9 and 10 compare it on Windows and
+Linux.
+
+**Not done here, as §14 orders it:** `engine.actions`, `Step.actions`, `Step.tick_input`,
+`actionFrame`, `setInputBlocked`, `saveBindings`, reload, `Config.captured_motion` and
+`app.input_bindings`'s file (Step 6). Nothing outside tests builds an `Actions` yet.
+
+**Each guard was broken once, and each failed its test:**
+- §13's four for this step: the 1D deadzone's rescale removed failed the axis and devices
+  tests and the digest; the radial rescale removed failed the vector test; the vector clamp
+  removed failed the vector test and the digest (and the axis clamp removed, the axis test);
+  the tick view handing edges to every step failed "zero, one or three steps see a press
+  exactly once" and "the first step sees the edges", for the actions and for the raw snapshot
+  alike; blocking ignored failed both context tests and the digest;
+- a delta replaced rather than summed across frames failed the motion test;
+- priority ignored in the reading order failed "priority comes before it";
+- the steady-holder rule removed failed its test; a release allowed without a press failed the
+  no-context test; the no-context release dropped failed both;
+- `setMap` forgetting held state, and keeping stale threshold memory, each failed the new-map
+  test;
+- the pad selection ignored and the keyboard block ignored each failed the devices test;
+- `rebindable false` not honoured, and the override's kind check removed, each failed the
+  override test;
+- a capture's `ignore` ignored, its axis rest removed, and motion allowed to capture each failed
+  the capture test;
+- conflicts ignoring blocking, and comparing spellings instead of physical inputs, each failed
+  the conflicts test.
+
+Twenty-three mutations, each restored.
+
+**Bar:** every line of `AGENTS.md` §3 exited 0, plus `zig build test -Drhi=metal`: `zig fmt
+--check`, the four `check` variants, the four thirty-frame samples and `fdt-check`. The counts:
+- null 3,165/3,175 (ten skips);
+- Metal 3,180/3,201 (21 skips).
+
+`zig build input-test` is 48/48. No platform backend, shader, RHI, ABI header or sample content
+changed, so no SDL3 cross-check, Vulkan check or C header compile applies.

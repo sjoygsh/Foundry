@@ -19,11 +19,14 @@ const std = @import("std");
 const core = @import("core");
 const data = @import("data");
 const schemas = @import("schemas.zig");
+const source_mod = @import("source.zig");
+const rebind = @import("rebind.zig");
 
 const Allocator = std.mem.Allocator;
 const ContentId = core.ContentId;
 const Binding = schemas.Binding;
 const Kind = schemas.Kind;
+const Source = source_mod.Source;
 
 const log = core.log.scoped(.input);
 
@@ -71,6 +74,8 @@ pub const Problem = schemas.DecodeError || error{
     ActionsFull,
     /// The map already holds 64 contexts earlier in content-ID order.
     ContextsFull,
+    /// A player's override for an action marked `rebindable false`; its defaults stand.
+    NotRebindable,
 };
 
 pub const Warning = struct {
@@ -92,6 +97,7 @@ pub fn describe(problem: Problem) []const u8 {
         error.NotAContext => "names a context that is not a foundry:input_context",
         error.ActionsFull => "is past the 256 actions a map holds",
         error.ContextsFull => "is past the 64 contexts a map holds",
+        error.NotRebindable => "is not rebindable; the player's override is ignored",
         else => |err| schemas.describe(@errorCast(err)),
     };
 }
@@ -173,6 +179,86 @@ pub const Map = struct {
         return .{ .actions = out_actions, .contexts = out_contexts, .warnings = warnings, .warnings_dropped = notes.dropped };
     }
 
+    /// The effective map: this one with a player's overrides laid over it (§8, ADR-0088).
+    ///
+    /// An override replaces its action's bindings whole. One for an action marked `rebindable
+    /// false` is ignored, and one whose binding cannot feed its action's kind or has a number
+    /// out of range is refused for that action alone; either way the defaults stand and a
+    /// warning says so, once for each `apply`. An override for an action this map does not hold
+    /// is ignored without a word: it belongs to content that is not loaded, and the bindings
+    /// file keeps it for when it is. The answer's `warnings` are the overrides' alone; this
+    /// map's stay this map's. Fails only for memory.
+    pub fn apply(self: *const Map, gpa: Allocator, overrides: *const rebind.Overrides) Allocator.Error!Map {
+        var notes: Notes = .{};
+        errdefer notes.list.deinit(gpa);
+        const out_contexts = try gpa.dupe(Context, self.contexts);
+        errdefer gpa.free(out_contexts);
+        const out_actions = try gpa.dupe(Action, self.actions);
+        errdefer gpa.free(out_actions);
+        for (out_actions) |*a| {
+            const o = overrides.get(a.id) orelse continue;
+            if (!a.rebindable) {
+                try notes.addId(gpa, .{ .record = a.id, .problem = error.NotRebindable });
+                continue;
+            }
+            const refusal: ?Warning = for (o.bindings(), 0..) |b, i| {
+                b.validate() catch |err| break .{ .record = a.id, .problem = err, .binding = @intCast(i) };
+                if (!a.kind.accepts(b.source.class())) break .{ .record = a.id, .problem = error.SourceCannotFeedKind, .binding = @intCast(i) };
+            } else null;
+            if (refusal) |w| {
+                try notes.addId(gpa, w);
+                continue;
+            }
+            @memcpy(a.binding_buffer[0..o.binding_count], o.bindings());
+            a.binding_count = o.binding_count;
+        }
+        const warnings = try notes.list.toOwnedSlice(gpa);
+        return .{ .actions = out_actions, .contexts = out_contexts, .warnings = warnings, .warnings_dropped = notes.dropped };
+    }
+
+    /// The other actions that would read `source` while `action_id` does (§8): those binding a
+    /// source that shares a physical input with it, in a context that can be enabled with one
+    /// of `action_id`'s, where neither hides it from the other. Two actions in one context
+    /// always conflict. Two in different contexts conflict unless the one read first blocks,
+    /// since a blocking context hides what it binds from the other, and `source` is bound in
+    /// both.
+    ///
+    /// Written into `out` in content-ID order, as many as fit. The engine decides nothing more:
+    /// whether a conflict swaps, refuses or stands is the game's call.
+    pub fn conflicts(self: *const Map, source: Source, action_id: ContentId, out: []ContentId) []ContentId {
+        const mine = self.action(action_id) orelse return out[0..0];
+        const wanted = source_mod.physicalOf(source);
+        var n: usize = 0;
+        for (self.actions) |*other| {
+            if (n == out.len) break;
+            if (other.id.eql(action_id)) continue;
+            const binds = for (other.bindings()) |b| {
+                if (source_mod.physicalOf(b.source).intersectWith(wanted).count() != 0) break true;
+            } else false;
+            if (!binds) continue;
+            const together = outer: for (mine.contexts()) |ca| {
+                for (other.contexts()) |cb| {
+                    if (ca == cb) break :outer true;
+                    const first = if (self.readsFirst(ca, cb)) ca else cb;
+                    if (!self.contexts[first].blocks) break :outer true;
+                }
+            } else false;
+            if (!together) continue;
+            out[n] = other.id;
+            n += 1;
+        }
+        return out[0..n];
+    }
+
+    /// Whether context `a` is read before context `b` when both are enabled: higher priority
+    /// first, ties by content ID ascending (§7).
+    pub fn readsFirst(self: *const Map, a: u8, b: u8) bool {
+        const ca = self.contexts[a];
+        const cb = self.contexts[b];
+        if (ca.priority != cb.priority) return ca.priority > cb.priority;
+        return ca.id.hash < cb.id.hash;
+    }
+
     pub fn deinit(self: *Map, gpa: Allocator) void {
         gpa.free(self.actions);
         gpa.free(self.contexts);
@@ -245,6 +331,20 @@ const Notes = struct {
             log.warn("{s} '{s}' {s}", .{ what, name, describe(warning.problem) });
         }
     }
+
+    /// For an override, which has only the action's ID: the spelling stays in the store.
+    fn addId(self: *Notes, gpa: Allocator, warning: Warning) Allocator.Error!void {
+        if (self.list.items.len == max_warnings) {
+            self.dropped +|= 1;
+            return;
+        }
+        try self.list.append(gpa, warning);
+        if (warning.binding) |b| {
+            log.warn("input action {f}: the player's override {s} (binding {d})", .{ warning.record, describe(warning.problem), b });
+        } else {
+            log.warn("input action {f} {s}", .{ warning.record, describe(warning.problem) });
+        }
+    }
 };
 
 // -- tests -------------------------------------------------------------------------
@@ -252,21 +352,22 @@ const Notes = struct {
 const testing = std.testing;
 const t_gpa = testing.allocator;
 
-/// Packages compiled from text, merged into one store in the order given.
-const Fixture = struct {
+/// Packages compiled from text, merged into one store in the order given. Tests only, here and
+/// in `tests.zig`.
+pub const Fixture = struct {
     registry: data.Registry,
     diags: data.Diagnostics,
     store: data.Store,
     bytes: [4]std.ArrayList(u8) = @splat(.empty),
     count: usize = 0,
 
-    fn init() Fixture {
+    pub fn init() Fixture {
         var f: Fixture = .{ .registry = .init(t_gpa, .default), .diags = .init(t_gpa, .default), .store = .init(t_gpa, .default) };
         schemas.registerAll(t_gpa, &f.registry) catch unreachable;
         return f;
     }
 
-    fn deinit(self: *Fixture) void {
+    pub fn deinit(self: *Fixture) void {
         self.store.deinit(t_gpa);
         for (&self.bytes) |*b| b.deinit(t_gpa);
         self.diags.deinit(t_gpa);
@@ -274,7 +375,7 @@ const Fixture = struct {
     }
 
     /// Adds package `<namespace>:content` with `text`'s records.
-    fn add(self: *Fixture, namespace: []const u8, text: []const u8) !void {
+    pub fn add(self: *Fixture, namespace: []const u8, text: []const u8) !void {
         var doc = try data.parser.parse(t_gpa, "input.fdt", text, .{ .namespace = namespace }, &self.diags);
         defer doc.deinit(t_gpa);
         var name_buf: [64]u8 = undefined;
@@ -287,7 +388,7 @@ const Fixture = struct {
         _ = try self.store.add(t_gpa, "input.fpk", out.items, &self.registry, &self.diags);
     }
 
-    fn build(self: *Fixture) !Map {
+    pub fn build(self: *Fixture) !Map {
         return Map.build(t_gpa, &self.store);
     }
 };
