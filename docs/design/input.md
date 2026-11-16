@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), the owner playing Step 8 on 2026-11-16; Step 9 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), the owner playing Step 8 on 2026-11-16, and Step 9 on Windows (2026-11-17), the owner playing it there; Step 10 (Linux) is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -2014,3 +2014,143 @@ No platform backend, shader, RHI, ABI header or native-window code changed, so n
 cross-check, Vulkan check or C header compile applies.
 
 **The owner's play (2026-11-16).** The owner played the merged court (749f11c) on the Mac on 2026-11-16, from a relocated ReleaseSafe install with its user data in scratch, and said "All good". The run lasted 13,205 frames with none skipped. It reached each ending (won at tick 7,477, fell, and caught twice), and the night's sky was drawn in 13,204 of the frames. The controls screen rebound one action, `court:action.walk.jump` to the pad's south and Enter, and wrote `bindings.fset`. Music: 0 missed starts, 0 underruns. Not covered by this run: the log says only one audio output was present, so the headphone move and unplug were not tried, and the court was not relaunched to check the saved rebinding after a restart. The `input` budget in §13 is still the owner's to decide: the span includes the OS event pump.
+
+## Resolution — Step 9: Windows (2026-11-17)
+
+This step was done by an Opus agent as ADR-0082's partner half. It ran after M41's Step 9 had released the
+owner's PC (Arc A750, i3-10105F). Everything ran from a separate clone, `src\Foundry-m45`, at
+`1f6bd54`, with `-j2` and below-normal priority. Scratch lived under `%USERPROFILE%\m45`. The owner
+had suspended the 50% CPU cutoff for this session (a Defender scan after an install had pushed
+the CPU past it), so every run passed `-IgnoreCpuLimit` and its timings are not idle-machine timings.
+
+**What the step added:**
+- **`scripts/m45/`**, from M41's and M40's scripts:
+  - `m45-setup.ps1` clones the repo, fetches every branch of a range bundle, and checks out a
+    full hash;
+  - `m45-launch.ps1` runs a desktop-session mode from a scheduled task;
+  - `windows.ps1` has three modes:
+    - `build`, over SSH;
+    - `desktop`, unattended, with no physical pad attached;
+    - `person`, for someone at the PC with a pad and a second output.
+- **The person mode's evidence is a checklist.** What the logs show is written "yes", and what
+  they lack is written "NOT SEEN". It is not failed, so a play that skips something still leaves
+  a record.
+- **A correction to the design: §3's motion needed an instrument.** No sample or test reported
+  captured motion, so Step 9's "§3's motion recorded" could not have been read from anything.
+  `native-window-test` gains one test, skipped unless `FOUNDRY_MOTION_MINUTES` gives a person
+  time:
+  - It opens a window and takes the pointer on a click or Enter.
+  - It records three sweeps, `raw`, `system` and `raw` again, each ended by Space, printing each
+    sweep's unit, travel and net motion.
+  - It asserts Step 1's units for the window system, allowing a capture's first frame to carry
+    the other unit once.
+  - The second `raw` sweep is there to show how alike a person's sweeps are.
+  - Unattended runs, the Mac's included, skip it: 3/11 on the M5, with eight skips.
+- **A fix the first PC run found:** `-Mode build` ignored `-Only`, so a run asked for the pins
+  alone began the null suite. That run was stopped, and the build runs are now gated like the
+  others (`d0caa35`). The setup script also needs a full hash, because the checkout refuses an
+  abbreviated one there.
+
+**Build mode** (`-Only release,install`). The null and Vulkan suites were not rerun. M41's Step 9
+ran both on `74f8fcd`: null 3,197/3,216 and Vulkan 3,499/3,529. This branch adds to that commit
+only the opt-in motion test and the scripts, and the motion test was compiled and run on the PC
+by the desktop and person modes.
+- **The pins at ReleaseSafe on x86_64:** 441/441 tests passed in 416 s, across `court-test`,
+  `input-test`, `app-test` and `abi-test`:
+  - the court's four M40 digests, through the scripts' own path and through actions;
+  - the 600-frame input digest, `0x003888cb676c2786`;
+  - the bindings file's tests and v8's calls.
+  These are the same pinned values the Mac asserts, so **the pin equals the Mac's**.
+- **The install:** 194/194 steps in 545 s, relocated and made read-only by ACL. Against a Mac
+  ReleaseSafe Metal install of the same commit, 228 of the 229 files under `content/` and `share/`
+  are byte-identical. The one that differs is the orbiter's library, `orbiter.dll` against
+  `liborbiter.dylib`.
+
+**Desktop mode** (unattended, in the desktop session):
+- `gamepad-test` 3/3: no physical pad was attached, so slot 0 was the virtual pad's.
+- `audio-output-test` 1/1: three outputs, one marked default; it moved to 3 of 3 and pulled 26,112
+  frames. These were moves between real outputs, which the Mac could not do.
+- `native-window-test` 9/11 with two skips: the platform-specific skip, and the motion test.
+- **Nine court runs from the install**, each with private `APPDATA` and save directories:
+  - the three endings with a virtual pad (`win` with an Xbox pad under synchronization
+    validation, `caught` with a PlayStation pad, `fell` with an Xbox pad);
+  - the three endings without a pad;
+  - the title for 900 frames with an Xbox pad, without validation and with it;
+  - `southpaw` selected over an Xbox pad for 600 frames.
+- **What every run showed:**
+  - each replay matched (98, 195, 2,447 and 2,448 ticks);
+  - no frame was skipped, and nothing was dropped;
+  - no music start was missed or late, and no stream underran;
+  - both validated runs were clean.
+- **The catch's rumble reached the virtual PlayStation pad:** `pad: 1 rumble(s) reached the pad,
+  the last at 39321 and 58982 of 65535`, which is 0.6 and 0.9.
+- Nothing was written to the court's user data, and the install's hashes were unchanged.
+- **Costs:**
+  - **The `input` span:** p95 0.016–0.019 ms over the long runs (`win`, the title and
+    `southpaw`). The short endings read 0.14–1.67 ms, because over 79–178 frames a few start-up
+    frames are the p95.
+  - **Frame work:** p95 0.30–0.50 ms, and 1.83–2.45 ms under validation, against 16.67 ms.
+
+**Person mode** (the owner at the PC, 2026-11-17, "All good on my end"):
+- **§3's motion, measured.** The window system delivers what Step 1 read from the sources:
+
+  | Sweep | Unit | Moving frames | Travel x | Travel y | Time |
+  | --- | --- | --- | --- | --- | --- |
+  | 1, `raw` | **counts** | 168 | 2,682 | 752 | 37.9 s |
+  | 2, `system` | **points** | 16 | 290.9 | 72.8 | 7.4 s |
+  | 3, `raw` | **counts** | 553 | 4,456 | 627 | 15.8 s |
+
+  No frame reported the other unit. Sweep 1 had two captures, one of them lost. The ratios,
+  system to first raw 0.108 and second raw to first 1.661, say the sweeps were not alike, so they
+  measure no pointer ballistics. **The units are the result.**
+- **`play1`, played with a real pad.** The run lasted 5,019 frames with none skipped:
+  - it won at tick 2,074, and was caught at ticks 1,253, 3,879, 4,130 and 4,841;
+  - one action was rebound, and `bindings.fset` was written (absent before);
+  - outputs 1, 2 and 3 of 3 were chosen in turn;
+  - music: 31 starts asked, 29 on their frame, 2 retired before they began, 0 missed, 0
+    underruns, 0 late, and 1 refused (below).
+- **`play2`, the relaunch:**
+  - `bindings.fset` had the same hash before and after;
+  - `audio: the chosen output is back, 3 of 3`, so the output preference was followed across the
+    restart;
+  - the owner saw the rebinding kept in Controls;
+  - 526 frames, none skipped, and music 0 missed, 0 late, 0 refused.
+- **The pad play rests on the owner's word.** The court logs only virtual pads, so no line in the
+  log names the real one.
+
+**What the PC showed that the design did not expect:**
+- **No output was unplugged.** The log has no `audio: the chosen output went away` line in either
+  play: the owner moved between all three outputs but lost none. That makes two runs, the Mac's
+  at Step 8 and this one, in which a real loss has not been seen. Headless, the null backend's
+  script proves it (Step 3). Step 10's person run on Linux must include the unplug, or the close
+  owes it.
+- **The `input` span in a person's play is about fifty times a script's.**
+  - In a played run its p95 was 0.888 ms over 5,019 frames and 1.001 ms over 526, with medians
+    of 0.018 and 0.019 ms.
+  - In scripted runs on the same install it was 0.016–0.019 ms.
+  - Evaluation alone is 0.0003 ms (Step 8), so the tail is the OS's event pump with a real
+    mouse, pad and focus changes in it.
+  - This is Step 8's correction, now with the i3's numbers. §13's 0.05 ms cannot hold for a span
+    that includes the pump, and whether the budget is re-scoped to evaluation or the span is
+    split remains **the owner's decision**.
+  - Frame work stayed at p95 1.25 and 1.35 ms in the plays.
+- **One music start was refused.** In `play1`, once:
+  `music: playlist content(0x2440a3d72ad99591) refused (NoFreeStream)`. The court's mixer has four
+  stream slots. Caught phases came close together (caught at ticks 3,879 and 4,130, with a restart
+  between), so the playlist found every slot still held. No start was missed, late or underrun.
+  This is the court's music under fast restarts, not input. It is recorded here so the joint
+  close can decide whether it is fixed in the court or names the milestone that owns it (rule 17).
+
+**The exit:**
+- the pin equals the Mac's, as above;
+- both desktop tests pass;
+- the court has been played on Windows with a pad: met, on the owner's word for the pad.
+
+The unplug is the one part of §13's sample list not yet exercised on any desktop.
+
+**Not run, and why:**
+- the null and Vulkan suites, as above;
+- `vulkan-window-test`, because this branch changes no Vulkan, shader or native-window code.
+
+`zig fmt --check` and `zig build check`, plus SDL3 `check` for Windows and Linux, passed on the
+Mac for the motion test.

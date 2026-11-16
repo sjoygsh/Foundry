@@ -348,3 +348,133 @@ test "the system Vulkan loader opens by name from the system location" {
     defer lib.close();
     try testing.expect(lib.symbol(*const fn () callconv(.c) void, "vkGetInstanceProcAddr") != null);
 }
+
+/// One sweep of the motion measurement, summed while the pointer is held.
+const Sweep = struct {
+    mode: platform.MotionMode,
+    /// Moving frames by the unit they reported.
+    counts_frames: u32 = 0,
+    points_frames: u32 = 0,
+    travel_x: f64 = 0,
+    travel_y: f64 = 0,
+    net_x: f64 = 0,
+    net_y: f64 = 0,
+    captures: u32 = 0,
+    lost: u32 = 0,
+    began_ns: i96 = 0,
+    ended_ns: i96 = 0,
+
+    /// The unit most of its moving frames reported.
+    fn unit(self: Sweep) platform.MotionUnit {
+        return if (self.counts_frames > self.points_frames) .counts else .points;
+    }
+    /// How many moving frames reported the other unit.
+    fn other(self: Sweep) u32 {
+        return @min(self.counts_frames, self.points_frames);
+    }
+};
+
+// §3's measurement, which needs a person (`input.md` §13, M45 Step 9): what a moving mouse
+// delivers under capture in each mode. **Skipped unless `FOUNDRY_MOTION_MINUTES` says how long a
+// person has**, so an unattended run is unchanged. A window opens. A click (or Enter) in it takes
+// the pointer, and the person sweeps the mouse the same way three times, `raw`, `system`, then
+// `raw` again, pressing Space after each. The second `raw` sweep shows how alike a person's
+// sweeps are, so the `system` ratio can be read against it. Escape abandons the run. Printed:
+// each sweep's unit, travel and net motion, and the ratios; nothing about the machine.
+test "a person's captured motion in each mode, when FOUNDRY_MOTION_MINUTES gives them time" {
+    const minutes_text = std.testing.environ.getAlloc(testing.allocator, "FOUNDRY_MOTION_MINUTES") catch |err| switch (err) {
+        error.EnvironmentVariableMissing => return error.SkipZigTest,
+        else => return err,
+    };
+    defer testing.allocator.free(minutes_text);
+    const minutes = std.fmt.parseInt(u32, minutes_text, 10) catch return error.InvalidMotionMinutes;
+    if (minutes == 0 or minutes > 60) return error.InvalidMotionMinutes;
+
+    const p = try Platform.init(testing.allocator, .{});
+    defer p.deinit();
+    const w = try p.openWindow(.{ .title = "Foundry motion: click here to begin", .logical_width = 1100, .logical_height = 200 });
+    defer p.closeWindow(w);
+
+    const raw_unit: platform.MotionUnit = if (p.raw_motion_available) .counts else .points;
+    var sweeps = [_]Sweep{ .{ .mode = .raw }, .{ .mode = .system }, .{ .mode = .raw } };
+    const deadline = p.now().ns + @as(i96, minutes) * 60 * std.time.ns_per_s;
+    std.debug.print("motion-test: waiting up to {d} minute(s) for three sweeps in the window\n", .{minutes});
+
+    var title_buf: [192]u8 = undefined;
+    for (&sweeps, 0..) |*sweep, i| {
+        p.setCapturedMotion(sweep.mode);
+        const title = try std.fmt.bufPrint(&title_buf, "Foundry motion {d} of 3 ({t}): click, sweep edge to edge and back 5 times at an even pace, then Space (Esc quits)", .{ i + 1, sweep.mode });
+        try p.setWindowTitle(w, title);
+        var held = false;
+        while (true) {
+            if (p.now().ns > deadline) {
+                p.setPointerCapture(w, false) catch {};
+                std.debug.print("motion-test: sweep {d} was not finished within {d} minute(s)\n", .{ i + 1, minutes });
+                return error.Timeout;
+            }
+            p.pumpEvents();
+            while (p.nextEvent()) |_| {}
+            const snap = p.captureInput();
+            if (snap.wasPressed(.escape)) {
+                p.setPointerCapture(w, false) catch {};
+                std.debug.print("motion-test: abandoned at sweep {d}\n", .{i + 1});
+                return error.MotionAbandoned;
+            }
+            if (held and !snap.mouse.captured) {
+                // Focus went elsewhere, which always ends a capture; a click takes it back.
+                held = false;
+                sweep.lost += 1;
+                try p.setWindowTitle(w, "Foundry motion: the pointer was let go; click to carry on");
+            }
+            if (!held) {
+                if (snap.focused and (snap.mouse.wasPressed(.left) or snap.wasPressed(.enter))) {
+                    try p.setPointerCapture(w, true);
+                    held = true;
+                    sweep.captures += 1;
+                    if (sweep.began_ns == 0) sweep.began_ns = p.now().ns;
+                    try p.setWindowTitle(w, title);
+                }
+            } else if (snap.mouse.captured) {
+                const m = snap.mouse.motion;
+                if (m.x != 0 or m.y != 0) {
+                    switch (snap.mouse.motion_unit) {
+                        .counts => sweep.counts_frames += 1,
+                        .points => sweep.points_frames += 1,
+                    }
+                    sweep.travel_x += @abs(@as(f64, m.x));
+                    sweep.travel_y += @abs(@as(f64, m.y));
+                    sweep.net_x += m.x;
+                    sweep.net_y += m.y;
+                }
+                if (snap.wasPressed(.space) and sweep.travel_x > 0) break;
+            }
+            std.Io.sleep(testing.io, .fromNanoseconds(2 * std.time.ns_per_ms), .awake) catch {};
+        }
+        sweep.ended_ns = p.now().ns;
+        p.setPointerCapture(w, false) catch {};
+        std.debug.print("motion-test: sweep {d} ({t}): unit {t}, {d} moving frame(s), {d} in another unit; travel x {d:.1} y {d:.1}, net x {d:.1} y {d:.1}; {d} capture(s), {d} lost; {d:.1} s\n", .{
+            i + 1,
+            sweep.mode,
+            sweep.unit(),
+            sweep.counts_frames + sweep.points_frames,
+            sweep.other(),
+            sweep.travel_x,
+            sweep.travel_y,
+            sweep.net_x,
+            sweep.net_y,
+            sweep.captures,
+            sweep.lost,
+            @as(f64, @floatFromInt(sweep.ended_ns - sweep.began_ns)) / std.time.ns_per_s,
+        });
+    }
+    std.debug.print("motion-test: system travel is {d:.3} times the first raw sweep's; the second raw sweep is {d:.3} times the first\n", .{
+        sweeps[1].travel_x / sweeps[0].travel_x, sweeps[2].travel_x / sweeps[0].travel_x,
+    });
+    // What Step 1 expects of this window system: counts in `raw` where the backend offers them,
+    // points in `system` everywhere. A capture's first frame may carry the other unit once (Step
+    // 1's rule for a change inside a frame), and no more.
+    for (sweeps) |sweep| {
+        try testing.expectEqual(if (sweep.mode == .raw) raw_unit else platform.MotionUnit.points, sweep.unit());
+        try testing.expect(sweep.other() <= sweep.captures);
+    }
+}
