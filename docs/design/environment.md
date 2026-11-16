@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 8 are done (the owner played Step 8, 2026-11-16); each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 9 are done (the owner played Step 8, 2026-11-16; Step 9 on the PC, 2026-11-17); each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1365,4 +1365,71 @@ lists its own light fields and names no environment.
 
 **The owner's play (2026-11-16).** The owner played the merged court (749f11c) on the Mac on 2026-11-16, from a relocated ReleaseSafe install with its user data in scratch, and said "All good". The run lasted 13,205 frames with none skipped. It reached each ending (won at tick 7,477, fell, and caught twice), and the night's sky was drawn in 13,204 of the frames. The controls screen rebound one action, `court:action.walk.jump` to the pad's south and Enter, and wrote `bindings.fset`. Music: 0 missed starts, 0 underruns. Step 8's exit holds.
 
-Next is Step 9: Windows/Vulkan on the owner's PC.
+
+## Resolution — Step 9: Windows/Vulkan (2026-11-17)
+
+**Where it ran:**
+- the owner's PC (Arc A750, i3-10105F), from a fresh clone of `origin/main` plus a bundle of the
+  44 unpushed commits, checked out at `74f8fcd`;
+- `-j2`, below-normal priority, windowed runs from a scheduled task in the desktop session;
+- `scripts/m41/` (`m41-setup.ps1`, `windows.ps1`, `m41-launch.ps1`), from M40's. The setup fetches
+  the bundle's `main`, since a bundle of a range carries no `HEAD`.
+
+**The PC was idle** (18–32% CPU) for the suites. The first windowed launch stopped at the 50%
+cutoff before any run, during a Defender scan of the new install. A second launch waited for the
+PC to fall under 45% and then ran everything. The owner then lifted the cutoff ("Ignore 50
+percent"), but no run needed it.
+
+**The suites:**
+- null: 3,197 of 3,216 passed (19 skips);
+- Vulkan, validation and synchronization on: 3,499 of 3,529 passed (30 skips). These include
+  Step 1's cube and array readbacks (each face and layer, the edge sample, the refused binds and
+  descriptors) and the sky and IBL readbacks;
+- the pins at ReleaseSafe on x86_64: 954 of 959 (five skips). These are `physics3d`, `nav`,
+  `anim`, rigs, scene, `sandbox3d`, the yard, the court and, new for this milestone,
+  `integration-test`, so that the shipped environments' prefiltered bytes and harmonics (day,
+  room, night, dusk and noon) are pinned on x86_64 at the Mac's hashes;
+- the install: 666 s.
+
+**The bytes.** The relocated, read-only install's 228 content files equal the Mac's ReleaseSafe
+install of `74f8fcd` byte for byte. The one expected difference is the orbiter's native library,
+`orbiter.dll` against `liborbiter.dylib`. The prefiltered environments are made at load, not
+shipped, so their equality is the ReleaseSafe pin above. The install's hash was unchanged after
+every run, and no scripted run wrote preferences.
+
+**The runs, all 21 passing, the validated ones clean:**
+- **The tour.** Five runs (plain, validated, `--environment=off`, tilted, repeated) held every
+  pin: walker `655e865f98779129`, player `b85b52c97d259db4`, corner `e2992f93e5323345`, yard
+  replay `1052a9ae891b0d27`. With environments on, it drew both skies (1,597 frames under the
+  day's and 449 under the room's); off, it drew none.
+- **The budget.** 900 frames each, the last 240 measured. The room ran walking, the orbit by F3 at
+  frame 1, the yard by Y at frame 1:
+
+| Run | Sky drawn | Frame work, median / p95 (max) | `render.world`, median / p95 | Pacing p95 | Skipped |
+| --- | --- | --- | --- | --- | --- |
+| The room | the room's, 891 frames | 1.503 / 1.824 ms (1.904) | 0.510 / 0.729 ms | 16.665 ms | 0 |
+| The room, again | the room's, 891 | 1.540 / 1.895 ms (2.133) | 0.484 / 0.788 ms | 16.666 ms | 0 |
+| The room, `--environment=off` | none | 1.568 / 1.888 ms (2.016) | 0.508 / 0.795 ms | 16.665 ms | 0 |
+| The orbit | the day's, 847 | 1.613 / 1.968 ms (2.216) | 0.524 / 0.798 ms | 16.666 ms | 0 |
+| The orbit, `--environment=off` | none | 1.722 / 1.903 ms (2.278) | 0.626 / 0.789 ms | 16.665 ms | 0 |
+| The yard | the day's, 891 | 1.074 / 1.207 ms (1.409) | 0.167 / 0.227 ms | 16.666 ms | 0 |
+| The yard, again | the day's, 891 | 1.034 / 1.138 ms (1.421) | 0.186 / 0.227 ms | 16.665 ms | 0 |
+| The yard, `--environment=off` | none | 0.993 / 1.118 ms (1.422) | 0.159 / 0.200 ms | 16.665 ms | 0 |
+| The room, validated | the room's, 891 | 13.703 / 14.824 ms | 12.039 / 13.080 ms | 16.678 ms | 0 |
+| The yard, validated | the day's, 891 | 3.397 / 3.583 ms | 2.079 / 2.215 ms | 16.667 ms | 0 |
+
+- **The court.** Its three endings each ran validated and plain, under the night:
+  - `win` drew the sky in 2,428 of 2,430 frames, `caught` in 79 of 81 and `fell` in 176 of 178;
+  - every replay matched a fresh simulation;
+  - `win`'s frame work was 0.393 / 0.462 ms (median / p95).
+
+**The exit holds.** Every test passes, the bytes are equal, the validated runs are clean, and the
+yard holds 60 Hz with its environment: frame work p95 1.21 ms against 16.67, pacing at 16.67 ms,
+nothing skipped. So do the room and the orbit. On the CPU, the environment's cost is within
+run-to-run spread, on Windows as on the Mac (one bind group and one draw). The validated runs
+measure the layers and are not a budget. GPU timing is M73's.
+
+**No engine code changed** since Step 8, whose bar passed. This step adds only the PowerShell under
+`scripts/m41/`, which no line of the bar builds or runs.
+
+Next is Step 10, the joint close with M45, after M45's Step 9 and Step 10 (each movable).
