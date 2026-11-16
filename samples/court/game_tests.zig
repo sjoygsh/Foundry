@@ -621,13 +621,14 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
     const S = struct {
+        var store: *const data.Store = undefined;
         var beacon: data.fpk.Fields = undefined;
         var gate: data.fpk.Fields = undefined;
         var warden: data.fpk.Fields = undefined;
         var rules: data.fpk.Fields = undefined;
         const Beacon = struct {
             fn call() !void {
-                _ = try beacon_mod.BeaconSettings.read(beacon);
+                _ = try beacon_mod.BeaconSettings.read(store, beacon);
             }
         };
         const Gate = struct {
@@ -646,6 +647,7 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
             }
         };
     };
+    S.store = &env.store;
     S.beacon = env.store.lookup(core.ContentId.fromString("court:beacon.open")).?.fields;
     S.gate = env.store.lookup(core.ContentId.fromString("court:gate.main")).?.fields;
     S.warden = env.store.lookup(core.ContentId.fromString("court:warden.main")).?.fields;
@@ -658,18 +660,24 @@ test "court: beacon, gate, warden and rules records refuse missing, non-finite a
     // Zero and negative sizes, and values past their bounds.
     for ([_]f32{ 0, -1, 6 }) |v| for ([_][]const u8{ "x", "y", "z" }) |axis|
         try expectValueRefused(S.beacon, &.{ "use_half", axis }, v, S.Beacon, error.InvalidBeacon);
-    for ([_]f32{ 0, -5, 20000 }) |v| try expectValueRefused(S.beacon, &.{ "light", "intensity" }, v, S.Beacon, error.InvalidBeacon);
-    for ([_]f32{ 0, -1, 200 }) |v| try expectValueRefused(S.beacon, &.{ "light", "range" }, v, S.Beacon, error.InvalidBeacon);
-    for ([_]f32{ -0.1, 11 }) |v| try expectValueRefused(S.beacon, &.{ "light", "height" }, v, S.Beacon, error.InvalidBeacon);
-    for ([_]f32{ -0.1, 101 }) |v| try expectValueRefused(S.beacon, &.{ "light", "color", "r" }, v, S.Beacon, error.InvalidBeacon);
+    for ([_]f32{ -0.1, 11 }) |v| try expectValueRefused(S.beacon, &.{"light_height"}, v, S.Beacon, error.InvalidBeacon);
     try expectValueRefused(S.beacon, &.{ "position", "y" }, 1e30, S.Beacon, error.InvalidBeacon);
-    // M40: a lit beacon casts by the schema's default, and a record may say it does not.
-    try testing.expect((try beacon_mod.BeaconSettings.read(S.beacon)).light_casts_shadow);
-    const light = (try S.beacon.nestedAt(fieldIndex(S.beacon, "light"))).?;
-    const flag = &@constCast(light.block)[fieldOffset(light.fields, fieldIndex(light, "casts_shadow"))];
-    flag.* = 0;
-    try testing.expect(!(try beacon_mod.BeaconSettings.read(S.beacon)).light_casts_shadow);
-    flag.* = 1;
+    // M41: the beacon's light is its record's, M40's values, and a lit beacon casts by it.
+    const read = try beacon_mod.BeaconSettings.read(S.store, S.beacon);
+    try testing.expect(read.light.casts_shadow and read.light.kind == .point);
+    try testing.expectEqual(@as(f32, 150), read.light.intensity);
+    try testing.expectEqual(@as(f32, 6), read.light.range);
+    try testing.expectEqual([3]f32{ 1, 0.65, 0.3 }, read.light.color);
+    // A light that names no record, a record that is not a light, and a light that is not a
+    // point (the court's moon): each refuses the beacon.
+    const light_bytes = @constCast(S.beacon.block)[fieldOffset(S.beacon.fields, fieldIndex(S.beacon, "light"))..][0..8];
+    const old_light: [8]u8 = light_bytes.*;
+    for ([_][]const u8{ "court:lights.none", "court:config.main", "court:lights.moon" }) |name| {
+        std.mem.writeInt(u64, light_bytes, core.ContentId.fromString(name).hash, .little);
+        try testing.expectError(error.InvalidBeacon, S.Beacon.call());
+    }
+    light_bytes.* = old_light;
+    try S.Beacon.call();
 
     for ([_]f32{ 0, -1, 61 }) |v| try expectValueRefused(S.gate, &.{"travel_time"}, v, S.Gate, error.InvalidGate);
     for ([_]f32{ 0, -1, 21 }) |v| for ([_][]const u8{ "x", "y", "z" }) |axis|

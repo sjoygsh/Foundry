@@ -30,7 +30,7 @@ test "court: compiled level blocks walking, jumps the low wall and lands; airbor
     const bytes = try os.readFile(gpa, options.package, 16 * 1024 * 1024);
     defer gpa.free(bytes);
     const package = try store.add(gpa, "court:content", bytes, &schemas, &diags);
-    const config = try Settings.read(store.lookup(core.ContentId.fromString("court:config.main")).?);
+    const config = try Settings.read(&store, store.lookup(core.ContentId.fromString("court:config.main")).?);
     const config_record = store.lookup(core.ContentId.fromString("court:config.main")).?;
     const config_block = try gpa.dupe(u8, config_record.fields.block);
     defer gpa.free(config_block);
@@ -38,12 +38,12 @@ test "court: compiled level blocks walking, jumps the low wall and lands; airbor
     bad_config.fields.block = config_block;
     const width_offset = fieldOffset(config_record.fields.fields, config_record.schema.fieldIndex("window_width").?);
     std.mem.writeInt(u32, config_block[width_offset..][0..4], 0, .little);
-    try testing.expectError(error.InvalidConfig, Settings.read(bad_config));
+    try testing.expectError(error.InvalidConfig, Settings.read(&store, bad_config));
     const clear_list = (try config_record.fields.listAt(config_record.schema.fieldIndex("clear_linear").?)).?;
     const clear_bytes = @constCast(clear_list.bytes);
     const old_clear: [4]u8 = clear_bytes[0..4].*;
     std.mem.writeInt(u32, clear_bytes[0..4], @bitCast(std.math.nan(f32)), .little);
-    try testing.expectError(error.InvalidConfig, Settings.read(config_record));
+    try testing.expectError(error.InvalidConfig, Settings.read(&store, config_record));
     @memcpy(clear_bytes[0..4], &old_clear);
     try testing.expectEqual(@as(usize, 1), config.lighting.len);
     try testing.expect(config.lighting.lights[0].casts_shadow);

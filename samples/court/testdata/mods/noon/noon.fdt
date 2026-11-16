@@ -6,10 +6,13 @@ court:config court:config.main {
     clear_linear [ 0.35 0.55 0.8 1 ]
     level court:models.court
     exposure_ev100 12
-    ambient { r 500 g 600 b 800 }
-    lights [{ kind "directional" color { r 1 g 0.95 b 0.85 }
-        intensity 60000 casts_shadow true position { x 0 y 0 z 0 }
-        direction { x -1 y -3 z -1 } }]
+    # The noon sky lights the court now, so the ambient is a fill (M41).
+    ambient { r 100 g 120 b 160 }
+    environment noon:environments.noon
+    lights [{ light noon:lights.sun position { x 0 y 0 z 0 } direction { x -1 y -3 z -1 } }]
+}
+foundry:light noon:lights.sun {
+    kind "directional" color { r 1 g 0.95 b 0.85 } intensity 60000 casts_shadow true
 }
 court:warden court:warden.main {
     model court:models.warden
@@ -22,7 +25,7 @@ court:beacon court:beacon.open {
     model court:models.beacon sound court:sounds.beacon
     position { x 3.8 y 0 z 4.5 }
     use_half { x 0.4 y 0.5 z 0.4 }
-    light { color { r 1 g 0.65 b 0.3 } intensity 150 range 6 height 1 }
+    light court:lights.beacon light_height 1
 }
 court:text court:text.main {
     title "The Court at Noon"

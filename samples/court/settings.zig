@@ -14,8 +14,12 @@ pub const Settings = struct {
     clear: [4]f32,
     level: core.ContentId,
     lighting: LightSettings,
+    /// The frame's environment, its sky and indirect light (M41, `environment.md` §11), or none:
+    /// a config that names none draws the clear colour, as before M41.
+    environment: core.ContentId = .none,
 
-    pub fn read(record: data.store.Record) !Settings {
+    /// `store` holds the light records the config's list names.
+    pub fn read(store: *const data.Store, record: data.store.Record) !Settings {
         if (!record.schema.id.eql(data.SchemaId.fromStringUnchecked("court:config"))) return error.InvalidConfig;
         const f = record.fields;
         const title = (try f.stringAt(try index(f, "title"))) orelse return error.InvalidConfig;
@@ -34,13 +38,26 @@ pub const Settings = struct {
             if (!std.math.isFinite(value) or value < 0 or value > 1) return error.InvalidConfig;
             v.* = @floatCast(value);
         }
-        return .{ .title = title, .goal_seconds = @floatCast(goal), .clear = clear, .level = level, .lighting = try LightSettings.read(f) };
+        // Optional, so a config written before M41 still reads; whether it names an environment
+        // that loads is the renderer content's to say, as for the level.
+        const environment = if (indexOf(f, "environment")) |i| (try f.idAt(i)) orelse core.ContentId.none else core.ContentId.none;
+        return .{
+            .title = title,
+            .goal_seconds = @floatCast(goal),
+            .clear = clear,
+            .level = level,
+            .lighting = try LightSettings.read(store, f),
+            .environment = environment,
+        };
     }
 };
 
 fn index(f: Fields, name: []const u8) Invalid!u32 {
+    return indexOf(f, name) orelse error.InvalidConfig;
+}
+fn indexOf(f: Fields, name: []const u8) ?u32 {
     for (f.fields, 0..) |field, i| if (std.mem.eql(u8, field.name, name)) return @intCast(i);
-    return error.InvalidConfig;
+    return null;
 }
 fn size(f: Fields, name: []const u8) !u32 {
     const v = (try f.intAt(try index(f, name))) orelse return error.InvalidConfig;

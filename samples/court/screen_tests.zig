@@ -734,15 +734,15 @@ test "court: the config record refuses a goal time that is missing, non-finite o
     var env = try TestEnv.init(gpa);
     defer env.deinit(gpa);
     const record = env.store.lookup(core.ContentId.fromString("court:config.main")).?;
-    const config = try Settings.read(record);
+    const config = try Settings.read(&env.store, record);
     try testing.expectApproxEqAbs(@as(f32, 6), config.goal_seconds, 1e-6);
     const index = record.schema.fieldIndex("goal_seconds").?;
     const bytes = @constCast(record.fields.block)[fieldOffset(record.fields.fields, index)..][0..4];
     const old: [4]u8 = bytes.*;
     for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -1, 121 }) |v| {
         std.mem.writeInt(u32, bytes, @bitCast(v), .little);
-        try testing.expectError(error.InvalidConfig, Settings.read(record));
+        try testing.expectError(error.InvalidConfig, Settings.read(&env.store, record));
     }
     bytes.* = old;
-    _ = try Settings.read(record);
+    _ = try Settings.read(&env.store, record);
 }

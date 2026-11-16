@@ -154,7 +154,7 @@ pub const Game = struct {
         if (dropped != 0) log.warn("{d} beacon(s) above the bound of {d} are ignored", .{ dropped, max_beacons });
 
         for (found[0..count]) |rec| {
-            const settings = beacon_mod.BeaconSettings.read(rec.fields) catch |err| {
+            const settings = beacon_mod.BeaconSettings.read(store, rec.fields) catch |err| {
                 log.warn("beacon {f} omitted: {t}", .{ rec.id, err });
                 continue;
             };

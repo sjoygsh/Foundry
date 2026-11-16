@@ -1,8 +1,10 @@
-//! Sample-owned lighting content, not an engine light schema (`light.md` §10).
-//! Copy bounded values out of the store; refuse an invalid list as a whole.
+//! The court's lighting: exposure and ambient from its config, and since M41 its lights as
+//! `foundry:light` records the config's list places and a beacon names (`environment.md` §6.4,
+//! ADR-0085). Copy bounded values out of the store; refuse an invalid list as a whole.
 const std = @import("std");
 const core = @import("core");
 const data = @import("data");
+const asset = @import("asset");
 const render3d = @import("render3d");
 const Vec3 = core.math.Vec3;
 const Quat = core.math.Quat;
@@ -16,7 +18,9 @@ pub const LightSettings = struct {
     lights: [render3d.max_lights]render3d.Light = undefined,
     len: usize = 0,
 
-    pub fn read(fields: Fields) Invalid!LightSettings {
+    /// `fields` is the config's; each list entry's `light` is looked up in `store`. A light that
+    /// is missing, not a `foundry:light`, or refused by its record's rules refuses the list.
+    pub fn read(store: *const data.Store, fields: Fields) Invalid!LightSettings {
         var out: LightSettings = .{};
         if (index(fields, "exposure_ev100")) |i| {
             out.exposure_ev100 = try number(fields, i);
@@ -33,29 +37,19 @@ pub const LightSettings = struct {
         var caster = false;
         for (0..list.len) |n| {
             const entry = (list.nestedAt(@intCast(n)) catch return error.InvalidLighting) orelse return error.InvalidLighting;
-            const kind_i = index(entry, "kind") orelse return error.InvalidLighting;
-            const kind_name = (entry.stringAt(kind_i) catch return error.InvalidLighting) orelse return error.InvalidLighting;
-            const kind = std.meta.stringToEnum(@FieldType(render3d.Light, "kind"), kind_name) orelse return error.InvalidLighting;
+            const light_i = index(entry, "light") orelse return error.InvalidLighting;
+            const id = (entry.idAt(light_i) catch return error.InvalidLighting) orelse return error.InvalidLighting;
+            var light = try lightRecord(store, id);
             const position = try xyz(entry, "position");
             const direction = try xyz(entry, "direction");
             // Direction is not an Euler angle: the authored vector is the light's −Z.
             const rotation = Quat.lookRotation(direction, .up) orelse
                 Quat.lookRotation(direction, .right) orelse return error.InvalidLighting;
-            const shadow_i = index(entry, "casts_shadow") orelse return error.InvalidLighting;
-            const shadow = (entry.boolAt(shadow_i) catch return error.InvalidLighting) orelse false;
-            const light: render3d.Light = .{
-                .kind = kind,
-                .color = try rgb(entry, index(entry, "color") orelse return error.InvalidLighting),
-                .intensity = try namedNumber(entry, "intensity"),
-                .range = try namedNumber(entry, "range"),
-                .inner_cone = try namedNumber(entry, "inner_cone"),
-                .outer_cone = try namedNumber(entry, "outer_cone"),
-                .casts_shadow = shadow,
-                .world = Mat4.trs(position, rotation, .one),
-            };
+            light.world = Mat4.trs(position, rotation, .one);
             if (!render3d.lighting.valid(light)) return error.InvalidLighting;
-            if (shadow) {
-                if (kind != .directional or caster) return error.InvalidLighting;
+            // Every spot and point light may cast since M40; still one directional caster.
+            if (light.casts_shadow and light.kind == .directional) {
+                if (caster) return error.InvalidLighting;
                 caster = true;
             }
             out.lights[n] = light;
@@ -64,6 +58,15 @@ pub const LightSettings = struct {
         return out;
     }
 };
+
+/// The light `id` names, at the origin: missing, not a `foundry:light`, or refused by its
+/// record's rules is `InvalidLighting`. The caller places it and checks it with its place.
+pub fn lightRecord(store: *const data.Store, id: core.ContentId) Invalid!render3d.Light {
+    const record = store.lookup(id) orelse return error.InvalidLighting;
+    if (!record.schema_id.eql(asset.light.schema.id)) return error.InvalidLighting;
+    const value = asset.light.decode(record.fields) catch return error.InvalidLighting;
+    return render3d.content.lightOf(value);
+}
 
 fn index(fields: Fields, name: []const u8) ?u32 {
     for (fields.fields, 0..) |field, i| if (std.mem.eql(u8, field.name, name)) return @intCast(i);
@@ -98,6 +101,7 @@ fn checkSource(source: []const u8, expected: ?usize) !void {
     defer diags.deinit(gpa);
     var schemas: data.Registry = .init(gpa, .default);
     defer schemas.deinit(gpa);
+    _ = try schemas.register(gpa, asset.light.schema);
     var doc = try data.parser.parse(gpa, "lighting.fdt", source, .{ .namespace = "court" }, &diags);
     defer doc.deinit(gpa);
     var pkg = try data.check.Package.init(gpa, "court:content", 1, .default);
@@ -111,49 +115,77 @@ fn checkSource(source: []const u8, expected: ?usize) !void {
     _ = try store.add(gpa, "court:content", bytes.items, &schemas, &diags);
     const fields = store.lookup(core.ContentId.fromString("court:config.main")).?.fields;
     if (expected) |len| {
-        const settings = try LightSettings.read(fields);
+        const settings = try LightSettings.read(&store, fields);
         try std.testing.expectEqual(len, settings.len);
         if (len > 0) {
             try std.testing.expectApproxEqAbs(@as(f32, 300), settings.lights[0].intensity, 1e-6);
             try std.testing.expect(settings.lights[0].casts_shadow);
+            try std.testing.expectEqual(@as(f32, 0), settings.lights[0].source_radius);
+            // The record says what the light is; the list, where.
+            try std.testing.expectEqual(@as(f32, 0.9), settings.lights[0].color[1]);
         }
-    } else try std.testing.expectError(error.InvalidLighting, LightSettings.read(fields));
+        if (len == 4) {
+            try std.testing.expect(settings.lights[1].casts_shadow and settings.lights[2].casts_shadow);
+            try std.testing.expectApproxEqAbs(@as(f32, 0.05), settings.lights[1].source_radius, 1e-6);
+            try std.testing.expectEqual(@as(f32, 2), settings.lights[1].world.cols[3][1]);
+            try std.testing.expectEqual(@as(f32, 0.3), settings.lights[2].inner_cone);
+        }
+    } else try std.testing.expectError(error.InvalidLighting, LightSettings.read(&store, fields));
 }
 
 const schema =
     \\@schema config {
     \\ exposure_ev100 f32 (default 6)
     \\ ambient { r f32 g f32 b f32 }
-    \\ lights [{ kind string color { r f32 (default 1) g f32 (default 1) b f32 (default 1) } intensity f32 (default 300) range f32 (default 0)
-    \\ inner_cone f32 (default 0) outer_cone f32 (default 0.785398)
-    \\ casts_shadow bool (default false) position { x f32 y f32 z f32 }
+    \\ lights [{ light id position { x f32 y f32 z f32 }
     \\ direction { x f32 (default -1) y f32 (default -2) z f32 (default -1) } }]
     \\}
+    \\foundry:light court:lights.sun { kind "directional" color { r 1 g 0.9 b 0.8 } intensity 300 casts_shadow true }
+    \\foundry:light court:lights.lamp { kind "point" intensity 120 range 8 color { r 1 g 0.7 b 0.4 } casts_shadow true source_radius 0.05 }
+    \\foundry:light court:lights.spot { kind "spot" intensity 120 range 8 inner_cone 0.3 outer_cone 0.5 color { r 1 g 1 b 1 } casts_shadow true source_radius 0.05 }
+    \\@schema lamp_like { kind string intensity f32 color { r f32 g f32 b f32 } }
+    \\lamp_like court:lights.fake { kind "point" intensity 40 color { r 0.5 g 0.5 b 0.5 } }
+    \\
 ;
-const good_light = "{ kind \"directional\" color { r 1 g 0.9 b 0.8 } intensity 300 casts_shadow true position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } }";
+const sun = "{ light court:lights.sun position { x 0 y 0 z 0 } direction { x -1 y -2 z -1 } }";
+const lamp = "{ light court:lights.lamp position { x 1 y 2 z 0 } direction { x -1 y -2 z -1 } }";
+const spot = "{ light court:lights.spot position { x 0 y 2 z 2 } direction { x 0 y -1 z -1 } }";
 
-test "lighting content copies ordered bounded photometric values and refuses unsafe lists" {
-    try checkSource(schema ++ "config court:config.main { ambient { r 2 g 3 b 4 } lights [" ++ good_light ++ "] }", 1);
+test "lighting content places ordered, bounded light records and refuses unsafe lists" {
+    try checkSource(schema ++ "config court:config.main { ambient { r 2 g 3 b 4 } lights [" ++ sun ++ "] }", 1);
     try checkSource(schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [] }", 0);
-    try checkSource(schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [" ++ good_light ++ good_light ++ "] }", null);
+    // The same record placed twice is two lights; two casting suns are still refused.
+    try checkSource(schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [" ++ sun ++ sun ++ "] }", null);
+    // Lamps cast beside the sun, each with a size (`shadows-local.md` §12).
+    try checkSource(schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [" ++ sun ++ lamp ++ spot ++ lamp ++ "] }", 4);
     try checkSource(schema ++ "config court:config.main { ambient { r -1 g 0 b 0 } lights [] }", null);
     try checkSource(schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } exposure_ev100 -200 lights [] }", null);
-    const base = schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [" ++ good_light ++ "] }";
+    const base = schema ++ "config court:config.main { ambient { r 0 g 0 b 0 } lights [" ++ sun ++ "] }";
     const vertical = try std.mem.replaceOwned(u8, std.testing.allocator, base, "x -1 y -2 z -1", "x 0 y -1 z 0");
     defer std.testing.allocator.free(vertical);
     try checkSource(vertical, 1);
+    // Each is the sun's record or its place, made wrong: every one refuses the list.
     const changes = [_][2][]const u8{
-        .{ "\"directional\"", "\"unknown\"" },                             .{ "\"directional\"", "\"point\"" },
-        .{ "intensity 300", "intensity -1" },                              .{ "intensity 300", "intensity 300 range -1" },
-        .{ "r 1 g 0.9", "r 2 g 0.9" },                                     .{ "x -1 y -2 z -1", "x 0 y 0 z 0" },
+        .{ "\"directional\"", "\"unknown\"" },
+        .{ "intensity 300", "intensity -1" },
+        .{ "intensity 300", "intensity 300 range -1" },
+        .{ "r 1 g 0.9", "r 2 g 0.9" },
+        .{ "x -1 y -2 z -1", "x 0 y 0 z 0" },
         .{ "intensity 300", "intensity 300 inner_cone 1 outer_cone 0.5" },
+        .{ "intensity 300", "intensity 300 source_radius -0.1" },
+        .{ "intensity 300", "intensity 300 source_radius 0.5" },
+        // A light that names no record, one that names a record of another kind, and one whose
+        // record has a light's fields but is not a `foundry:light`.
+        .{ "{ light court:lights.sun position", "{ light court:lights.moon position" },
+        .{ "{ light court:lights.sun position", "{ light court:config.main position" },
+        .{ "{ light court:lights.sun position", "{ light court:lights.fake position" },
     };
     for (changes) |change| {
         const bad = try std.mem.replaceOwned(u8, std.testing.allocator, base, change[0], change[1]);
         defer std.testing.allocator.free(bad);
         try checkSource(bad, null);
     }
-    const many = try std.fmt.allocPrint(std.testing.allocator, "{s}config court:config.main {{ ambient {{ r 0 g 0 b 0 }} lights [{s}] }}", .{ schema, good_light ** 17 });
+    const many = try std.fmt.allocPrint(std.testing.allocator, "{s}config court:config.main {{ ambient {{ r 0 g 0 b 0 }} lights [{s}] }}", .{ schema, lamp ** 17 });
     defer std.testing.allocator.free(many);
     try checkSource(many, null);
 }

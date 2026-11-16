@@ -1,7 +1,7 @@
 //! The shipped environments' bytes, pinned (`docs/design/environment.md` §7.2 and §12, ADR-0083).
 //!
 //! Each of the yard's, the room's and the court's environments, and the `dusk` mod's evening
-//! over the yard, is read from its package's own `environments.fdt`, compiled and decoded as content, its faces decoded from the PNGs the
+//! over the yard and the court's `noon` mod's sky, is read from its package's own `environments.fdt`, compiled and decoded as content, its faces decoded from the PNGs the
 //! package ships, and prefiltered. The cube's bytes and the harmonics are pinned by hash, so a
 //! change to the prefilter, the records or the faces moves a pin on purpose, and a pin that
 //! differs between macOS and Windows is ADR-0083's revisit trigger.
@@ -41,6 +41,8 @@ const shipped = [_]Shipped{
     .{ .dir = options.court_content_dir, .namespace = "court", .id = "court:environments.night", .bytes_hash = 0xc960faa26d6ae8c6, .harmonics_hash = 0x382ab0a4e7a68891 },
     // The `dusk` mod's override of the yard's day, by the same ID (`environment.md` §11).
     .{ .dir = options.sandbox3d_content_dir, .sub = "../testdata/mods/dusk", .namespace = "dusk", .id = "sandbox3d:environments.day", .bytes_hash = 0x92078d56937dbcbd, .harmonics_hash = 0x7b9b585eae809adf },
+    // The court's `noon` mod's sky, which its config names in place of the night (Step 8).
+    .{ .dir = options.court_content_dir, .sub = "../testdata/mods/noon", .namespace = "noon", .id = "noon:environments.noon", .bytes_hash = 0xaa37635fefb7864d, .harmonics_hash = 0x89387ebee5830c8d },
 };
 const day = 0;
 const dusk = 3;
@@ -108,7 +110,7 @@ test "M41 the yard's, the room's and the court's environments prefilter to pinne
     const gpa = testing.allocator;
     const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-environments", .env = &.{} });
     defer os.deinit();
-    // Every pin is checked before any fails, so a deliberate change prints all four.
+    // Every pin is checked before any fails, so a deliberate change prints all five.
     var wrong: usize = 0;
     for (shipped) |case| {
         var out = try prefilterShipped(gpa, os, case);

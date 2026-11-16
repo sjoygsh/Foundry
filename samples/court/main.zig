@@ -341,7 +341,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     });
     defer engine.deinit();
     const record = engine.store.lookup(core.ContentId.fromString("court:config.main")) orelse return error.MissingConfig;
-    const settings = Settings.read(record) catch |err| {
+    const settings = Settings.read(&engine.store, record) catch |err| {
         log.warn("invalid court:config.main; court cannot start ({t})", .{err});
         return err;
     };
@@ -388,6 +388,14 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
     var content = render3d.Content.init(gpa, &renderer, &engine.assets, .default);
     defer content.deinit();
+    // M41 (`environment.md` §11): the night, the court's sky and its indirect light, prefiltered
+    // on the pool. A frame names it only once it is ready, so none waits for it.
+    const environment: render3d.EnvironmentHandle = if (settings.environment.isNone()) .none else content.requestEnvironment(settings.environment) catch |err| blk: {
+        log.warn("the court's environment is not lighting anything ({t})", .{err});
+        break :blk .none;
+    };
+    defer if (!environment.isNone()) content.releaseEnvironment(environment);
+    var sky_frames: u64 = 0;
     try engine.assets.registerLoader(gpa, asset.collisionMeshLoader());
     const level = try content.acquireModel(settings.level);
     defer content.releaseModel(level);
@@ -583,10 +591,11 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         const extent: render3d.Extent2D = if (info) |i| .{ .width = i.pixel_size.width, .height = i.pixel_size.height } else .{ .width = logical.width, .height = logical.height };
         navigation.prepare(&renderer, &content);
-        const drew = draw(engine, &renderer, &content, &screens, level, &game, &navigation, settings, extent, logical, if (info) |i| i.scale else 1) catch |err| blk: {
+        const drew = draw(engine, &renderer, &content, &screens, level, readyEnvironment(&content, environment), &game, &navigation, settings, extent, logical, if (info) |i| i.scale else 1) catch |err| blk: {
             if (!app.Engine.frameSkippable(err)) return err;
             break :blk false;
         };
+        if (drew and renderer.frameStats().sky_drawn) sky_frames += 1;
         skin_dropped += renderer.frameStats().skin_budget_dropped;
         if (renderer.frameStats().shadow_local_lights > local_peak.shadow_local_lights) local_peak = renderer.frameStats();
         {
@@ -641,6 +650,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     });
     log.info("footsteps: {d} by their surface, {d} by the sound set's own", .{ sounds.surfaced, sounds.unsurfaced });
     log.info("local shadows: at most {d} beacon lights casting, {d} tiles, {d} local draws, {d} dropped", .{ local_peak.shadow_local_lights, local_peak.shadow_tiles, local_peak.shadow_local_draws, local_peak.shadow_lights_dropped });
+    if (settings.environment.isNone()) log.info("environment: none named; no sky", .{}) else log.info("environment: {d} of {d} frames drew {f}'s sky", .{ sky_frames, engine.frame_index, settings.environment });
     soundtrack.report("at exit");
     if (script_driver) |d| {
         log.info("replay: {d} tick hashes matched a fresh simulation", .{replay_ticks});
@@ -651,6 +661,12 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         if (d.script.quits and !quit_by_menu) {
             log.err("play '{s}' did not quit through the menu", .{@tagName(play_mode.?)});
+            return error.PlayScriptFailed;
+        }
+        // M41: a court that names an environment draws its sky; a run that drew none lit nothing
+        // by it either.
+        if (!settings.environment.isNone() and sky_frames == 0) {
+            log.err("play '{s}' drew no sky of {f}", .{ @tagName(play_mode.?), settings.environment });
             return error.PlayScriptFailed;
         }
         // §10.2: nothing a run asked for was dropped for capacity, and no frame failed.
@@ -718,7 +734,15 @@ test "court: scripted runtime refuses a different replay hash" {
     try std.testing.expectError(error.ReplayMismatch, verifyReplay(1, 2));
 }
 
-fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, game: *game_mod.Game, navigation: *const nav_mod.Navigation, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
+/// The environment a frame names: null when none is named or its prefilter is not yet ready.
+/// Settled here, outside the frame's window, so a finished prefilter is written before it.
+fn readyEnvironment(content: *render3d.Content, handle: render3d.EnvironmentHandle) ?render3d.EnvironmentHandle {
+    if (handle.isNone()) return null;
+    const state = (content.environmentState(handle) catch return null) orelse return null;
+    return if (state == .ready) handle else null;
+}
+
+fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Content, screens: *Screens, level: render3d.ModelHandle, environment: ?render3d.EnvironmentHandle, game: *game_mod.Game, navigation: *const nav_mod.Navigation, settings: Settings, extent: render3d.Extent2D, logical: platform.Size, scale: f32) !bool {
     if (extent.isEmpty()) return false;
     try renderer.begin(.{
         .camera = .{ .position = game.walk.eye(), .rotation = game.walk.rotation(), .vertical_fov = std.math.pi / 3.2, .near = 0.1, .far = 80 },
@@ -726,20 +750,14 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
         .clear_color = settings.clear,
         .ambient = settings.lighting.ambient,
         .exposure_ev100 = settings.lighting.exposure_ev100,
+        .environment = environment,
         // M39 (`shadows-cascaded.md` §8): four cascades reach twice M22's 20 m across the court.
         .shadow_distance = 40,
     });
     for (settings.lighting.lights[0..settings.lighting.len]) |light| try renderer.addLight(light);
     for (game.beacons[0..game.beacon_count]) |*b| {
         if (b.lit) {
-            try renderer.addLight(.{
-                .kind = .point,
-                .color = b.settings.light_color,
-                .intensity = b.settings.light_intensity,
-                .range = b.settings.light_range,
-                .casts_shadow = b.settings.light_casts_shadow,
-                .world = core.math.Mat4.translation(b.lightPosition()),
-            });
+            try renderer.addLight(b.light());
         }
     }
     try content.drawModel(.{ .model = level, .world = .identity });
@@ -767,6 +785,7 @@ fn draw(engine: *app.Engine, renderer: *render3d.Renderer, content: *render3d.Co
 test {
     _ = @import("walk.zig");
     _ = @import("light_settings.zig");
+    _ = @import("light_tests.zig");
     _ = @import("walk_tests.zig");
     _ = @import("game.zig");
     _ = @import("game_tests.zig");

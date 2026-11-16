@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 7 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 8 are done, the owner's play of Step 8 still owed; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1308,3 +1308,62 @@ changed.
 
 Next is Step 8: the court's night, its beacons' light records and its lights list. The court still
 lists its own light fields and names no environment.
+
+## Resolution — Step 8: the court (2026-11-16)
+
+**What it pinned.**
+- **Light records.** `court:config.main`'s `lights` entries are `{ light id; position; direction }`,
+  and its one entry places `court:lights.moon` (directional, 70 lux, casting, M40's values). The
+  `beacon` schema's nested `light { … }` became `light id` and `light_height f32`. All three beacons
+  name `court:lights.beacon` (point, 150 cd, range 6, casting), M40's values again, so no digest
+  moves. `light_settings.lightRecord` reads a record for both. A beacon's light must be a point
+  light: a directional or spot record has a direction a beacon can't give, so it's refused.
+- **The night.** The config's new `environment id (optional)` names `court:environments.night`.
+  `main.zig` requests it at start and names it in a frame only once `environmentState` is `.ready`.
+  It counts the frames whose statistics say the sky was drawn and logs the count at exit. A
+  scripted play that names an environment and draws no sky fails.
+- **The fill.** The night's harmonics give (1.04, 1.58, 4.65) cd/m² facing up and (1.07, 1.28,
+  2.82) facing a wall. The ambient falls from (2, 3, 5) to (1, 1.5, 1). With the night, that keeps
+  the paving and all four wall directions within a tenth of M40's ambient luminance, and
+  `light_tests.zig` holds it. The night record is Step 4's, unchanged. Its zenith is already
+  about 0.07 cd/m² per lux of its moon, the same sky-to-sun ratio Step 7 gave the day.
+
+**What the design hadn't settled.**
+- **Noon.** The `noon` mod overrides the whole config, so it would have kept the night's few
+  cd/m² at EV100 12, a black sky behind a noon scene. It now ships `noon:lights.sun` (60,000 lux)
+  and `noon:environments.noon`, a gradient with the same sky-to-sun ratio (zenith 3,400 cd/m²,
+  horizon 5,100, ground 1,300). Its config names that sky, and its ambient falls to a fill of
+  (100, 120, 160). Its beacon override names `court:lights.beacon`. Its sky's bytes are pinned
+  beside the shipped environments: bytes 0xaa37635fefb7864d, harmonics 0x89387ebee5830c8d.
+- **The optional field.** `environment` is optional rather than required, so a config written
+  before M41 still reads and draws the clear colour with no sky. `clear_linear` stays for that
+  case and for the frames before the prefilter is ready.
+- **Stars.** The design left stars to this step's taste. There are none: the night stays a
+  gradient, and a painted-faces night would be a new record for the owner to ask for.
+
+**Runs (headless null).**
+- `win` drew the sky in 2,440 of 2,442 frames, `caught` in 91 of 93 and `fell` in 184 of 186.
+  The first frames came before the prefilter was ready.
+- Every tick hash matched a fresh replay.
+- The default headless run of 120 frames drew it in 49, because its prefilter finished later in
+  that debug build.
+
+**Guards broken, each failing:**
+- the beacon's point-only check: the beacon refusal test, with the moon;
+- `light_height`'s upper bound: the same test;
+- `lightRecord`'s schema check: the lighting test's lookalike record;
+- the config's `environment`, read as none: the darkness test and the noon test;
+- the fill put back to M40's (2, 3, 5): the darkness test;
+- the sky count: `FOUNDRY_COURT_PLAY=caught` failed with `PlayScriptFailed`.
+
+**The bar:**
+- `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four thirty-frame
+  samples, `fdt-check` and `dist -Dapp=court` pass.
+- Tests: null 3,197/3,207 (ten skips), Metal 3,230/3,251 (21 skips), `sandbox3d-test` 80/81 (one
+  skip), `court-test` 88/90 (two skips), with its digests.
+- No shader, Vulkan or ABI code changed.
+
+**Owed:** the owner's play of the court under its sky. It's taken together with M45 Step 8's
+play, on the merged tree.
+
+Next is Step 9: Windows/Vulkan on the owner's PC.

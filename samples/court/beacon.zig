@@ -4,6 +4,7 @@ const core = @import("core");
 const data = @import("data");
 const physics = @import("physics3d");
 const render3d = @import("render3d");
+const light_settings = @import("light_settings.zig");
 const Vec3 = core.math.Vec3;
 const Fields = data.fpk.Fields;
 
@@ -14,17 +15,16 @@ pub const BeaconSettings = struct {
     /// Played once when the beacon lights.
     sound: core.ContentId,
     position: Vec3,
-    light_color: [3]f32,
-    light_intensity: f32,
-    light_range: f32,
+    /// The lit beacon's light, a point `foundry:light` record's (M41, ADR-0085), at the origin;
+    /// whether it casts point shadows is the record's (`shadows-local.md` §12).
+    light: render3d.Light,
     /// Metres above `position` at which the lit beacon's light stands.
     light_height: f32,
-    /// Whether the lit beacon's light casts point shadows (`shadows-local.md` §12).
-    light_casts_shadow: bool,
     /// The Use ray's target: a box of these half extents standing on `position`.
     use_half: Vec3,
 
-    pub fn read(fields: Fields) !BeaconSettings {
+    /// `store` holds the light record the beacon names.
+    pub fn read(store: *const data.Store, fields: Fields) !BeaconSettings {
         const model = (try fields.idAt(try index(fields, "model"))) orelse return error.InvalidBeacon;
         if (model.isNone()) return error.InvalidBeacon;
         const sound = (try fields.idAt(try index(fields, "sound"))) orelse return error.InvalidBeacon;
@@ -42,27 +42,17 @@ pub const BeaconSettings = struct {
             try bounded(half_fields, "y", 0.05, 5),
             try bounded(half_fields, "z", 0.05, 5),
         );
-        const light_fields = (try fields.nestedAt(try index(fields, "light"))) orelse return error.InvalidBeacon;
-        const color_fields = (try light_fields.nestedAt(try index(light_fields, "color"))) orelse return error.InvalidBeacon;
-        const color: [3]f32 = .{
-            try bounded(color_fields, "r", 0, 100),
-            try bounded(color_fields, "g", 0, 100),
-            try bounded(color_fields, "b", 0, 100),
-        };
-        const intensity = try bounded(light_fields, "intensity", 0.01, 10000);
-        const range = try bounded(light_fields, "range", 0.1, 100);
-        const height = try bounded(light_fields, "height", 0, 10);
-        // The schema defaults it, so a record without it is not one the compiler wrote.
-        const casts_shadow = (light_fields.boolAt(try index(light_fields, "casts_shadow")) catch return error.InvalidBeacon) orelse return error.InvalidBeacon;
+        const light_id = (try fields.idAt(try index(fields, "light"))) orelse return error.InvalidBeacon;
+        const light = light_settings.lightRecord(store, light_id) catch return error.InvalidBeacon;
+        // A beacon is a point of light: a sun or a cone has a direction its record cannot give.
+        if (light.kind != .point) return error.InvalidBeacon;
+        const height = try bounded(fields, "light_height", 0, 10);
         return .{
             .model = model,
             .sound = sound,
             .position = pos,
-            .light_color = color,
-            .light_intensity = intensity,
-            .light_range = range,
+            .light = light,
             .light_height = height,
-            .light_casts_shadow = casts_shadow,
             .use_half = half,
         };
     }
@@ -82,6 +72,13 @@ pub const Beacon = struct {
 
     pub fn lightPosition(self: *const Beacon) Vec3 {
         return self.settings.position.add(.init(0, self.settings.light_height, 0));
+    }
+
+    /// The lit beacon's light, where it stands.
+    pub fn light(self: *const Beacon) render3d.Light {
+        var out = self.settings.light;
+        out.world = core.math.Mat4.translation(self.lightPosition());
+        return out;
     }
 
     pub fn deinit(self: *Beacon, gpa: std.mem.Allocator, world: *physics.World, content: ?*render3d.Content) void {

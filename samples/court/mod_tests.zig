@@ -12,14 +12,17 @@ const Text = @import("text.zig").Text;
 const play = @import("testdata/play.zig");
 const t = std.testing;
 
-test "court: noon overrides lighting, words, warden and beacon and completes with exact replay" {
+test "court: noon overrides lighting, its sky, words, warden and beacon and completes with exact replay" {
     if (comptime !options.available) return error.SkipZigTest;
     const gpa = t.allocator;
     var env = try fixtures.TestEnv.initWithNoon(gpa, true);
     defer env.deinit(gpa);
-    const settings = try Settings.read(env.store.lookup(core.ContentId.fromString("court:config.main")).?);
+    const settings = try Settings.read(&env.store, env.store.lookup(core.ContentId.fromString("court:config.main")).?);
     try t.expectEqual(@as(f32, 12), settings.lighting.exposure_ev100);
     try t.expectEqual(@as(f32, 60000), settings.lighting.lights[0].intensity);
+    // M41: noon's sun is its own light record, and its sky replaces the court's night.
+    try t.expect(settings.environment.eql(core.ContentId.fromString("noon:environments.noon")));
+    try t.expect(env.store.lookup(settings.environment) != null);
     try t.expectEqualStrings("The Court at Noon", Text.read(&env.store).title);
     try t.expectEqual(@as(f32, 0.75), env.game.warden.?.settings.?.speed);
     var moved = false;

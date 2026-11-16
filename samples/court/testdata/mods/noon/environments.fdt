@@ -1,0 +1,12 @@
+# The noon sky over the court (M41, `environment.md` §11), overriding nothing: the mod's config
+# names it in place of the court's night. It keeps a real sky's ratio to its 60,000-lux sun,
+# about 0.06 cd/m² a lux at the zenith, as the sandbox's day does to its 700 (Step 7).
+# `engine/tests/environment_content.zig` pins its bytes.
+foundry:environment noon:environments.noon {
+    kind      "gradient"
+    zenith    { r 0.25  g 0.45  b 1     l 3400 }
+    horizon   { r 0.85  g 0.9   b 1     l 5100 }
+    ground    { r 0.35  g 0.3   b 0.22  l 1300 }
+    sharpness 4
+    size      128
+}
