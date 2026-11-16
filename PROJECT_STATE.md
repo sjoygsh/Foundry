@@ -1,7 +1,23 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-17
-**Current handoff: M41 Step 9 is done; M45 Step 9 is under way** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), by an Opus agent). M41 has held the owner's PC and now releases it to M45. M45's agent has written `scripts/m45/` on its own branch, unmerged. Its unattended runs come next, and then a person at the PC: three mouse sweeps, the court played with a pad, headphones chosen and unplugged, and a relaunch. M45 §13's `input` budget (the span includes the OS event pump) still waits on the owner's decision. After M45's Steps 9 and 10 comes the joint close (M41 Step 10, M45 Step 11). Nothing is pushed: `main` and tag `m40` are local. The PC holds `src\Foundry-m41` and `m41\` (evidence), for the joint close to remove.
+**Current handoff: M41 Step 9 and M45 Step 9 are done** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), by an Opus agent, merged `f5ce359`). M41 waits at Step 10, the joint close. Next is M45 Step 10, Linux on the PC's throwaway Ubuntu, rebuilt from the kit: the headless suite and pin, `gamepad-test` with hotplug, motion under Xorg and GNOME's Wayland, `audio-output-test` under PipeWire, and the court played with a pad by a person. The joint close follows (M41 Step 10, M45 Step 11). Still open for the owner or the close:
+- M45 §13's `input` budget. On the PC, real play read p95 0.89–1.00 ms against 0.05, because the span includes the OS event pump. Scripted runs read about 0.02 ms.
+- The headphone unplug, not yet seen on any machine.
+- One `NoFreeStream` music refusal in the PC play, during fast restarts after catches. No start was missed.
+
+Nothing is pushed: `main` and tag `m40` are local. The PC holds `src\Foundry-m41`, `src\Foundry-m45`, `m41\` and `m45\`, for the close to remove. `m45\out\relocated` carries a deny-write ACL.
+
+**M45 Step 9 is done (2026-11-17): Windows** (by an Opus agent, after M41 freed the PC). `scripts/m45/` ran from a clone and bundle of its branch, `-j2`, below-normal, with the owner's lifted cutoff:
+- **Pins and install:** the ReleaseSafe pins passed 441/441, so the court's four digests and the input digest equal the Mac's. The install's 228 content files equal the Mac's.
+- **Desktop tests:** `gamepad-test` passed 3/3. `audio-output-test` passed 1/1, moving across three real outputs.
+- **Scripted court runs:** all nine passed, with replays matching, the rumble at 0.6/0.9 on a virtual PlayStation pad, and `southpaw` loaded.
+- **The owner at the PC:**
+  - Three motion sweeps read counts in raw and points in system. The sweeps' pace was uneven, so they give no DPI figure.
+  - The court played: an ending, one action rebound and saved, and the three outputs chosen in turn. The rebinding was kept across a relaunch.
+  - The pad play rests on the owner's word, since the court logs only virtual pads.
+- **Correction:** §3's motion needed an instrument, an opt-in motion test in `native-window-test` (`FOUNDRY_MOTION_MINUTES`).
+- **Not rerun:** the null and Vulkan suites, since M41's on `74f8fcd` stand.
 
 **M41 Step 9 is done (2026-11-17): Windows/Vulkan** (ADR-0083, ADR-0084). On the owner's PC, from a fresh clone and a bundle at `74f8fcd`, `-j2`, below-normal: null 3,197/3,216 (19 skips); Vulkan with validation and synchronization 3,499/3,529 (30 skips), Step 1's cube and array readbacks among them; ReleaseSafe pins on x86_64 954/959 (five skips), `integration-test`'s environment bytes and harmonics added to M40's list. The relocated, read-only install's 228 content files equal the Mac's byte for byte (only `orbiter.dll` against `liborbiter.dylib` differs). Its 21 windowed runs, from a scheduled task, all passed, the validated ones clean: five tours holding every pin, with both skies on and none off; the room, the orbit and the yard for 900 frames each, on and off; and the court's three endings under the night. The yard's frame work p95 was 1.21 ms with its environment, 1.12 off, at 16.67 ms pacing, nothing skipped. The room's was 1.82 and the orbit's 1.97. No engine code changed; the step adds `scripts/m41/`.
 
