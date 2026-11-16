@@ -6,10 +6,9 @@ done; M26 closed Phase 5, and M27 opened Phase 6. The plan
 beyond M26 is [the long roadmap](#the-long-roadmap--m27-to-m150) at the end of this file. It is
 a gradual ascent, not a sprint.
 
-**Since M41 (2026-11-15, ADR-0082) milestones advance in pairs:** the next milestone in this
-order, and one later milestone from an unrelated field, chosen at the lead's design stop. Both
-move by the same stop; they share one closing step; a partner found to depend on its lead is
-dropped for the rest of the lead.
+**One milestone at a time** (ADR-0091, 2026-11-17). ADR-0082's pairs ran from M41 to M41's
+close (M41 with M45) and then ended. M45, its Steps 1–9 done, is parked and resumes at its Step 10
+after M44 closes, before M46's design.
 
 **Milestones are units of work, not units of time.** No dates. Sessions are bounded by
 available context, so each milestone is sized to be resumable from `PROJECT_STATE.md` alone,
@@ -1248,14 +1247,14 @@ What a real 3D game reaches for first. Ends in a second 3D sample that uses all 
 | M38 | Collision at scale | A broadphase, the tree baked into `.fcol`, hull assets, and a physics panel in the overlay; also specialised pair routines such as analytic capsule–triangle. **Complete 2026-11-11, tag `m38`: [`collision-scale.md`](design/collision-scale.md), ADR-0077/0078.** A balanced bounding-volume tree over bodies and mesh trees baked into `.fcol` v3 that find candidates and never decide an answer; hull faces and `foundry:collision_hull`; ray, sphere and capsule against a triangle in closed form; `physics3d.Report` and the overlay's physics panel; `sandbox3d`'s yard of 2,126 bodies on a baked 32,258-triangle hillside, on macOS/Metal and Windows/Vulkan with every pin and byte equal. |
 | M39 | Shadows II | Cascaded shadow maps. **Complete 2026-11-14, tag `m39`: [`shadows-cascaded.md`](design/shadows-cascaded.md), ADR-0079.** |
 | M40 | Shadows III | Point and spot shadows; translucent shadows; also a tile allocator for M39's shadow atlas, per-tile depth bias and contact-hardening penumbrae (`shadows-cascaded.md` §13). **Complete 2026-11-15, tag `m40`: [`shadows-local.md`](design/shadows-local.md), ADR-0080/0081.** Spot and point lights cast into tiles a per-frame buddy allocator grants from M39's atlas, a point as six widened face tiles; glass tints the light through a transmittance atlas; penumbrae harden at contact; `sandbox3d`'s room with every light casting and the court's beacons, on macOS/Metal and Windows/Vulkan with every pin and byte equal. |
-| M41 | Environment | Sky, cubemaps and image-based lighting; an engine light record, glTF light import and tangent generation; also cubemaps and texture arrays in the RHI. **Design accepted 2026-11-15: [`environment.md`](design/environment.md), ADR-0083–0086; paired with M45 (ADR-0082).** |
-| M42 | Tone and exposure | A second tone map, auto-exposure, bloom and colour grading |
-| M43 | Text I | Scalable fonts loaded as content |
+| M41 | Environment | Sky, cubemaps and image-based lighting; an engine light record, glTF light import and tangent generation; also cubemaps and texture arrays in the RHI. **Done 2026-11-17, tag `m41`: [`environment.md`](design/environment.md), ADR-0083–0086.** |
+| M42 | Tone and exposure | A second tone map, auto-exposure, bloom and colour grading; also these against M41's bright skies |
+| M43 | Text I | Scalable fonts loaded as content; also glyph pages as the renderer's first texture array (M41) |
 | M44 | Game UI | Content-described layouts and a fuller game widget set over the existing kernel; also keyboard navigation and tab order, popups, tooltips, an overlay layer, multi-line editing, animation and transitions, and double-click |
-| M45 | Input | Action maps, rebinding and gamepads; also raw input and normalised mouse motion, keyboard state published to the table, and audio device change and enumeration. **Design accepted 2026-11-15, as M41's partner (ADR-0082): [`input.md`](design/input.md), ADR-0087–0090.** |
+| M45 | Input | Action maps, rebinding and gamepads; also raw input and normalised mouse motion, keyboard state published to the table, and audio device change and enumeration. **Design accepted 2026-11-15, as M41's partner (ADR-0082): [`input.md`](design/input.md), ADR-0087–0090. Steps 1–9 done (2026-11-17); parked by ADR-0091, resuming at Step 10 after M44.** |
 | M46 | Localization | String tables as content, plural rules and locale selection; also multi-line strings in `.fdt` |
 | M47 | Saves II | Saving component types registered by native mods; versioned migration; also script-defined components and saves, a mod's own storage, the package set and load order kept per save, settings migrations, and whether `f64` stays a field type |
-| M48 | Public API v8 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, what a mod may learn about its host, and M30's music: the mixer's clock, scheduled starts, fades and `audio.Music`; also M31's mix: the listener, positions and occlusion, buses and their effects, priorities and start offsets; also M32's navigation: a mesh built from a recipe, and `locate`; also M33's paths, crowds, areas and `nav.Report`; also M34's animation: `foundry:animator` on mod entities, event subscription and skinned instances; also M35's machines, parameters and layers; also M36's blend spaces, feet and aim chains, placed on what the host's world answers through M25's queries; also M37's moving bodies and pushing, surfaces and one-sided faces in hits, shape sweeps, body scale and the world's up; also M38's hulls by content ID and `physics3d.Report`; also mod lights that cast shadows, and a light's source radius (`shadows-local.md` §15) |
+| M48 | Public API v8 | Publishes what M27–M47 built, with a granted camera write, per-mod quotas and jobs for native mods; also pointer capture by grant, frame-callback drawing, `render3d_stats`, hull and mesh shapes and contacts for mod bodies, the zero-cone light relaxation, per-mod tables and policy, what a mod may learn about its host, and M30's music: the mixer's clock, scheduled starts, fades and `audio.Music`; also M31's mix: the listener, positions and occlusion, buses and their effects, priorities and start offsets; also M32's navigation: a mesh built from a recipe, and `locate`; also M33's paths, crowds, areas and `nav.Report`; also M34's animation: `foundry:animator` on mod entities, event subscription and skinned instances; also M35's machines, parameters and layers; also M36's blend spaces, feet and aim chains, placed on what the host's world answers through M25's queries; also M37's moving bodies and pushing, surfaces and one-sided faces in hits, shape sweeps, body scale and the world's up; also M38's hulls by content ID and `physics3d.Report`; also mod lights that cast shadows, and a light's source radius (`shadows-local.md` §15); also choosing the frame's environment and placing a model's lights through the table (M41) |
 | M49 | 3D in Lua | The script host's binding over v6 to v8; also several script modules with imports, and Lua bindings for input, UI, collision, audio (M30's music among it) and networking |
 | M50 | The second 3D sample | A game slice built only from the above, played by someone who did not build it; also a third-person body, a save game, the mod screen and profiles, and the sample published as a labelled pre-release |
 
@@ -1296,21 +1295,21 @@ Each step is measured against the forward renderer it changes (ADR-0052). Ends i
 | M72 | Material graphs | Materials as a node graph in content; the editor for it is M109 |
 | M73 | Render graph | Declared passes replace the fixed pass order; also bindless binding and GPU timestamps in the profiler, which time M39's and M40's shadow passes and explain the paced-interval spread on the Arc (`shadows-cascaded.md` Step 6, `shadows-local.md` §15) |
 | M74 | Many lights | Clustered or forward+ shading; more than 16 lights |
-| M75 | GPU compute | Compute in the RHI on every backend; also async compute and transfer queues, GPU mipmap generation and 3D textures |
+| M75 | GPU compute | Compute in the RHI on every backend; also async compute and transfer queues, GPU mipmap generation and 3D textures, and M41's environment prefilter on the GPU (its trigger: a 512 cube over two seconds to load) |
 | M76 | GPU skinning | Skinning on the GPU, clip compression, and the M24 limits lifted; also more than one skin, four influences or 256 joints, and inverse-transpose normals |
 | M77 | Animation formats | Morph targets, cubic-spline keys and animated rigid nodes |
 | M78 | Particles II | GPU particles |
 | M79 | Particles III | Ribbons, mesh particles and particle collision; also sub-emitters and events on death, and particles lit by the frame's lights, casting and receiving shadows (`shadows-local.md` §15) |
 | M80 | Decals | Projected decals |
-| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion; also soft particles, faded against that depth, and screen-space contact shadows (`shadows-cascaded.md` §13) |
+| M81 | Ambient occlusion | A depth prepass and screen-space ambient occlusion; also soft particles, faded against that depth, and screen-space contact shadows (`shadows-cascaded.md` §13), and M41's horizon and specular occlusion |
 | M82 | Temporal anti-aliasing | Motion vectors and TAA; also MSAA beyond 1× and 4×, depth resolve and alpha-to-coverage; also a per-pixel rotation of the shadow penumbra's disc, whose noise the resolve hides (`shadows-local.md` §15) |
 | M83 | Upscaling | Dynamic resolution and a permissively licensed upscaler |
 | M84 | Lens effects | Depth of field and motion blur |
-| M85 | Atmosphere | Volumetric fog and sky scattering |
+| M85 | Atmosphere | Volumetric fog and sky scattering; also a sun disc (M41) |
 | M86 | Water | Water surfaces |
-| M87 | Reflections | Reflection probes and screen-space reflections |
+| M87 | Reflections | Reflection probes and screen-space reflections; also M41's cube arrays, parallax correction, multiple-scattering compensation and blended environments |
 | M88 | Baked lighting I | A lightmap baker |
-| M89 | Baked lighting II | Light probes for moving objects |
+| M89 | Baked lighting II | Light probes for moving objects (M41's environments light the static scene) |
 | M90 | Global illumination I | Real-time diffuse global illumination |
 | M91 | Global illumination II | Real-time specular, and its limits measured |
 | M92 | Occlusion culling | Culling beyond the frustum |
@@ -1344,7 +1343,7 @@ Every tool stays a client of the public API (I4). Ends with the whole product re
 | M113 | World tools | Terrain, foliage and voxel editing |
 | M114 | UI editor | Laying out M44's game UI |
 | M115 | Import breadth I | More model formats; each is a license and dependency decision; also stable names for generated meshes and textures |
-| M116 | Import breadth II | More image formats, including HDR |
+| M116 | Import breadth II | More image formats, including HDR, and `foundry:environment`'s HDR `image` source (M41) |
 | M117 | Video | Video playback |
 | M118 | Visual scripting I | A node graph that compiles to the script host |
 | M119 | Visual scripting II | Its editor and debugger |

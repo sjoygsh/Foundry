@@ -1,12 +1,15 @@
 # Foundry Project State
 
 **Last updated:** 2026-11-17
-**Current handoff: M41 Step 9 and M45 Step 9 are done** (ADR-0082's pair: M41 Environment, [`docs/design/environment.md`](docs/design/environment.md); M45 Input, [`docs/design/input.md`](docs/design/input.md), by an Opus agent, merged `f5ce359`). M41 waits at Step 10, the joint close. Next is M45 Step 10, Linux on the PC's throwaway Ubuntu, rebuilt from the kit: the headless suite and pin, `gamepad-test` with hotplug, motion under Xorg and GNOME's Wayland, `audio-output-test` under PipeWire, and the court played with a pad by a person. The joint close follows (M41 Step 10, M45 Step 11). Still open for the owner or the close:
-- M45 §13's `input` budget. On the PC, real play read p95 0.89–1.00 ms against 0.05, because the span includes the OS event pump. Scripted runs read about 0.02 ms.
-- The headphone unplug, not yet seen on any machine.
-- One `NoFreeStream` music refusal in the PC play, during fast restarts after catches. No start was missed.
+**Current handoff: M41 is complete (2026-11-17, tag `m41`), and pairs have ended** (ADR-0091, superseding ADR-0082, by the owner's instruction). One milestone is worked at a time again. **Next is M42's design** (Tone and exposure), then M43 and M44. M45 Input is parked with Steps 1–9 done and merged, and resumes at its Step 10 (Linux) after M44's close, before M46's design. `input.md`'s 2026-11-17 note records what M45 still owes:
+- the span split behind §13's budget, which I decided at the owner's request: 0.05 ms for Foundry's input work, the OS pump measured but not budgeted;
+- the headphone unplug, held until the owner has headphones;
+- the `NoFreeStream` refusal;
+- CLAUDE.md §4.3's `input` lines.
 
-Nothing is pushed: `main` and tag `m40` are local. The PC holds `src\Foundry-m41`, `src\Foundry-m45`, `m41\` and `m45\`, for the close to remove. `m45\out\relocated` carries a deny-write ACL.
+`main`, tag `m40` and tag `m41` are pushed. The PC holds no Foundry clone, evidence or task.
+
+**M41 Step 10 is done (2026-11-17): M41 closed, alone.** A dated note in each originating document resolves its contract discrepancy: `light.md`, `3d.md`, `rhi.md`, `render3d.md`, `runtime-geometry.md`, both shadow designs, `playable3d.md` and `debug-overlay.md`. CLAUDE.md §4.1 marks ADR-0083 to ADR-0086 implemented, §4.3 names M41's additions to `rhi`, `asset`, `author` and `render3d`, and §9 adds M41. `AGENTS.md` gains M41's runs. §15's owners are written into the rows of M42, M43, M48, M75, M81, M85, M87, M89 and M116. The PC and the Mac scratch are clean. No code changed, so the bar is Step 9's.
 
 **M45 Step 9 is done (2026-11-17): Windows** (by an Opus agent, after M41 freed the PC). `scripts/m45/` ran from a clone and bundle of its branch, `-j2`, below-normal, with the owner's lifted cutoff:
 - **Pins and install:** the ReleaseSafe pins passed 441/441, so the court's four digests and the input digest equal the Mac's. The install's 228 content files equal the Mac's.

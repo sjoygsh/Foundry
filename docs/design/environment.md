@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 9 are done (the owner played Step 8, 2026-11-16; Step 9 on the PC, 2026-11-17); each step's Resolution follows §15.
+**Status:** Done 2026-11-17, tag `m41`. Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. All ten steps are done (the owner played Step 8, 2026-11-16; Step 9 on the PC, 2026-11-17; Step 10, the close, alone by ADR-0091); each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1432,4 +1432,53 @@ measure the layers and are not a budget. GPU timing is M73's.
 **No engine code changed** since Step 8, whose bar passed. This step adds only the PowerShell under
 `scripts/m41/`, which no line of the bar builds or runs.
 
-Next is Step 10, the joint close with M45, after M45's Step 9 and Step 10 (each movable).
+
+## Resolution — Step 10: Close M41 (2026-11-17)
+
+**A close alone, not a joint one.** The owner ended ADR-0082's pairs at this stop: "this
+pipelining hasnt been effiecent at all instead of a days worth of tokens this consumes like 3 x
+tokens for 2x work". ADR-0091 supersedes ADR-0082. One milestone is worked at a time again. M45,
+whose Steps 1 to 9 are done and merged, is parked and resumes at its Step 10 after M44. So this
+step closes M41's documents and state and none of M45's, and no compile check of a pair is owed.
+
+**Each contract discrepancy is resolved in its originating document**, by a dated note there:
+- `light.md` §3, §7.3 and §14: the constant ambient stays beside the environment, the light
+  record is done, and generated tangents correct §6's refusal;
+- `3d.md` §3 and §4, where "Cubemaps remain deferred" is marked superseded;
+- `rhi.md` §12;
+- `render3d.md`;
+- `runtime-geometry.md` §3, whose tangents row is marked done;
+- `shadows-cascaded.md` and `shadows-local.md`, where the atlas stays tiles;
+- `playable3d.md`'s M41 row, marked done;
+- `debug-overlay.md`'s environment line.
+
+**The durable records:**
+- ADR-0083 to ADR-0086 stay Accepted, and CLAUDE.md §4.1 now says they were implemented in M41.
+- §4.3 names M41's additions for `rhi`, `asset`, `author` and `render3d`.
+- §9's row adds M41.
+- The paired-milestones row is replaced by ADR-0091's row.
+- `AGENTS.md` gains M41's runs and `scripts/m41/windows.ps1`.
+
+**§15's owners are written into their roadmap rows:**
+- M42: the second tone map and exposure against bright skies;
+- M43: the glyph pages, the renderer's first texture array;
+- M48: publishing the frame's environment and model lights;
+- M75: GPU prefiltering, with its trigger;
+- M81: horizon and specular occlusion;
+- M85: the sun disc, beside scattering;
+- M87: cube arrays, parallax, multiple scattering and blending;
+- M89: probes for moving objects;
+- M116: the HDR `image` source.
+
+The roadmap's note on pairs and the design index rows of M41 and M45 say the same.
+
+**Cleaned:**
+- On the PC: both clones (`src\Foundry-m41`, `src\Foundry-m45`), both evidence folders (their
+  read-only installs' deny ACLs removed first), and the helper scripts at the profile root. Only
+  exact Foundry paths were removed, and no Foundry scheduled task is left.
+- On the Mac: the session's M41 and M45 scratch.
+- M45's Step 10 is Linux, on the PC's throwaway Ubuntu rebuilt from the kit, so nothing on Windows
+  is kept for it.
+
+**No code changed** in this step, so the bar is Step 9's. Tag `m41`, pushed with `main` and tag
+`m40` on the owner's instruction.

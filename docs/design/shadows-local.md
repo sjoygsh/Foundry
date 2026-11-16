@@ -1433,3 +1433,8 @@ scheduled task is left.
 **No bar was rerun.** Only documents changed after Step 8, so Step 8's bar stands:
 - null 3,024/3,034 and Metal 3,035/3,056;
 - the PC's Step 9 suites: null 3,003/3,022, Vulkan 3,285/3,315, pins 767/767.
+
+## Note — 2026-11-17, M41 closed
+
+M41 added cubemaps and texture arrays to the RHI (ADR-0084). Point shadows stay six atlas tiles,
+as ADR-0080 decided; nothing here moves to a cube.

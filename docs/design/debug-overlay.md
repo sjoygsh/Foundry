@@ -1388,3 +1388,8 @@ baked meshes, hulls and their faces, the broadphase's nodes and height), each qu
 own name, the work the queries did, the closed-form and GJK split, refits and the game's move p95.
 With no report it says so. It is numbers only and has no write path, as §7.4 asks of the
 inspector. `sandbox3d` and the court both hand it their walk world's report each frame.
+
+## Note — 2026-11-17, M41 closed
+
+The overlay's 3D lines name the frame's environment, `environment content(0x…)  sky drawn` or
+`no environment`, from `render3d.Stats` ([`environment.md`](environment.md) §10).

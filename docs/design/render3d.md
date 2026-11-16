@@ -1254,3 +1254,14 @@ platform call on Linux's window path.
 
 M19's exit condition, `3d.md` §10's row, holds: every convention is pinned by a test, and draw
 order no longer decides what is visible. M20's design has not begun.
+
+## Note — 2026-11-17, M41 closed: environments, the sky and model lights
+
+`render3d` gained, in M41 ([`environment.md`](environment.md)):
+- environment residency through `Content` (`requestEnvironment`, `environmentState`), prefiltered
+  on the background pool;
+- `FrameView.environment` with an intensity and a yaw, and the fourth frame uniform (4,416 bytes):
+  diffuse from harmonics, specular from the cube by roughness;
+- a sky pass after opaque draws and before blended ones;
+- `Content.modelLights`, which writes a model's placed lights for the game to submit;
+- `Stats.environment` and `Stats.sky_drawn`.

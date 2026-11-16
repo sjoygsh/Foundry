@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), the owner playing Step 8 on 2026-11-16, and Step 9 on Windows (2026-11-17), the owner playing it there; Step 10 (Linux) is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), the owner playing Step 8 on 2026-11-16, and Step 9 on Windows (2026-11-17), the owner playing it there; Parked 2026-11-17 by ADR-0091: Step 10 (Linux) resumes after M44 closes, before M46's design.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -2154,3 +2154,36 @@ The unplug is the one part of §13's sample list not yet exercised on any deskto
 
 `zig fmt --check` and `zig build check`, plus SDL3 `check` for Windows and Linux, passed on the
 Mac for the motion test.
+
+## Note — 2026-11-17: parked, the budget decided and the unplug held
+
+**Parked (ADR-0091).** The owner ended ADR-0082's pairs at M41's close: "for m45 step 10 we will
+again do one by one and do m45 step 10 when we come to after m42-44". M41 closed alone. M45's
+Steps 1 to 9 stand, merged. Its Step 10 (Linux) and Step 11 (its own close, no longer joint)
+follow M44's close and come before M46's design. Step 11 still owes CLAUDE.md §4.3's lines for
+`input`, `abi -> input` and `sandbox3d -> input`.
+
+**§13's `input` budget, decided.** The owner left it to me ("for input budget decide by
+yourself"). **The 0.05 ms p95 covers Foundry's own input work:** the snapshot, the action
+evaluation and the court's reading of it. On the PC that is about 0.02 ms in scripted runs, and
+evaluation alone is 0.0003 ms in `court-test`, which asserts it. **The OS event pump is not
+budgeted.** It is the platform's time, not M45's. On the PC it read a p95 of 0.89–1.00 ms in a
+person's play, with a real mouse, pad and focus changes, and about 0.12–0.15 ms on the Mac with
+no actions at all. No input design can move that number.
+
+What this needs from M45's remaining steps:
+- **The span is split, so the budget can be checked as decided.** The court reports the pump and
+  the input work as two lines, and asserts only the second against 0.05 ms. This is done in
+  Step 10, before its runs, so that Linux reads both.
+- **The pump's cost goes to M99** (the render thread and thread priority), if a frame budget ever
+  needs it moved off the game thread. M99's row names it when Step 11 closes.
+
+**The headphone unplug is held.** Neither the Mac nor the PC has seen a chosen output go away
+mid-music: the Mac had one output, and the PC's three were chosen in turn but none was lost. The
+owner has no headphones to unplug: "the headphones will need to be held as long as i dont have
+one". It stays an exit item of M45, not deferred out of it (rule 17). It is taken in Step 10's
+Linux run, or at Step 11 on whichever machine the owner has headphones for. If M45 reaches Step 11
+still without them, the owner decides then, and that decision is recorded there.
+
+**The one `NoFreeStream` music refusal** in the PC play (input.md's Step 9 Resolution) goes to
+Step 11. That step fixes it or names the milestone that owns it.

@@ -1017,3 +1017,8 @@ run the Metal suite, where the readbacks live. The bar itself is unchanged.
 **Cleanup.** The PC's `src\Foundry-m39` and `m39` are removed by exact name, and the Mac's
 scratch and caches are cleared. Only documents changed after Step 6, so Step 5's bar stands:
 null 2,998/3,008, Metal 3,008/3,029.
+
+## Note — 2026-11-17, M41 closed
+
+M41 added texture arrays and cubemaps to the RHI (ADR-0084). The cascades stay tiles of one atlas,
+as ADR-0079 decided; nothing here moves to an array.

@@ -1004,3 +1004,16 @@ Once these are accepted nothing blocks Step 1: the RHI's widening depends only o
 §14's item is done (`playable3d.md`, Step 9's Resolution). A pipeline with a depth attachment and
 no colour target may name no fragment shader, and opaque shadow casters now draw that way; masked
 casters keep their alpha test.
+
+## Note — 2026-11-17, M41 closed: §3, §7.3 and §14
+
+M41 ([`environment.md`](environment.md)) has done what this design left to it:
+- **§3 and §7.3, the constant ambient:** it stays, and one environment a frame now adds diffuse
+  light from nine harmonics and specular light from a prefiltered cube (environment.md §4, §8). A
+  frame with no environment lights exactly as M22's did.
+- **The light record:** `foundry:light` (ADR-0085) carries `KHR_lights_punctual`'s fields in this
+  design's units, plus `casts_shadow` and `source_radius`. `foundry:model` v4 places lights, and
+  glTF imports them. Lights stay values a game submits; §7's "no light record" is superseded.
+- **Tangents:** Foundry's MikkTSpace port in `asset` (ADR-0086) generates them, and §6's refusal of
+  a `normalTexture` without `TANGENT` is corrected: import generates tangents and says so.
+- **§14's sky and image-based lighting:** done. HDR sources are M116's, and probes M87's.

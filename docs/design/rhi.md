@@ -778,3 +778,10 @@ the exact operation matrix in `hardening.md` §6. The other five questions remai
 Distinguishing `SurfaceUnavailable`, `SurfaceLost` and `DeviceLost` is the present host's
 error contract; it does not decide device recovery in question 6. Code still implements the
 old behavior until the relevant M11 steps land.
+
+## Note — 2026-11-17, M41 closed: §12
+
+§12's cubemaps and texture arrays are implemented on null, Metal and Vulkan (ADR-0084,
+[`environment.md`](environment.md) §3): `kind` and `layers` at creation, a layer named by copies,
+attachments and readbacks, and a binding's declared dimension checked at bind. Each face and layer
+reads back on every backend, Vulkan's under validation on the owner's PC (environment.md Step 9).

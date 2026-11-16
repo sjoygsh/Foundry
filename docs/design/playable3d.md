@@ -561,7 +561,7 @@ Each item names the roadmap milestone that owns it (CLAUDE.md §2, rule 17; revi
 | A hierarchy authored in content | **M103**, Prefabs |
 | An animation component saved with a world | **Done in M34** (2026-11-06, [`animation-logic.md`](animation-logic.md)): `foundry:animator`, saved by the sandbox's pacer. The court still saves no pose, and its warden plays through `anim.Player` |
 | A third-person player body | **M50**, the second 3D sample |
-| A sky, image-based lighting | **M41**, Environment ([`environment.md`](environment.md), proposed 2026-11-15) |
+| A sky, image-based lighting | **M41**, Environment ([`environment.md`](environment.md)), done 2026-11-17 |
 | A save game | **M47**, Saves II, proved in M50's sample |
 | A mod screen and profiles in a 3D sample | **M50**, the second 3D sample |
 | A Linux release artifact | **M137**, Linux releases |
@@ -1567,3 +1567,9 @@ capture, file watching and the court's scripted proof as the code has them.
 **The bar:** `zig fmt`; `zig build test` **2,138/2,139** (one skip); all four `check`s;
 `fdt-check`; the four headless samples. Tag `m26`, not pushed. M27's design is next and is not
 begun.
+
+## Note — 2026-11-17, M41 closed
+
+The row "A sky, image-based lighting" is done: the court is lit from its night environment and
+draws it as its sky, with its moon and beacons as light records ([`environment.md`](environment.md)
+Step 8; played by the owner on 2026-11-16).

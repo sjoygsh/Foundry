@@ -561,6 +561,17 @@ Run them when `anim`, `scene.animation`, `asset.Rigs`, a machine or either sampl
     M5. Its digests did not move.
   - Under contention the ReleaseSafe pins take over 40 minutes at `-j2` on the PC; M40's script
     gives them 120.
+- **M41's environments.** Run them when the RHI's texture kinds, the prefilter, the fourth
+  uniform, the sky pass, a light record or tangents change. The readbacks run under Metal and
+  Vulkan only. `integration-test` pins every shipped environment's prefiltered bytes and
+  harmonics, so it belongs among the ReleaseSafe pins on another architecture.
+  - `sandbox3d --environment=off` and the court's own option submit no environment. The exit
+    reports print `environment: on; N frames under the yard's sky, M under the room's` and the
+    court's `environment: N of M frames drew …'s sky`. A scripted court play that draws no sky
+    fails.
+  - The budget is frame work over the last 240 of 900 frames: the room walking, the orbit by
+    `FOUNDRY_SANDBOX3D_KEYS=f3@1`, the yard by `y@1`. With environments, p95 4.27/4.45/0.59 ms on
+    the M5 and 1.82/1.97/1.21 ms on the i3, against 16.67 ms.
 
 On the Windows target, `scripts/m31/windows.ps1` runs M30's and M31's, with M31's court runs,
 `scripts/m32/windows.ps1` runs M32's, with both samples' navigation runs,
@@ -573,7 +584,9 @@ and the court's footsteps and `addMesh`, and `scripts/m38/windows.ps1` runs M38'
 replay and tilted stage, the moved pins and `sandbox3d-yard-test`, and `scripts/m39/windows.ps1`
 runs M39's: the tour at four cascades and at one, the yard's five budget runs and the court at
 40 m, and `scripts/m40/windows.ps1` runs M40's: the tour with local shadows on and off, the
-room's six runs and the court's endings with every beacon casting. The Mac compares the install's
+room's six runs and the court's endings with every beacon casting, and
+`scripts/m41/windows.ps1` runs M41's: the tour with environments on and off, the room's, the
+orbit's and the yard's budget runs, and the court's endings under its night. The Mac compares the install's
 content hashes with its own. Each milestone's `-setup.ps1` clones and checks out
 unpushed commits from a bundle, and its `-launch.ps1` runs the desktop half from the scheduled
 task.

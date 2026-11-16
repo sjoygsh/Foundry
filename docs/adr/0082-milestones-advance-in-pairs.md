@@ -1,6 +1,6 @@
 # ADR-0082: Milestones advance in pairs, the next one and an unrelated partner
 
-**Status:** Accepted 2026-11-15, by the owner's instruction
+**Status:** Superseded by ADR-0091 (2026-11-17); accepted 2026-11-15, by the owner's instruction
 **Date:** 2026-11-15
 **Amends:** ADR-0060's "No milestone is designed before its turn"
 **Informed by:** ADR-0060, CLAUDE.md §2 (rules 1 and 17), `AGENTS.md` §6
