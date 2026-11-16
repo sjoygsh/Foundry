@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Step 4 (2026-11-16); Step 5 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 6 (2026-11-16); Step 7 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1549,3 +1549,151 @@ Twenty-three mutations, each restored.
 
 `zig build input-test` is 48/48. No platform backend, shader, RHI, ABI header or sample content
 changed, so no SDL3 cross-check, Vulkan check or C header compile applies.
+
+## Resolution — Step 6: actions in the frame, and the bindings file (2026-11-16)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 6. No
+M41 code was read or changed. Outside `engine/src/app/` only `build.zig` changed, by one
+`app-test` step.
+
+**What the step pinned:**
+- **`app.Engine`:**
+  - `engine.actions`, an `input.Actions` borrowing `engine.input_map`. It is created empty
+    before content loads, so `setMap` always has something to carry from.
+  - `input_base` (the content's map) and `input_map` (with the player's overrides applied) are
+    built in `readAll`, beside the store they come from. A reload that cannot build them is a
+    reload that does not happen. `adopt` swaps both in place and calls `setMap`, so the
+    enabled contexts and each surviving action's held state carry across, by content ID.
+  - In `beginFrame`, inside the `input` span, right after `captureInput`:
+    `actions.evaluate(&input, .{ .blocked = input_blocked })`, then `tick_view.feed`, on every
+    frame, whether or not it runs a step.
+  - `nextStep` calls `tick_view.take()`. `Step.actions: *const input.Frame` and
+    `Step.tick_input: *const platform.InputSnapshot` are borrowed until the next `nextStep`.
+    `Step.input` is the frame's snapshot by value, unchanged.
+  - New calls: `actionFrame()`, `setInputBlocked(input.Blocked)` (from the next evaluation
+    on, kept until changed), `inputMap()`, `defaultInputMap()` (what "Reset" shows),
+    `bindings()` (the overrides in force), `bindingsProblem()` and `saveBindings(overrides)`.
+  - `Config.captured_motion: platform.MotionMode = .raw` goes to `setCapturedMotion` right
+    after the platform comes up. Nothing else about motion changed: macOS still reports points
+    (Step 1's Resolution).
+- **`app.input_bindings`** (`engine/src/app/input_bindings.zig`), `bindings.fset` in the user
+  data directory under `foundry:input_bindings` v1:
+  `actions [ { id string  bindings [ { source axis scale threshold deadzone } ] } ]`.
+  - Every binding field is written. An unbound action leaves `bindings` out.
+  - `Store` has `open`, `read` and `write`. `merge`, `toOverrides`, `fromOverrides` and
+    `lessById` are public.
+  - Entries are kept **as text**, in content-ID order. Whatever this build cannot read is
+    written back exactly as it was found.
+- **Audio outputs** already reached `nextEvent`: `beginFrame` drains every platform event. A
+  test now holds both of §5's events to it.
+
+**Where the code sharpened the design:**
+- **`Config.input` is `InputConfig { enabled, persist_bindings }`.**
+  - `persist_bindings` is new. It is the `persist` every settings file takes, for a scripted
+    run that must leave a player's files alone. The file is still read, and `saveBindings`
+    still applies the overrides.
+  - With `enabled` false, no map is built and no file is read. Evaluation still runs over the
+    empty map, so `Step.actions` is an empty frame and `Step.tick_input` works either way.
+- **`saveBindings` takes the player's whole set.** A Controls screen copies `bindings()`,
+  changes it and hands it back, so an action it leaves out is reset. One exception: an entry
+  for an action the loaded content lacks, which the caller did not mention, is carried as it
+  was. That is unchanged against the baseline, so the file keeps it, as §8 asks.
+- **The answer is `BindingsSaved`** (`written`, `read_only`, `kept`, `write_failed`). The
+  overrides apply this run in every one of those cases.
+- **Two errors change nothing:**
+  - `UnknownAction`: an override that neither the store nor the file can spell, because the
+    file is keyed by the spelled ID;
+  - `TooManyOverrides`: the merge would go past 256.
+- **The merge, exactly:** the file is read again just before the write. For each action in
+  this process's set or its baseline (what it read or last wrote), if this process's entry
+  differs from the baseline's, its entry is written, or the action is removed when it has
+  none. Every other action keeps the file's entry. The same action changed by two writers is
+  the last writer's.
+- **What is refused, and how far.** §8 left the line between "the file" and "one action"
+  open. The answer:
+  - **The whole file** is refused, and kept for the run (every save answers `kept`) when it
+    has:
+    - more than 256 actions;
+    - more than eight bindings on one action;
+    - an ID that is not a content ID;
+    - one action twice;
+    - an empty source or one over 32 bytes;
+    - an axis over 8 bytes.
+
+    These come from a hostile file or a build with other bounds, and merging one would drop
+    entries.
+  - **One action alone** is dropped from the overrides, with a warning, and its defaults stand
+    when its entry has a source this build does not know, an axis that is not `x` or `y`, or a
+    number out of range. Its entry stays in the file. Kind mismatches and `rebindable false`
+    stay `Map.apply`'s, which refuses them the same way.
+
+  Half an override is refused like half an action record: an unknown source refuses its whole
+  override, where a record skips the binding.
+- **The settings list bound is 1,024**, above ADR-0088's 256. Otherwise a long list would
+  decode as a damaged file and be copied aside at the next save, instead of being refused by
+  name and kept.
+- **A damaged file** (§13's "left untouched") is untouched when read and gives no overrides.
+  The next save copies it aside to `bindings.fset.bak` before replacing it, as `settings` and
+  `profiles` do. Refusing every save over it would leave a player who cannot rebind until
+  they delete a file.
+- **No user data directory** (every headless test, a tool) means no overrides, nothing ever
+  written, and `saveBindings` answers `read_only`.
+
+**Not done here, as §14 orders it:** the table (`FoundryApi_v8`, Step 7). No sample reads actions
+yet. The samples now get an empty map and read `bindings.fset` if one is there, and none calls
+`saveBindings`. `sandbox3d`'s walk and the court's actions, Controls screen and prompts are Steps
+7 and 8.
+
+**The exit, met:**
+- **A headless engine's steps see the tick view.** A press in a frame of three steps reaches
+  only the first, through `Step.actions` and `Step.tick_input` alike, while every step's
+  `Step.input` still shows it. A release and four frames of motion with no step between reach
+  the next step together, the motion summed, and the step after sees nothing.
+- **A reload keeps held state.** Space held across a reload that adds an action, removes one
+  and moves the context's priority stays held, not pressed again. The context stays enabled,
+  and the release after it is reported.
+- **The bindings file's tests pass:**
+  - a round trip, an unbound action included;
+  - seven past-bound and malformed files refused, untouched and never replaced;
+  - a damaged file untouched by reading and copied aside by a save;
+  - unknown and unusable entries kept and left out alone;
+  - two writers merged by action, and the last writer winning on a shared one;
+  - a read-only run writing nothing;
+  - spelling from the store or the file, and `Unnamed` otherwise.
+- **And the engine's:**
+  - `saveBindings` writes, applies across a held key, and a second engine starts with the
+    file;
+  - "Reset" is an empty set;
+  - a read-only run applies but leaves the file;
+  - an action the content lacks survives a save that does not mention it;
+  - blocking applies from the next evaluation;
+  - an engine without actions, or with input off, steps an empty frame;
+  - the motion mode reaches the platform;
+  - an output added and lost reach `nextEvent`.
+
+**Each guard was broken once, and each failed its test:**
+- `nextStep` handing the pending view to every step instead of taking it failed the tick-view
+  test (three presses, not one);
+- `adopt` rebuilding `actions` instead of `setMap` failed the reload test;
+- the blocking left out of `evaluate` failed the blocking test;
+- `captured_motion` not forwarded failed the motion-mode test;
+- `saveBindings` applying the old overrides failed both engine bindings tests;
+- `saveBindings` not carrying the content's missing actions failed the read-only and
+  missing-action test;
+- the merge replacing the file instead of laying over it failed three tests;
+- the 256-action bound removed, and the duplicate-action check removed, each failed the
+  past-bound test;
+- one unusable entry ending the conversion failed the unknown-and-unusable test;
+- a read-only store writing failed both read-only tests;
+- a refused file replaceable by a save failed the past-bound test.
+
+Twelve mutations, each restored.
+
+**Bar:** every line of `AGENTS.md` §3 exited 0, plus the null and Metal test graphs: `zig fmt
+--check`, the four `check` variants, the four thirty-frame samples and `fdt-check`. The counts:
+- `zig build test` 3,192/3,202 (ten skips);
+- null 3,174/3,184 (ten skips);
+- Metal 3,207/3,228 (21 skips).
+
+`zig build app-test` is 146/146. No platform backend, shader, RHI, ABI header or sample
+content changed, so no SDL3 cross-check, Vulkan check or C header compile applies.

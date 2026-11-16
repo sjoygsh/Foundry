@@ -31,6 +31,7 @@ const asset = @import("asset");
 const input = @import("input");
 
 const log_sink = @import("log_sink.zig");
+const input_bindings = @import("input_bindings.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.app);
@@ -162,6 +163,48 @@ pub const Config = struct {
     /// What `beginFrame`'s pump may spend finishing requested assets on the main thread
     /// (`background.md` §6.4). The defaults are measured in M27 Step 9.
     asset_pump: asset.PumpBudget = .{},
+
+    /// Actions and the player's bindings (`docs/design/input.md` §9).
+    input: InputConfig = .{},
+
+    /// How captured mouse motion is reported, forwarded to the platform at start (ADR-0089):
+    /// the device's own counts where the platform can deliver them, `motion_unit` saying which
+    /// arrived.
+    captured_motion: platform.MotionMode = .raw,
+};
+
+/// What `Engine` does with actions (`docs/design/input.md` §9).
+pub const InputConfig = struct {
+    /// Build `engine.actions` from the content's `foundry:input_action` records, with the
+    /// player's bindings file applied. Off, the map stays empty, no file is read, and every
+    /// step's `actions` is an empty frame; `Step.tick_input` is the tick view either way.
+    enabled: bool = true,
+    /// Whether this run may write `<user data>/bindings.fset`. A scripted run with a frame
+    /// budget says `false`: a run nobody is watching leaves a player's choices as it found them
+    /// (`distribution.md` §4). The file is still read, and `saveBindings` still applies.
+    persist_bindings: bool = true,
+};
+
+/// What `saveBindings` did with the file. **The overrides apply this run in every case**;
+/// only the disk differs.
+pub const BindingsSaved = enum {
+    /// Merged by action with the file as it was, and written.
+    written,
+    /// This run may not write, or has no user data directory.
+    read_only,
+    /// The stored file was written by another build, or was refused at load; it is kept as it
+    /// is for the rest of the run.
+    kept,
+    /// The filesystem refused. Said once, in the log.
+    write_failed,
+};
+
+pub const SaveBindingsError = Allocator.Error || error{
+    /// An override for an action neither the loaded content nor the file can spell: it cannot
+    /// be written by content ID. Nothing was changed.
+    UnknownAction,
+    /// The merged set would override more than 256 actions. Nothing was changed.
+    TooManyOverrides,
 };
 
 /// The names the engine gives its own timing spans.
@@ -248,6 +291,14 @@ pub const Step = struct {
     input: platform.InputSnapshot,
     /// Total simulation time at the end of this step.
     elapsed: core.time.Duration,
+    /// **The actions as this tick sees them** (`docs/design/input.md` §7): an edge or a delta
+    /// reaches exactly one step, the first after it happened, whatever the frame rate; later
+    /// steps in the frame see held state only. Borrowed until the next `nextStep`.
+    actions: *const input.Frame,
+    /// The raw snapshot by the same rule: key, button and pad edges kept until a step takes
+    /// them, motion and wheel summed across frames that ran no step. `input` above stays the
+    /// frame's snapshot, unchanged. Borrowed until the next `nextStep`.
+    tick_input: *const platform.InputSnapshot,
 };
 
 /// The engine, parameterised by its platform backend.
@@ -365,6 +416,27 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// capability pointing up while the dependency points down.
         assets: asset.Registry,
 
+        // -- input -----------------------------------------------------------------------
+
+        /// **What each action reads this frame** (`docs/design/input.md` §9), evaluated in the
+        /// `input` span from the snapshot and the blocking set last frame. The game enables
+        /// and disables contexts here; which are enabled is its state, kept across a reload.
+        /// Borrows `input_map`.
+        actions: input.Actions = undefined,
+        input_enabled: bool,
+        /// The content's map, before the player's overrides: what "Reset" returns to.
+        input_base: input.Map = .empty,
+        /// `input_base` with the overrides applied: what `actions` reads.
+        input_map: input.Map = .empty,
+        tick_view: input.TickView = .empty,
+        input_blocked: input.Blocked = .{},
+        /// The player's overrides, from `bindings_file`.
+        input_overrides: input.Overrides = .empty,
+        /// The bindings file as read or last written: what a save merges against. Owned.
+        bindings_file: input_bindings.Contents,
+        bindings_store: ?input_bindings.Store = null,
+        bindings_problem: ?input_bindings.Problem = null,
+
         pub fn init(gpa: Allocator, config: Config) InitError!*Self {
             log_sink.setLevel(config.log_level);
             log_sink.setCaptureLevel(config.log_capture);
@@ -397,6 +469,7 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
 
             const plat = try P.init(gpa, .{});
             errdefer plat.deinit();
+            plat.setCapturedMotion(config.captured_motion);
 
             var window: platform.WindowHandle = .none;
             if (!config.headless) {
@@ -487,6 +560,8 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 // Assigned below: it borrows `&self.store`, which has no address until
                 // the struct is in its final home.
                 .assets = undefined,
+                .input_enabled = config.input.enabled,
+                .bindings_file = .init(gpa),
             };
             // From here the struct owns the recorder, so the `errdefer` above must not
             // free it a second time. Disarmed by emptying the local — the same handover
@@ -514,6 +589,10 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             log_sink.setStamp(.{ .frame = 0, .elapsed = .zero });
 
             errdefer self.deinitOwned();
+            // Borrows `input_map`, which has an address only now. Empty until content loads.
+            self.actions = .init(&self.input_map);
+            // Before content, whose map is built with the player's overrides applied.
+            if (config.input.enabled) try self.openBindings(config.input.persist_bindings);
             try self.loadContent();
             if (config.hot_reload) self.startWatching();
 
@@ -588,6 +667,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             const gpa = self.gpa;
 
             self.memories.deinit(gpa);
+            self.input_map.deinit(gpa);
+            self.input_base.deinit(gpa);
+            self.input_overrides.deinit(gpa);
+            self.bindings_file.deinit();
+            if (self.bindings_store) |*store| store.deinit(gpa);
             self.profile.deinit(gpa);
             self.assets.deinit(gpa);
             self.store.deinit(gpa);
@@ -618,8 +702,14 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             store: data.Store,
             bytes: std.ArrayList([]u8),
             stamps: std.ArrayList(asset.Registry.Stamp),
+            /// The new content's actions, and those with the player's overrides applied. Built
+            /// here, so a reload that cannot build them is a reload that does not happen.
+            input_base: input.Map = .empty,
+            input_map: input.Map = .empty,
 
             fn deinit(self: *Loaded, gpa: Allocator) void {
+                self.input_map.deinit(gpa);
+                self.input_base.deinit(gpa);
                 self.store.deinit(gpa);
                 self.schemas.deinit(gpa);
                 for (self.bytes.items) |b| gpa.free(b);
@@ -748,6 +838,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
                 };
             }
             reportContent(&diags);
+
+            if (self.input_enabled) {
+                out.input_base = try input.Map.build(gpa, &out.store);
+                out.input_map = try out.input_base.apply(gpa, &self.input_overrides);
+            }
             return out;
         }
 
@@ -809,6 +904,15 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             self.store = loaded.store;
             self.package_bytes = loaded.bytes;
             self.package_stamps = loaded.stamps;
+            // In place, so `actions`' borrow keeps its address; `setMap` carries each surviving
+            // action's held state by content ID, so a reload invents no press and loses no
+            // release.
+            self.input_base.deinit(gpa);
+            self.input_base = loaded.input_base;
+            var old_map = self.input_map;
+            self.input_map = loaded.input_map;
+            self.actions.setMap(&self.input_map);
+            old_map.deinit(gpa);
             loaded.* = undefined;
 
             const order = self.store.loadOrder();
@@ -1073,6 +1177,11 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
             // After every event has been applied by the backend, so the snapshot is the
             // whole frame's input and not a prefix of it.
             self.input = self.platform.captureInput();
+            // Right after it, inside `input`: a pure function of the snapshot, the enabled
+            // contexts and the blocking the game set last frame (`input.md` §9). The tick view
+            // is fed whether or not this frame runs a step.
+            const frame = self.actions.evaluate(&self.input, .{ .blocked = self.input_blocked });
+            self.tick_view.feed(frame, &self.input);
 
             const current = self.platform.now();
             if (profiling) self.profile.close(current);
@@ -1128,12 +1237,145 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// Consumes one fixed simulation step if one is due.
         pub fn nextStep(self: *Self) ?Step {
             if (!self.stepper.next()) return null;
+            const seen = self.tick_view.take();
             return .{
                 .tick = self.stepper.tick,
                 .delta = self.step_delta,
                 .input = self.input,
                 .elapsed = self.stepper.elapsed(),
+                .actions = seen.actions,
+                .tick_input = seen.input,
             };
+        }
+
+        // -- actions -------------------------------------------------------------------
+
+        /// This frame's actions, for presentation and UI: every edge this frame had, whether
+        /// or not a step ran. Simulation reads `Step.actions` instead.
+        pub fn actionFrame(self: *const Self) *const input.Frame {
+            return self.actions.current();
+        }
+
+        /// Hides the keyboard or the pointer from every action, from the next frame's
+        /// evaluation on: what a game sets while its UI wants the keys (`input.md` §7). Kept
+        /// until changed.
+        pub fn setInputBlocked(self: *Self, blocked: input.Blocked) void {
+            self.input_blocked = blocked;
+        }
+
+        /// The map `actions` reads: the content's actions with the player's overrides applied.
+        pub fn inputMap(self: *const Self) *const input.Map {
+            return &self.input_map;
+        }
+
+        /// The content's actions before the player's overrides: what a Controls screen's
+        /// "Reset" shows.
+        pub fn defaultInputMap(self: *const Self) *const input.Map {
+            return &self.input_base;
+        }
+
+        /// The player's overrides in force, including those for actions the loaded content
+        /// lacks, which the file keeps. A Controls screen copies this, changes it, and hands it
+        /// to `saveBindings`.
+        pub fn bindings(self: *const Self) *const input.Overrides {
+            return &self.input_overrides;
+        }
+
+        /// Why the bindings file read as no overrides at start, or null.
+        pub fn bindingsProblem(self: *const Self) ?input_bindings.Problem {
+            return self.bindings_problem;
+        }
+
+        /// Makes `overrides` the player's bindings: writes `<user data>/bindings.fset`, merged
+        /// by action with the file as it is now, and applies the result, so the next frame's
+        /// evaluation uses it (ADR-0088). An action `overrides` omits that the loaded content
+        /// lacks is not a reset: the file keeps it, as it keeps every action this process did
+        /// not change. Held actions stay held across the change.
+        ///
+        /// The answer says what reached the disk; an error changes nothing.
+        pub fn saveBindings(self: *Self, overrides: *const input.Overrides) SaveBindingsError!BindingsSaved {
+            const gpa = self.gpa;
+            var scratch: std.heap.ArenaAllocator = .init(gpa);
+            defer scratch.deinit();
+            const arena = scratch.allocator();
+            const baseline = self.bindings_file.entries;
+
+            const spelled = input_bindings.fromOverrides(arena, overrides, &self.store, baseline) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.Unnamed => return error.UnknownAction,
+            };
+            // An entry for an action the content lacks, which the caller did not mention, is
+            // carried as it was, and so is unchanged against the baseline.
+            var mine: std.ArrayList(input_bindings.Entry) = .empty;
+            try mine.appendSlice(arena, spelled);
+            for (baseline) |e| {
+                if (self.input_base.find(e.id()) != null or overrides.get(e.id()) != null) continue;
+                try mine.append(arena, e);
+            }
+            std.mem.sort(input_bindings.Entry, mine.items, {}, input_bindings.lessById);
+
+            var outcome: BindingsSaved = .written;
+            var next: input_bindings.Contents = written: {
+                if (self.bindings_store) |*store| {
+                    if (store.write(gpa, mine.items, baseline)) |contents| break :written contents else |err| {
+                        outcome = switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.TooMany => return error.TooManyOverrides,
+                            error.ReadOnly => .read_only,
+                            error.OtherBuild, error.Refused => .kept,
+                            error.WriteFailed => .write_failed,
+                        };
+                    }
+                } else outcome = .read_only;
+                // Not on disk: this run's set is the same merge over what it last had.
+                var contents = input_bindings.Contents.init(gpa);
+                errdefer contents.deinit();
+                contents.entries = try input_bindings.merge(contents.arena.allocator(), baseline, mine.items, baseline);
+                if (contents.entries.len > input_bindings.max_actions) return error.TooManyOverrides;
+                break :written contents;
+            };
+            errdefer next.deinit();
+
+            var next_overrides: input.Overrides = .empty;
+            errdefer next_overrides.deinit(gpa);
+            _ = try input_bindings.toOverrides(gpa, next.entries, &next_overrides);
+            var next_map: input.Map = if (self.input_enabled) try self.input_base.apply(gpa, &next_overrides) else .empty;
+            errdefer next_map.deinit(gpa);
+
+            self.bindings_file.deinit();
+            self.bindings_file = next;
+            self.input_overrides.deinit(gpa);
+            self.input_overrides = next_overrides;
+            var old_map = self.input_map;
+            self.input_map = next_map;
+            self.actions.setMap(&self.input_map);
+            old_map.deinit(gpa);
+            return outcome;
+        }
+
+        /// Opens and reads `<user data>/bindings.fset`. No user data directory is an ordinary
+        /// answer for a tool or a test: no overrides, and nothing is ever written.
+        fn openBindings(self: *Self, persist: bool) Allocator.Error!void {
+            const gpa = self.gpa;
+            const root = self.os.userDataDirAlloc(gpa) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    log.debug("bindings: no user data directory ({t}); the player's bindings are not kept", .{err});
+                    return;
+                },
+            };
+            defer gpa.free(root);
+            var store = input_bindings.Store.open(gpa, self.os, root, persist) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.RootNotAbsolute => return,
+            };
+            errdefer store.deinit(gpa);
+            const read = try store.read(gpa);
+            self.bindings_file.deinit();
+            self.bindings_file = read.contents;
+            self.bindings_problem = read.problem;
+            _ = try input_bindings.toOverrides(gpa, self.bindings_file.entries, &self.input_overrides);
+            self.bindings_store = store;
         }
 
         /// How long the previous frame took, in wall-clock time.
@@ -1858,6 +2100,7 @@ const ContentFixture = struct {
         defer registry.deinit(gpa);
         // The engine's own asset kinds, as `readAll` registers them, so a fixture can name one.
         try asset.schemas.registerAll(gpa, &registry);
+        try input.schemas.registerAll(gpa, &registry);
         var diags: data.Diagnostics = .init(gpa, .default);
         defer diags.deinit(gpa);
 
@@ -1893,6 +2136,7 @@ const ContentFixture = struct {
         defer registry.deinit(gpa);
         // The engine's own asset kinds, as `readAll` registers them, so a fixture can name one.
         try asset.schemas.registerAll(gpa, &registry);
+        try input.schemas.registerAll(gpa, &registry);
         var diags: data.Diagnostics = .init(gpa, .default);
         defer diags.deinit(gpa);
 
@@ -3239,4 +3483,335 @@ test "environment marshalling produces borrowed pairs" {
 
     try testing.expectEqualStrings("/home/tester", engine.os.envVar("HOME").?);
     try testing.expectEqual(@as(?[]const u8, null), engine.os.envVar("PATH"));
+}
+
+// -- actions in the frame (`input.md` §9) -------------------------------------------
+
+const input_source =
+    \\foundry:input_context foundry:context.walk { priority 10 }
+    \\foundry:input_action foundry:action.jump {
+    \\    kind "button"
+    \\    contexts [ foundry:context.walk ]
+    \\    bindings [ { source "key.space" } ]
+    \\}
+    \\foundry:input_action foundry:action.look {
+    \\    kind "delta"
+    \\    contexts [ foundry:context.walk ]
+    \\    bindings [ { source "mouse.motion" } ]
+    \\}
+;
+
+/// `input_source` with an action added, one removed and the walk's priority moved, as an
+/// edit would.
+const input_source_edited =
+    \\foundry:input_context foundry:context.walk { priority 5 }
+    \\foundry:input_action foundry:action.jump {
+    \\    kind "button"
+    \\    contexts [ foundry:context.walk ]
+    \\    bindings [ { source "key.space" } ]
+    \\}
+    \\foundry:input_action foundry:action.crouch {
+    \\    kind "button"
+    \\    contexts [ foundry:context.walk ]
+    \\    bindings [ { source "key.c" } ]
+    \\}
+;
+
+const walk_ctx = core.ContentId.fromString("foundry:context.walk");
+const jump_action = core.ContentId.fromString("foundry:action.jump");
+const look_action = core.ContentId.fromString("foundry:action.look");
+
+fn inputEngine(fx: *const ContentFixture, extra: Config) !*TestEngine {
+    var c = extra;
+    c.content_dir = fx.dir;
+    c.content = &.{.{ .file = "core.fpk", .root = "." }};
+    const engine = try testEngine(c);
+    errdefer engine.deinit();
+    try engine.actions.enable(walk_ctx);
+    return engine;
+}
+
+test "a headless engine's steps see the tick view: a press reaches exactly one step" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    const engine = try inputEngine(&fx, .{});
+    defer engine.deinit();
+
+    // Three steps in one frame: the first sees the press, the rest see it held.
+    engine.platform.setClockStep(.fromMillis(50));
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).pressed);
+    var steps: u32 = 0;
+    var presses: u32 = 0;
+    var raw_presses: u32 = 0;
+    while (engine.nextStep()) |step| {
+        steps += 1;
+        const s = step.actions.state(jump_action);
+        try testing.expect(s.held);
+        if (s.pressed) presses += 1;
+        if (step.tick_input.wasPressed(.space)) raw_presses += 1;
+        // `Step.input` is the frame's snapshot, unchanged: every step sees the edge there.
+        try testing.expect(step.input.wasPressed(.space));
+    }
+    engine.endFrame();
+    try testing.expect(steps >= 2);
+    try testing.expectEqual(@as(u32, 1), presses);
+    try testing.expectEqual(@as(u32, 1), raw_presses);
+
+    // Frames with no step: a release and motion in each, summed into the next step.
+    engine.platform.setClockStep(.fromMillis(1));
+    try engine.platform.pushEvent(.{ .key_up = .{ .key = .space } });
+    var seen = false;
+    var motion: f32 = 0;
+    for (0..40) |i| {
+        if (i < 4) {
+            try engine.platform.pushEvent(.{ .mouse_moved = .{ .delta = .{ .x = 2, .y = 0 } } });
+            motion += 2;
+        }
+        engine.beginFrame();
+        while (engine.nextStep()) |step| {
+            const s = step.actions.state(jump_action);
+            if (!seen) {
+                try testing.expect(s.released and !s.held and !s.pressed);
+                try testing.expect(step.tick_input.wasReleased(.space));
+                try testing.expectEqual(motion, step.actions.state(look_action).value.x);
+                try testing.expectEqual(motion, step.tick_input.mouse.motion.x);
+                seen = true;
+            } else {
+                try testing.expect(!s.released);
+                try testing.expect(!step.actions.state(look_action).held);
+            }
+        }
+        engine.endFrame();
+    }
+    try testing.expect(seen);
+}
+
+test "a reload keeps held state: no press invented, no release lost" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    const engine = try inputEngine(&fx, .{});
+    defer engine.deinit();
+
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).pressed);
+    engine.endFrame();
+
+    try fx.rewrite(input_source_edited);
+    engine.reloadContent();
+    try testing.expectEqual(@as(usize, 2), engine.inputMap().actions.len);
+    try testing.expect(engine.actions.isEnabled(walk_ctx));
+    // Until the next evaluation, the frame is the old one matched by ID.
+    try testing.expect(engine.actionFrame().state(jump_action).held);
+
+    engine.beginFrame();
+    const after = engine.actionFrame().state(jump_action);
+    try testing.expect(after.held and !after.pressed and !after.released);
+    try testing.expect(!engine.actionFrame().state(core.ContentId.fromString("foundry:action.crouch")).held);
+    engine.endFrame();
+
+    try engine.platform.pushEvent(.{ .key_up = .{ .key = .space } });
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).released);
+    engine.endFrame();
+}
+
+test "an engine with no actions steps with an empty frame, and one with input off reads none" {
+    const plain = try testEngine(.{});
+    defer plain.deinit();
+    plain.platform.setClockStep(.fromMillis(20));
+    plain.beginFrame();
+    const step = plain.nextStep().?;
+    try testing.expectEqual(@as(u16, 0), step.actions.count);
+    plain.endFrame();
+
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    const off = try inputEngine(&fx, .{ .input = .{ .enabled = false } });
+    defer off.deinit();
+    try testing.expectEqual(@as(usize, 0), off.inputMap().actions.len);
+    try off.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    off.platform.setClockStep(.fromMillis(20));
+    off.beginFrame();
+    const s = off.nextStep().?;
+    try testing.expectEqual(@as(u16, 0), s.actions.count);
+    // The raw tick view is there either way.
+    try testing.expect(s.tick_input.wasPressed(.space));
+    off.endFrame();
+}
+
+test "the blocking a game sets is applied from the next evaluation" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    const engine = try inputEngine(&fx, .{});
+    defer engine.deinit();
+
+    engine.setInputBlocked(.{ .keyboard = true });
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    engine.beginFrame();
+    try testing.expect(!engine.actionFrame().state(jump_action).held);
+    try testing.expect(engine.input.isHeld(.space));
+    engine.endFrame();
+
+    engine.setInputBlocked(.{});
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).held);
+    engine.endFrame();
+}
+
+test "the configured motion mode reaches the platform" {
+    const raw = try testEngine(.{});
+    defer raw.deinit();
+    try testing.expectEqual(platform.MotionMode.raw, raw.platform.motion_mode);
+    const system = try testEngine(.{ .captured_motion = .system });
+    defer system.deinit();
+    try testing.expectEqual(platform.MotionMode.system, system.platform.motion_mode);
+}
+
+test "an output added or lost reaches the game through nextEvent" {
+    const engine = try testEngine(.{});
+    defer engine.deinit();
+    const Silence = struct {
+        fn fill(_: ?*anyopaque, out: []f32) void {
+            @memset(out, 0);
+        }
+    };
+    const phones = (try engine.platform.addOutput("Headphones", false)).?;
+    const device = try engine.platform.openAudio(.{ .callback = Silence.fill, .output = phones });
+    defer engine.platform.closeAudio(device);
+
+    engine.beginFrame();
+    var changed: u32 = 0;
+    while (engine.nextEvent()) |ev| {
+        if (ev == .audio_outputs_changed) changed += 1;
+    }
+    try testing.expectEqual(@as(u32, 1), changed);
+    engine.endFrame();
+
+    try engine.platform.removeOutput(phones);
+    engine.beginFrame();
+    const lost = engine.nextEvent().?;
+    try testing.expect(lost == .audio_output_lost);
+    try testing.expect(lost.audio_output_lost.device.eql(device));
+    try testing.expect(engine.nextEvent().? == .audio_outputs_changed);
+    try testing.expect(engine.nextEvent() == null);
+    engine.endFrame();
+}
+
+/// A user data directory of a test's own, for the bindings file.
+const UserData = struct {
+    tmp: testing.TmpDir,
+    buf: [std.Io.Dir.max_path_bytes]u8 = undefined,
+    env: [3]platform.os.EnvVar = undefined,
+
+    fn init(self: *UserData) !void {
+        self.tmp = testing.tmpDir(.{});
+        const home = self.buf[0..try self.tmp.dir.realPath(testing.io, &self.buf)];
+        self.env = .{
+            .{ .name = "HOME", .value = home },
+            .{ .name = "XDG_DATA_HOME", .value = home },
+            .{ .name = "APPDATA", .value = home },
+        };
+    }
+
+    fn deinit(self: *UserData) void {
+        self.tmp.cleanup();
+    }
+};
+
+test "saveBindings writes the file and applies it, and the next engine starts with it" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    var user: UserData = .{ .tmp = undefined };
+    try user.init();
+    defer user.deinit();
+
+    const engine = try inputEngine(&fx, .{ .env = &user.env, .app_name = "bindings-test" });
+    defer engine.deinit();
+    try testing.expectEqual(@as(?input_bindings.Problem, null), engine.bindingsProblem());
+    try testing.expectEqual(@as(usize, 0), engine.bindings().slice().len);
+
+    // Jump moves to J while Space is held: held stays held through the change.
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    engine.beginFrame();
+    engine.endFrame();
+    var mine: input.Overrides = .empty;
+    defer mine.deinit(testing.allocator);
+    try mine.set(testing.allocator, jump_action, &.{.{ .source = .{ .key = .j } }});
+    try testing.expectEqual(BindingsSaved.written, try engine.saveBindings(&mine));
+    try testing.expect(engine.inputMap().action(jump_action).?.bindings()[0].source.eql(.{ .key = .j }));
+    try testing.expect(engine.defaultInputMap().action(jump_action).?.bindings()[0].source.eql(.{ .key = .space }));
+    try testing.expect(engine.actionFrame().state(jump_action).held);
+    // The next frame's evaluation uses it: Space no longer holds Jump, and J presses it.
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).released);
+    engine.endFrame();
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .j } });
+    engine.beginFrame();
+    try testing.expect(engine.actionFrame().state(jump_action).pressed);
+    engine.endFrame();
+
+    // A second engine on the same user data starts with it.
+    const next = try inputEngine(&fx, .{ .env = &user.env, .app_name = "bindings-test" });
+    defer next.deinit();
+    try testing.expectEqual(@as(usize, 1), next.bindings().slice().len);
+    try testing.expect(next.inputMap().action(jump_action).?.bindings()[0].source.eql(.{ .key = .j }));
+
+    // An override nobody can spell is refused, and nothing changes.
+    var odd: input.Overrides = .empty;
+    defer odd.deinit(testing.allocator);
+    try odd.set(testing.allocator, core.ContentId.fromString("nowhere:action.x"), &.{});
+    try testing.expectError(error.UnknownAction, engine.saveBindings(&odd));
+    try testing.expectEqual(@as(usize, 1), engine.bindings().slice().len);
+
+    // Reset: an empty set removes the override, and the defaults stand again.
+    const none: input.Overrides = .empty;
+    try testing.expectEqual(BindingsSaved.written, try engine.saveBindings(&none));
+    try testing.expect(engine.inputMap().action(jump_action).?.bindings()[0].source.eql(.{ .key = .space }));
+    try testing.expectEqual(@as(usize, 0), engine.bindings().slice().len);
+}
+
+test "a read-only run applies its bindings and leaves the file, which keeps actions the content lacks" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    var user: UserData = .{ .tmp = undefined };
+    try user.init();
+    defer user.deinit();
+
+    // A mod's action the content does not have, written by an earlier run.
+    {
+        const os = try platform.Os.init(testing.allocator, .{ .env = &user.env, .app_name = "bindings-test" });
+        defer os.deinit();
+        const root = try os.userDataDirAlloc(testing.allocator);
+        defer testing.allocator.free(root);
+        try os.createDirPath(root);
+        var store = try input_bindings.Store.open(testing.allocator, os, root, true);
+        defer store.deinit(testing.allocator);
+        var written = try store.write(testing.allocator, &.{.{ .action = "mod:action.cast", .bindings = &.{.{ .source = "key.q" }} }}, &.{});
+        written.deinit();
+    }
+
+    const quiet = try inputEngine(&fx, .{ .env = &user.env, .app_name = "bindings-test", .input = .{ .persist_bindings = false } });
+    defer quiet.deinit();
+    try testing.expectEqual(@as(usize, 1), quiet.bindings().slice().len);
+    var mine: input.Overrides = .empty;
+    defer mine.deinit(testing.allocator);
+    try mine.set(testing.allocator, jump_action, &.{.{ .source = .{ .key = .j } }});
+    try testing.expectEqual(BindingsSaved.read_only, try quiet.saveBindings(&mine));
+    try testing.expect(quiet.inputMap().action(jump_action).?.bindings()[0].source.eql(.{ .key = .j }));
+    // The mod's override was not mentioned, and that is not a reset.
+    try testing.expectEqual(@as(usize, 2), quiet.bindings().slice().len);
+
+    // The file is as it was: a new engine sees the mod's override alone.
+    const loud = try inputEngine(&fx, .{ .env = &user.env, .app_name = "bindings-test" });
+    defer loud.deinit();
+    try testing.expectEqual(@as(usize, 1), loud.bindings().slice().len);
+    try testing.expectEqual(BindingsSaved.written, try loud.saveBindings(&mine));
+    // Written without mentioning it, the mod's action is kept on disk.
+    const again = try inputEngine(&fx, .{ .env = &user.env, .app_name = "bindings-test" });
+    defer again.deinit();
+    try testing.expectEqual(@as(usize, 2), again.bindings().slice().len);
+    try testing.expect(again.bindings().get(core.ContentId.fromString("mod:action.cast")) != null);
 }

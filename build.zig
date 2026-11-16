@@ -1612,6 +1612,9 @@ pub fn build(b: *std.Build) void {
         if (std.mem.eql(u8, spec.name, "input")) {
             b.step("input-test", "Run the input action, context and source tests").dependOn(&run.step);
         }
+        if (std.mem.eql(u8, spec.name, "app")) {
+            b.step("app-test", "Run the engine loop, settings, profiles and bindings file tests").dependOn(&run.step);
+        }
     }
 
     // The importer consumes asset values, not anim. This separate cross-layer proof joins

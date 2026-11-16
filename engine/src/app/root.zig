@@ -22,6 +22,10 @@ pub const log_sink = @import("log_sink.zig");
 /// Local evidence a session leaves behind: a bounded log, and whether the last one closed
 /// cleanly. Opt-in, and not crash recovery (`distribution.md` §10).
 pub const diagnostics = @import("diagnostics.zig");
+/// A player's bindings on disk, `<user data>/bindings.fset` (ADR-0088): overrides keyed by
+/// action, merged by action, never content. `Engine` reads it after content loads and writes
+/// it through `saveBindings`.
+pub const input_bindings = @import("input_bindings.zig");
 /// What is installed, what the player chose and in what order, and what that order
 /// overrides (`mod-management.md` §4, ADR-0040). Opt-in, like settings: a host that loads
 /// only its own packages constructs none of it.
@@ -44,6 +48,8 @@ pub const Config = engine.Config;
 pub const ContentPackage = engine.ContentPackage;
 pub const InitError = engine.InitError;
 pub const Step = engine.Step;
+pub const InputConfig = engine.InputConfig;
+pub const BindingsSaved = engine.BindingsSaved;
 pub const MemoryHandle = engine.MemoryHandle;
 pub const MemoryReport = engine.MemoryReport;
 /// The names the engine gives its own timing spans (`debug-overlay.md` §4.3).
@@ -85,6 +91,7 @@ test {
     _ = engine;
     _ = log_sink;
     _ = diagnostics;
+    _ = input_bindings;
     _ = mods;
     _ = profiles;
     _ = settings;
