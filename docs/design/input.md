@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), Step 8 but for the owner's play, which is owed; Step 9 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), the owner playing Step 8 on 2026-11-16; Step 9 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -2012,3 +2012,5 @@ release imports changed. The counts:
 
 No platform backend, shader, RHI, ABI header or native-window code changed, so no SDL3
 cross-check, Vulkan check or C header compile applies.
+
+**The owner's play (2026-11-16).** The owner played the merged court (749f11c) on the Mac on 2026-11-16, from a relocated ReleaseSafe install with its user data in scratch, and said "All good". The run lasted 13,205 frames with none skipped. It reached each ending (won at tick 7,477, fell, and caught twice), and the night's sky was drawn in 13,204 of the frames. The controls screen rebound one action, `court:action.walk.jump` to the pad's south and Enter, and wrote `bindings.fset`. Music: 0 missed starts, 0 underruns. Not covered by this run: the log says only one audio output was present, so the headphone move and unplug were not tried, and the court was not relaunched to check the saved rebinding after a restart. The `input` budget in §13 is still the owner's to decide: the span includes the OS event pump.

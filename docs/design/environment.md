@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 8 are done, the owner's play of Step 8 still owed; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 8 are done (the owner played Step 8, 2026-11-16); each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1363,7 +1363,6 @@ lists its own light fields and names no environment.
   skip), `court-test` 88/90 (two skips), with its digests.
 - No shader, Vulkan or ABI code changed.
 
-**Owed:** the owner's play of the court under its sky. It's taken together with M45 Step 8's
-play, on the merged tree.
+**The owner's play (2026-11-16).** The owner played the merged court (749f11c) on the Mac on 2026-11-16, from a relocated ReleaseSafe install with its user data in scratch, and said "All good". The run lasted 13,205 frames with none skipped. It reached each ending (won at tick 7,477, fell, and caught twice), and the night's sky was drawn in 13,204 of the frames. The controls screen rebound one action, `court:action.walk.jump` to the pad's south and Enter, and wrote `bindings.fset`. Music: 0 missed starts, 0 underruns. Step 8's exit holds.
 
 Next is Step 9: Windows/Vulkan on the owner's PC.
