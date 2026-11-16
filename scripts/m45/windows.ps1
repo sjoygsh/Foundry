@@ -28,6 +28,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Through `-File`, a list arrives as one comma-joined string, which would match no run at all.
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $Repo = (Resolve-Path $Repo).Path
 $Zig = (Resolve-Path $Zig).Path
 $Output = [IO.Path]::GetFullPath($Output)
@@ -127,11 +129,14 @@ $env:DISABLE_VK_LAYER_VALVE_steam_fossilize_1 = '1'
 Remove-Item Env:FOUNDRY_MOTION_MINUTES, Env:SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS -ErrorAction SilentlyContinue
 if ($Mode -eq 'build') {
     # The Vulkan test binaries require validation, synchronization included, themselves (AGENTS.md).
-    Run-Child 'null-debug' $Zig @('build','test','-Dplatform=null','-Drhi=null','-j2','--summary','line') $Repo 120
-    Run-Child 'vulkan-debug' $Zig @('build','test','vulkan-test','-Drhi=vulkan','-j2','--summary','line') $Repo 120
+    # `-Only` names a subset, as for the other modes: the suites may be another run's evidence on
+    # the same tree (the pair's partner ran them on this commit's parent).
+    if (Selected 'null-debug') { Run-Child 'null-debug' $Zig @('build','test','-Dplatform=null','-Drhi=null','-j2','--summary','line') $Repo 120 }
+    if (Selected 'vulkan-debug') { Run-Child 'vulkan-debug' $Zig @('build','test','vulkan-test','-Drhi=vulkan','-j2','--summary','line') $Repo 120 }
     # The pins on x86_64, optimized as a release is (§13): the court's four digests, the input
     # sequence's digest, the bindings file and the table's input calls.
-    Run-Child 'release' $Zig @('build','court-test','input-test','app-test','abi-test','-Drhi=vulkan','-Doptimize=ReleaseSafe','-j2','--summary','line') $Repo 120
+    if (Selected 'release') { Run-Child 'release' $Zig @('build','court-test','input-test','app-test','abi-test','-Drhi=vulkan','-Doptimize=ReleaseSafe','-j2','--summary','line') $Repo 120 }
+    if (-not (Selected 'install')) { return }
     Run-Child 'install' $Zig @('build','install','-Drhi=vulkan','-Doptimize=ReleaseSafe','-j2','--summary','line','--prefix',(Join-Path $Output 'stage')) $Repo 120
     $relocated = Join-Path $Output 'relocated'
     if (Test-Path $relocated) { throw 'Stale relocated install' }
