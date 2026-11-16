@@ -264,7 +264,7 @@ test "the open gate's mesh arrives as an input: each run replays, and restart go
 }
 
 test "the frame's generation waits for a tick: a frame with none keeps it for the next" {
-    var pending: walk.Pending = .{};
+    var pending: walk.Owed = .{};
     pending.feed(.{ .navigation = 2 });
     pending.feed(.{});
     try testing.expectEqual(@as(u32, 2), pending.take().navigation);

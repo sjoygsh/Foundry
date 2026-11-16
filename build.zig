@@ -693,7 +693,8 @@ pub fn build(b: *std.Build) void {
     // M26: the playable 3D consumer, with no RHI or ABI import (playable3d.md §12).
     const court_mod = b.createModule(.{ .root_source_file = b.path("samples/court/main.zig"), .target = target, .optimize = optimize });
     // `nav` since M32 Step 7 (`navigation.md` §9.2): the warden's navigation mesh.
-    for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
+    // `input` since M45 Step 8, for the action frame's type (`input.md` §11).
+    for ([_][]const u8{ "app", "asset", "audio", "anim", "core", "data", "debug", "input", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| court_mod.addImport(name, modules.get(name).?);
     court_mod.addImport("platform", platform_module);
     court_mod.addImport("build_options", build_options_module);
     const court = b.addExecutable(.{ .name = "court", .root_module = court_mod });
@@ -881,6 +882,15 @@ pub fn build(b: *std.Build) void {
                     .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
                 });
                 court_test_options.addOptionPath("nocturne_package", nocturne.fpk);
+                // M45's content-only controls mod (`input.md` §11): walking on the right hand.
+                const southpaw = release.compilePackage(b, fpack, .{
+                    .dir = "samples/court/testdata/mods/southpaw",
+                    .stem = "southpaw",
+                    .dependencies = &.{ core_compiled.?.fpk, compiled.fpk },
+                });
+                court_test_options.addOptionPath("southpaw_package", southpaw.fpk);
+                // Optional in the installation, never automatically selected, as nocturne is.
+                b.getInstallStep().dependOn(&b.addInstallFileWithDir(southpaw.fpk, .prefix, "content/southpaw.fpk").step);
                 court_test_options.addOptionPath("nocturne_sources", b.path("samples/court/testdata/mods/nocturne"));
                 court_test_options.addOptionPath("sources", b.path(pkg.dir));
                 // Optional in the installation, never automatically selected.
@@ -1101,8 +1111,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         const release_imports: []const []const u8 = if (dist_app == .court) &.{
-            "app", "asset",     "audio",    "anim",     "core",  "data", "debug", "mod",
-            "nav", "physics3d", "render2d", "render3d", "scene", "ui",
+            "app", "asset", "audio",     "anim",     "core",     "data",  "debug", "input",
+            "mod", "nav",   "physics3d", "render2d", "render3d", "scene", "ui",
         } else &.{
             "app",      "asset", "audio", "core", "data", "debug", "mod", "physics2d",
             "render2d", "rhi",   "scene", "ui",

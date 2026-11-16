@@ -11,6 +11,8 @@ pub const Costs = struct {
     character: [capacity]i64 = undefined,
     skin: [capacity]i64 = undefined,
     audio: [capacity]i64 = undefined,
+    /// The engine's `input` span: events, the snapshot and the actions (M45, `input.md` §13).
+    input: [capacity]i64 = undefined,
     len: usize = 0,
     character_len: usize = 0,
     skin_len: usize = 0,
@@ -27,6 +29,7 @@ pub const Costs = struct {
         var character: i64 = 0;
         var skin: i64 = 0;
         var audio: i64 = 0;
+        var input: i64 = 0;
         var moved = false;
         var skinned = false;
         var mixed = false;
@@ -46,12 +49,14 @@ pub const Costs = struct {
                 skin += span.durationNs();
                 skinned = true;
             }
+            if (std.mem.eql(u8, name, "input")) input += span.durationNs();
             if (std.mem.eql(u8, name, "audio")) {
                 audio += span.durationNs();
                 mixed = true;
             }
         }
         self.frame[self.len] = frame.total_ns - presenting;
+        self.input[self.len] = input;
         self.len += 1;
         if (moved) {
             self.character[self.character_len] = character;
@@ -73,6 +78,7 @@ pub const Costs = struct {
             .{ .name = "character (whole game tick and sound dispatch upper bound)", .values = self.character[0..self.character_len], .budget = 0.25 },
             .{ .name = "render.skin (one warden)", .values = self.skin[0..self.skin_len], .budget = 0.25 },
             .{ .name = "audio (placing, Mixer.update and Music.update; music.md criterion 4, mixing.md criterion 6)", .values = self.audio[0..self.audio_len], .budget = 0.10 },
+            .{ .name = "input (events, the snapshot and the court's actions; input.md \u{a7}13)", .values = self.input[0..self.len], .budget = 0.05 },
         }) |metric| {
             const summary = core.profile.summarise(metric.values, &self.scratch);
             log.info("cost {s}: {d} frames, median {d:.4}ms p95 {d:.4}ms; budget {d:.2}ms", .{
@@ -102,6 +108,8 @@ test "court: costs collect all frames and sum tick spans without exceeding their
     recorder.close(.{ .ns = 13 });
     recorder.open("render.acquire", .{ .ns = 13 });
     recorder.close(.{ .ns = 16 });
+    recorder.open("input", .{ .ns = 16 });
+    recorder.close(.{ .ns = 17 });
     recorder.open("render.present", .{ .ns = 17 });
     recorder.close(.{ .ns = 19 });
     recorder.endFrame(.{ .ns = 20 });
@@ -116,4 +124,5 @@ test "court: costs collect all frames and sum tick spans without exceeding their
     try t.expectEqual(@as(i64, 7), costs.character[0]);
     try t.expectEqual(@as(i64, 2), costs.skin[0]);
     try t.expectEqual(@as(i64, 1), costs.audio[0]);
+    try t.expectEqual(@as(i64, 1), costs.input[0]);
 }

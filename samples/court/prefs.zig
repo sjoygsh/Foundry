@@ -1,6 +1,6 @@
 //! The player's preferences: `settings.fset` under `foundry-court` (playable3d.md §8,
 //! ADR-0031). Window size, the master, music and effects volumes, look sensitivity and
-//! invert, each bounded and validated on read. Content supplies the defaults; a missing, damaged or newer file
+//! invert, and the audio output by name (M45), each bounded and validated on read. Content supplies the defaults; a missing, damaged or newer file
 //! leaves them standing. Only what the player chose is written back.
 const std = @import("std");
 const app = @import("app");
@@ -21,12 +21,18 @@ pub const Preferences = struct {
     effects: settings.Resolved(f32) = .{ .value = fallback_volume, .origin = .fallback },
     sensitivity: settings.Resolved(f32) = .{ .value = fallback_sensitivity, .origin = .fallback },
     invert: settings.Resolved(bool) = .{ .value = false, .origin = .fallback },
+    /// The chosen audio output's name, or empty for the system default (`outputs.zig`). Only
+    /// ever the player's, so it has no content layer: the file's, or nothing.
+    output_buffer: [max_output]u8 = undefined,
+    output_len: usize = 0,
+    output_chosen: bool = false,
 
     /// The file's own schema. Not content: it carries no manifest and is never merged.
-    /// Version 2 (M31) adds the music and effects volumes after the first five (I8).
+    /// Version 2 (M31) adds the music and effects volumes after the first five, and version 3
+    /// (M45) the audio output after those (I8).
     pub const schema: data.Schema = .{
         .id = data.SchemaId.parse("court:preferences") catch unreachable,
-        .version = 2,
+        .version = 3,
         .fields = &.{
             .{ .name = "window_width", .type = .u32, .presence = .optional },
             .{ .name = "window_height", .type = .u32, .presence = .optional },
@@ -35,7 +41,17 @@ pub const Preferences = struct {
             .{ .name = "invert_look", .type = .bool, .presence = .optional },
             .{ .name = "music_volume", .type = .f32, .presence = .optional },
             .{ .name = "effects_volume", .type = .f32, .presence = .optional },
+            .{ .name = "audio_output", .type = .string, .presence = .optional },
         },
+    };
+
+    pub const max_output = @import("outputs.zig").max_name;
+
+    /// Version 2, as M31 to M44 wrote it: the first seven fields.
+    pub const schema_v2: data.Schema = .{
+        .id = schema.id,
+        .version = 2,
+        .fields = schema.fields[0..7],
     };
 
     /// Version 1, as M26 to M30 wrote it: the first five fields.
@@ -51,7 +67,15 @@ pub const Preferences = struct {
         @memcpy(new[0..5], old[0..5]);
     }
 
-    pub const migrations = [_]settings.Migration{.{ .from = schema_v1, .convert = fromV1 }};
+    /// A version 2 file keeps its seven, and follows the system default.
+    fn fromV2(_: std.mem.Allocator, old: []const ?data.Value, new: []?data.Value) std.mem.Allocator.Error!void {
+        @memcpy(new[0..7], old[0..7]);
+    }
+
+    pub const migrations = [_]settings.Migration{
+        .{ .from = schema_v1, .convert = fromV1 },
+        .{ .from = schema_v2, .convert = fromV2 },
+    };
 
     /// The package's defaults, in an ordinary record a mod can override.
     pub const record_id = "court:config.main";
@@ -116,6 +140,34 @@ pub const Preferences = struct {
         if (!self.sensitivity.isUser())
             self.sensitivity = settings.resolveFloat(f32, "look_sensitivity", fallback_sensitivity, menus.Options.sensitivity_min, menus.Options.sensitivity_max, &layers);
         if (!self.invert.isUser()) self.invert = resolveBool("invert_look", false, &layers);
+        if (!self.output_chosen) self.readOutput(self.file.layer(schema));
+    }
+
+    fn readOutput(self: *Preferences, layer: ?settings.Layer) void {
+        self.output_len = 0;
+        const l = layer orelse return;
+        const index = l.schema.fieldIndex("audio_output") orelse return;
+        const value = (l.fields.stringAt(index) catch null) orelse return;
+        // A name this build could not have written is no output's: the default stands.
+        if (value.len > max_output or !std.unicode.utf8ValidateSlice(value)) return;
+        @memcpy(self.output_buffer[0..value.len], value);
+        self.output_len = value.len;
+    }
+
+    /// The chosen output's name, or empty for the system default.
+    pub fn output(self: *const Preferences) []const u8 {
+        return self.output_buffer[0..self.output_len];
+    }
+
+    /// The player chose an output on the Output row. A lost output is not a choice: the name
+    /// stays until the player picks another.
+    pub fn noteOutput(self: *Preferences, name: []const u8) void {
+        if (self.output_chosen and std.mem.eql(u8, name, self.output())) return;
+        const n = @min(name.len, max_output);
+        @memcpy(self.output_buffer[0..n], name[0..n]);
+        self.output_len = n;
+        self.output_chosen = true;
+        self.file.touch();
     }
 
     /// The values the options screen edits.
@@ -163,7 +215,7 @@ pub const Preferences = struct {
     }
 
     /// The player's own choices and nothing else.
-    pub fn values(self: *const Preferences) [7]?data.Value {
+    pub fn values(self: *const Preferences) [8]?data.Value {
         return .{
             if (self.width.isUser()) data.Value{ .int = self.width.value } else null,
             if (self.height.isUser()) data.Value{ .int = self.height.value } else null,
@@ -172,6 +224,7 @@ pub const Preferences = struct {
             if (self.invert.isUser()) data.Value{ .bool = self.invert.value } else null,
             if (self.music.isUser()) data.Value{ .float = self.music.value } else null,
             if (self.effects.isUser()) data.Value{ .float = self.effects.value } else null,
+            if (self.output_chosen) data.Value{ .string = self.output() } else null,
         };
     }
 

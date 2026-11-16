@@ -36,6 +36,13 @@ const music_mod = @import("music.zig");
 const Preferences = @import("prefs.zig").Preferences;
 const Text = @import("text.zig").Text;
 const Settings = @import("settings.zig").Settings;
+// M45 (`input.md` §11): the court on actions, Controls, prompts, rumble and Output.
+const input = @import("input");
+const controls = @import("controls.zig");
+const rebinding = @import("rebinding.zig");
+const Outputs = @import("outputs.zig").Outputs;
+const ControlsText = @import("text.zig").ControlsText;
+const SourceNames = @import("text.zig").SourceNames;
 const build_options = @import("build_options");
 const packages_mod = @import("packages.zig");
 const Costs = @import("timing.zig").Costs;
@@ -250,18 +257,6 @@ fn panelStyle(font: app.UiFont) ui.Style {
     };
 }
 
-/// A person's menu keys: the arrows, Enter and Escape, as edges.
-fn menuKeys(input: platform.InputSnapshot) menus_mod.Keys {
-    return .{
-        .up = input.wasPressed(.up),
-        .down = input.wasPressed(.down),
-        .left = input.wasPressed(.left),
-        .right = input.wasPressed(.right),
-        .accept = input.wasPressed(.enter) or input.wasPressed(.kp_enter),
-        .back = input.wasPressed(.escape),
-    };
-}
-
 pub fn main(init: std.process.Init) !void {
     var args = try init.minimal.args.iterateAllocator(init.gpa);
     defer args.deinit();
@@ -338,6 +333,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         .window = .{ .title = "court", .logical_width = Preferences.fallback_width, .logical_height = Preferences.fallback_height, .surface = app.window_surface },
         .content_dir = content_dir,
         .content = packages,
+        // A run nobody is watching leaves the player's bindings as it found them.
+        .input = .{ .persist_bindings = frame_budget == null and play_mode == null },
     });
     defer engine.deinit();
     const record = engine.store.lookup(core.ContentId.fromString("court:config.main")) orelse return error.MissingConfig;
@@ -383,6 +380,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         prefs.volume.value, prefs.volume.origin, prefs.music.value, prefs.music.origin, prefs.effects.value, prefs.effects.origin,
     });
     // Torn down before the mixer, whose voices it fades.
+    // The output the player chose, by name, found again among this session's outputs.
+    var outputs: Outputs = .{};
+    outputs.setWanted(prefs.output());
+    outputs.refresh(engine.platform, mixer);
     var soundtrack = music_mod.Soundtrack.init(gpa, mixer, &engine.assets, music_mod.MusicSet.find(&engine.store), engine.step_delta.toSecondsF32(), music_log);
     defer soundtrack.deinit();
 
@@ -426,6 +427,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     }
     // Borrowed from the store, so read again at the content seam below: a reload frees it.
     var text = Text.read(&engine.store);
+    var controls_text = ControlsText.read(&engine.store);
+    var source_names = SourceNames.read(&engine.store);
+    const rumble = controls.Rumble.read(&engine.store);
     const goal_ticks: u64 = @intFromFloat(@round(settings.goal_seconds / engine.step_delta.toSecondsF32()));
 
     // The proof replays every admitted tick against a fresh simulation in this binary.
@@ -446,7 +450,25 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     var script_driver = if (play_mode) |m| scripted.ScriptDriver.init(m) else null;
     var menus: menus_mod.Menus = .{};
     var chosen = prefs.options();
-    var pending: walk_mod.Pending = .{};
+    var owed: walk_mod.Owed = .{};
+    var guard: controls.Guard = .{};
+    var last_device: controls.LastDevice = .{};
+    var bindings_screen: rebinding.Controls = .{};
+    const table = try gpa.create(rebinding.Table);
+    defer gpa.destroy(table);
+    table.* = .{};
+    // A script's hands reach its ticks through a tick view of their own, as a person's
+    // actions reach theirs through the engine's (`controls.handsFrame`).
+    const hands = try gpa.create(input.TickView);
+    defer gpa.destroy(hands);
+    hands.* = .empty;
+    _ = controls.syncContexts(&engine.actions, false);
+    // `FOUNDRY_COURT_PAD=xbox|playstation`: a virtual pad for runs nobody plays (`pad.zig`).
+    const virtual_pad = try gpa.create(@import("pad.zig").Pad);
+    defer gpa.destroy(virtual_pad);
+    virtual_pad.* = .fromEnv(engine);
+    virtual_pad.attach(engine);
+    defer virtual_pad.deinit(engine);
     var nav_report: nav.Report = .{};
     var quit_by_menu = false;
     var captured_for: ?game_mod.Phase = null;
@@ -470,6 +492,8 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         if (engine.contentGeneration() != content_generation) {
             content_generation = engine.contentGeneration();
             text = Text.read(&engine.store);
+            controls_text = ControlsText.read(&engine.store);
+            source_names = SourceNames.read(&engine.store);
             screens.resolveTheme(engine);
             game.contentChanged(&engine.assets) catch |err| log.warn("the warden's rig could not follow a content change ({t})", .{err});
             if (replay) |*fresh| fresh.contentChanged(&engine.assets) catch |err| log.warn("the replay's rig could not follow a content change ({t})", .{err});
@@ -486,6 +510,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
                 lost_focus = true;
                 log.info("the window lost focus at tick {d}", .{engine.stepper.tick});
             },
+            // The list changed: a chosen output that came back is followed again.
+            .audio_outputs_changed => outputs.refresh(engine.platform, mixer),
+            .audio_output_lost => log.info("audio: the chosen output went away; following the system default", .{}),
             else => {},
         };
 
@@ -494,20 +521,30 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         // 1. What the hands did: a person's devices, or the script's.
         // Play waits for the first mesh (`agents.md` §9), and so do a script's hands.
+        // A person's are the frame's actions (`input.md` §11); the walk reads its own in each tick.
+        const actions_now = engine.actionFrame();
+        guard.update(actions_now);
+        last_device.note(&engine.input);
         var frame: scripted.Frame = if (script_driver) |*d|
             (if (navigation.ready) d.next(&game) else scripted.Frame{})
         else
-            .{ .intent = walk_mod.inputIntent(engine.input, false), .keys = menuKeys(engine.input) };
-        if (script_driver == null) {
-            // Sensitivity and invert are the player's (§8); the arrows stay as they are.
-            frame.intent.look_dx *= chosen.sensitivity;
-            frame.intent.look_dy *= if (chosen.invert) -chosen.sensitivity else chosen.sensitivity;
-            if (chosen.invert) frame.intent.pitch = -frame.intent.pitch;
+            .{ .keys = controls.menuKeys(actions_now, &guard) };
+        if (script_driver != null) {
+            const pressed = controls.handsFrame(engine.inputMap(), frame.intent);
+            hands.feed(&pressed, &engine.input);
         }
 
         // 2. The screen, described from last frame's menu state, and what the pointer did.
         const motion = engine.input.mouse.motion;
+        var use_buffer: [controls.label_capacity]u8 = undefined;
+        const labels = engine.inputSources().labels;
+        const pad_in_use: ?platform.GamepadState = if (last_device.pad) |slot| engine.input.gamepads[slot] else null;
+        if (menus.screen(game.phase) == .controls) table.fill(&bindings_screen, engine.inputMap(), &controls_text, labels, source_names, pad_in_use);
         const shown = try screens.describe(engine, .{
+            .controls_text = &controls_text,
+            .use_label = controls.useLabel(&use_buffer, engine.inputMap(), last_device, &engine.input, labels, source_names),
+            .output_name = outputs.shown(mixer),
+            .table = table,
             .phase = game.phase,
             .menus = &menus,
             .text = &text,
@@ -524,7 +561,7 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }, &chosen);
 
         // The debug overlay declares no key of its own; F1 is the court's choice for it.
-        if (engine.input.wasPressed(.f1)) screens.panels_open = !screens.panels_open;
+        if (actions_now.state(walk_mod.actions.panels).pressed) screens.panels_open = !screens.panels_open;
         nav_report = .{};
         if (navigation.mesh()) |mesh| nav_report.readMesh(mesh);
         nav_report.readMeshes(&navigation.meshes, navigation.current);
@@ -536,7 +573,18 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
 
         // 3. The menu's answer. Only a phase change travels to the tick.
         const by_hand = script_driver == null;
-        var command = menus.update(game.phase, frame.keys, if (by_hand) shown.hovered else null, if (by_hand) shown.clicked else null, &chosen);
+        const was_controls = menus.screen(game.phase) == .controls;
+        var command: menus_mod.Command = .none;
+        if (was_controls) {
+            const r = bindings_screen.update(frame.keys, &engine.input, engine.inputMap(), if (by_hand) shown.controls_hovered else null, if (by_hand) shown.controls_clicked else null);
+            if (r.moved) sounds.click();
+            if (r.closed) menus.closeControls();
+            if (r.change) |*change| saveControls(gpa, engine, change);
+        } else command = menus.update(game.phase, frame.keys, if (by_hand) shown.hovered else null, if (by_hand) shown.clicked else null, &chosen);
+        if (!was_controls and menus.screen(game.phase) == .controls) bindings_screen.open();
+        if (command == .output_left or command == .output_right) {
+            if (outputs.step(mixer, if (command == .output_right) 1 else -1)) prefs.noteOutput(outputs.wantedName());
+        }
         if (command == .play and !navigation.ready) command = .none;
         // Losing the window pauses a game in play: the capture is gone, and is asked for
         // again only when the player resumes (§4.2).
@@ -555,11 +603,23 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
         }
         frame.intent.action = command.action();
         frame.intent.navigation = navigation.takeOwed();
-        pending.feed(frame.intent);
+        owed.feed(frame.intent);
 
-        // 4. The ticks.
+        // 4. The ticks. Each reads its own tick view: a press reaches exactly one tick.
         while (engine.nextStep()) |step| {
-            const intent = pending.take();
+            var intent = if (script_driver != null) walk_mod.actionIntent(hands.take().actions, .{}) else person: {
+                // Sensitivity and invert are the player's (§8); the arrows stay as they are.
+                var read = walk_mod.actionIntent(step.actions, .{
+                    .sensitivity = chosen.sensitivity,
+                    .invert = chosen.invert,
+                    .captured = step.tick_input.mouse.captured,
+                });
+                guard.apply(step.actions, &read);
+                break :person read;
+            };
+            const choice = owed.take();
+            intent.action = choice.action;
+            intent.navigation = choice.navigation;
             {
                 // Conservative upper bound: the move plus the other gameplay and audio work.
                 const scope = engine.beginScope("character");
@@ -587,7 +647,10 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
                 @tagName(game.phase), engine.stepper.tick, game.walk.result.feet.x, game.walk.result.feet.y, game.walk.result.feet.z,
             });
             capture(engine, game.phase == .playing);
+            if (game.phase == .caught) rumble.play(engine);
         }
+        // The walk's context in play and the menus' otherwise, from the next frame's evaluation.
+        if (controls.syncContexts(&engine.actions, game.phase == .playing)) guard.arm(engine.inputMap(), &engine.input);
 
         const extent: render3d.Extent2D = if (info) |i| .{ .width = i.pixel_size.width, .height = i.pixel_size.height } else .{ .width = logical.width, .height = logical.height };
         navigation.prepare(&renderer, &content);
@@ -710,6 +773,21 @@ fn measureLevelMesh(gpa: std.mem.Allocator, engine: *app.Engine, walk: *const wa
     });
 }
 
+/// The Controls screen's choice, made the player's bindings: written to `bindings.fset` and in
+/// force from the next frame (ADR-0088).
+fn saveControls(gpa: std.mem.Allocator, engine: *app.Engine, change: *const rebinding.Change) void {
+    var next = rebinding.overridesWith(gpa, engine.bindings(), change) catch |err| {
+        log.warn("controls: the new bindings were refused ({t})", .{err});
+        return;
+    };
+    defer next.deinit(gpa);
+    const saved = engine.saveBindings(&next) catch |err| {
+        log.warn("controls: the bindings were not saved ({t})", .{err});
+        return;
+    };
+    log.info("controls: {d} action(s) rebound, bindings {t}", .{ next.slice().len, saved });
+}
+
 fn capture(engine: *app.Engine, want: bool) void {
     if (engine.input.mouse.captured == want) return;
     engine.setPointerCapture(want) catch |err| {
@@ -801,4 +879,5 @@ test {
     _ = @import("timing.zig");
     _ = @import("mod_tests.zig");
     _ = @import("nav_tests.zig");
+    _ = @import("controls_tests.zig");
 }

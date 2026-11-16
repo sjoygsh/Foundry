@@ -4,7 +4,7 @@ const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
 const physics = @import("physics3d");
-const platform = @import("platform");
+const input = @import("input");
 pub const Settings = @import("walk_settings.zig").Settings;
 const Vec3 = core.math.Vec3;
 const log = core.log.scoped(.court);
@@ -27,46 +27,65 @@ pub const Intent = struct {
     navigation: u32 = 0,
 };
 
-/// Edges and relative motion survive a render frame with no tick, then are consumed once.
-pub const Pending = struct {
+/// What a frame chose that is not input: a menu's command and a mesh's arrival. Each reaches the
+/// first tick after it, once; a frame with no tick keeps it for the next. Input's own edges and
+/// motion are the engine's tick view's (`input.md` §7), which replaced M26's `Pending`.
+pub const Owed = struct {
     intent: Intent = .{},
-    pub fn feed(self: *Pending, input: Intent) void {
-        const previous = self.intent;
-        self.intent = input;
-        self.intent.jump = previous.jump or input.jump;
-        self.intent.use = previous.use or input.use;
-        if (input.action == .none) self.intent.action = previous.action;
-        if (input.navigation == 0) self.intent.navigation = previous.navigation;
-        self.intent.look_dx += previous.look_dx;
-        self.intent.look_dy += previous.look_dy;
+    pub fn feed(self: *Owed, chosen: Intent) void {
+        if (chosen.action != .none) self.intent.action = chosen.action;
+        if (chosen.navigation != 0) self.intent.navigation = chosen.navigation;
     }
-    pub fn take(self: *Pending) Intent {
+    pub fn take(self: *Owed) Intent {
         const out = self.intent;
-        self.intent.jump = false;
-        self.intent.use = false;
-        self.intent.action = .none;
-        self.intent.navigation = 0;
-        self.intent.look_dx = 0;
-        self.intent.look_dy = 0;
+        self.intent = .{};
         return out;
     }
 };
 
-/// Read immutable frame input once. Mouse delta is consumed once per frame, never once per tick.
-pub fn inputIntent(input: platform.InputSnapshot, typing: bool) Intent {
-    if (typing) return .{};
-    const x: f32 = @as(f32, if (input.isHeld(.d)) 1 else 0) - @as(f32, if (input.isHeld(.a)) 1 else 0);
-    const z: f32 = @as(f32, if (input.isHeld(.s)) 1 else 0) - @as(f32, if (input.isHeld(.w)) 1 else 0);
-    var direction: Vec3 = .init(x, 0, z);
-    if (direction.lengthSquared() > 1) direction = direction.normalize();
+/// The court's actions (`content/input.fdt`), by content ID.
+pub const actions = struct {
+    pub const move = core.ContentId.fromString("court:action.walk.move");
+    pub const jump = core.ContentId.fromString("court:action.walk.jump");
+    pub const use = core.ContentId.fromString("court:action.walk.use");
+    pub const look = core.ContentId.fromString("court:action.walk.look");
+    pub const look_stick = core.ContentId.fromString("court:action.walk.look_stick");
+    pub const pause = core.ContentId.fromString("court:action.walk.pause");
+    pub const menu_up = core.ContentId.fromString("court:action.menu.up");
+    pub const menu_down = core.ContentId.fromString("court:action.menu.down");
+    pub const menu_left = core.ContentId.fromString("court:action.menu.left");
+    pub const menu_right = core.ContentId.fromString("court:action.menu.right");
+    pub const menu_accept = core.ContentId.fromString("court:action.menu.accept");
+    pub const menu_back = core.ContentId.fromString("court:action.menu.back");
+    pub const panels = core.ContentId.fromString("court:action.panels");
+    pub const walk_context = core.ContentId.fromString("court:context.walk");
+    pub const menu_context = core.ContentId.fromString("court:context.menu");
+};
+
+/// How a person's look is read: the player's options, and whether the pointer is captured.
+pub const Look = struct {
+    sensitivity: f32 = 1,
+    invert: bool = false,
+    /// An uncaptured pointer's motion is a cursor's, not a look.
+    captured: bool = true,
+};
+
+/// One tick's intent from that tick's actions (`Step.actions`): edges and mouse motion arrive at
+/// the first tick after they happened, levels at every tick. The arrows and the right stick turn
+/// at the walk's turn rate and take no sensitivity, as M26's arrows did.
+pub fn actionIntent(frame: *const input.Frame, look: Look) Intent {
+    const move = frame.state(actions.move).value;
+    const stick = frame.state(actions.look_stick).value;
+    const motion = if (look.captured) frame.state(actions.look).value else core.math.Vec2.zero;
     return .{
-        .direction = direction,
-        .jump = input.wasPressed(.space),
-        .use = input.wasPressed(.e),
-        .look_dx = if (input.mouse.captured) input.mouse.motion.x else 0,
-        .look_dy = if (input.mouse.captured) input.mouse.motion.y else 0,
-        .turn = @as(f32, if (input.isHeld(.left)) 1 else 0) - @as(f32, if (input.isHeld(.right)) 1 else 0),
-        .pitch = @as(f32, if (input.isHeld(.up)) 1 else 0) - @as(f32, if (input.isHeld(.down)) 1 else 0),
+        // +y is forward, which is -Z. The action is already clamped to length 1.
+        .direction = .init(move.x, 0, -move.y),
+        .jump = frame.state(actions.jump).pressed,
+        .use = frame.state(actions.use).pressed,
+        .look_dx = motion.x * look.sensitivity,
+        .look_dy = motion.y * if (look.invert) -look.sensitivity else look.sensitivity,
+        .turn = -stick.x,
+        .pitch = if (look.invert) -stick.y else stick.y,
     };
 }
 
@@ -211,13 +230,10 @@ fn clampPitch(pitch: f32) f32 {
     return std.math.clamp(pitch, -85 * std.math.pi / 180.0, 85 * std.math.pi / 180.0);
 }
 
-test "walk input ignores typing, normalizes diagonals and consumes bounded look" {
-    var input: platform.InputSnapshot = .{};
-    platform.key.setKey(&input.keys_held, .w, true);
-    platform.key.setKey(&input.keys_held, .d, true);
-    platform.key.setKey(&input.keys_held, .up, true);
-    try std.testing.expectEqualDeep(Intent{}, inputIntent(input, true));
-    try std.testing.expectApproxEqAbs(@as(f32, 1), inputIntent(input, false).direction.length(), 1e-6);
-    try std.testing.expectEqual(@as(f32, 1), inputIntent(input, false).pitch);
+test "walk: a frame with no court actions is a player at rest, and pitch is bounded" {
+    // The court's actions over its real package are `controls_tests.zig`'s.
+    const rest = actionIntent(&input.Frame.empty, .{ .sensitivity = 3, .invert = true });
+    try std.testing.expect(!rest.jump and !rest.use and rest.look_dx == 0 and rest.look_dy == 0);
+    try std.testing.expectEqual(@as(f32, 0), rest.direction.length());
     try std.testing.expectApproxEqAbs(@as(f32, 85 * std.math.pi / 180.0), clampPitch(10), 1e-6);
 }

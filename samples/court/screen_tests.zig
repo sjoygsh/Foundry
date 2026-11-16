@@ -95,7 +95,7 @@ test "court: a phase changes only by its own action, and a paused game is paused
 }
 
 test "court: a menu action latched in one frame reaches exactly one tick" {
-    var pending: walk_mod.Pending = .{};
+    var pending: walk_mod.Owed = .{};
     pending.feed(.{ .action = .pause });
     // A frame with no tick, then another frame's input: the press is still there.
     pending.feed(.{ .direction = .right });
@@ -347,8 +347,8 @@ test "court: each screen shows its own words, and the HUD shows the count, the g
     try testing.expect(!ctx.wantsPointer());
     // The goal line in a game's first seconds; the prompt when a beacon is in reach; the
     // gate's line once it opens; and a court with no gate says so.
-    _ = try describeAt(&ctx, .{ .phase = .playing, .menus = &menus, .text = &text, .lit = 3, .beacons = 3, .aimed = true, .show_goal = true, .gate_open = true, .size = size }, &chosen, .{});
-    try testing.expect(shows(&ctx, "3 / 3") and shows(&ctx, text.use_prompt) and shows(&ctx, text.use_key));
+    _ = try describeAt(&ctx, .{ .phase = .playing, .menus = &menus, .text = &text, .lit = 3, .beacons = 3, .aimed = true, .show_goal = true, .gate_open = true, .size = size, .use_label = "Square" }, &chosen, .{});
+    try testing.expect(shows(&ctx, "3 / 3") and shows(&ctx, text.use_prompt) and shows(&ctx, "Square"));
     try testing.expect(shows(&ctx, text.goal) and shows(&ctx, text.goal_detail) and shows(&ctx, text.objective_gate));
     _ = try describeAt(&ctx, .{ .phase = .playing, .menus = &menus, .text = &text, .beacons = 3, .has_gate = false, .show_goal = true, .size = size }, &chosen, .{});
     try testing.expect(shows(&ctx, text.no_gate) and !shows(&ctx, text.goal));
@@ -624,7 +624,7 @@ test "court: a damaged or newer preferences file gives the content defaults and 
         defer fixture.deinit();
         var newer = Preferences.schema;
         newer.version = Preferences.schema.version + 1;
-        const values = [_]?data.Value{ .{ .int = 640 }, .{ .int = 480 }, .{ .float = 0.1 }, .{ .float = 2.5 }, .{ .bool = true }, .{ .float = 0.1 }, .{ .float = 0.1 } };
+        const values = [_]?data.Value{ .{ .int = 640 }, .{ .int = 480 }, .{ .float = 0.1 }, .{ .float = 2.5 }, .{ .bool = true }, .{ .float = 0.1 }, .{ .float = 0.1 }, .{ .string = "Headphones" } };
         var encoded: std.ArrayList(u8) = .empty;
         defer encoded.deinit(gpa);
         try app.settings.encode(gpa, newer, &values, .default, &encoded);
@@ -650,7 +650,7 @@ test "court: a damaged or newer preferences file gives the content defaults and 
     {
         var fixture = try PrefsFixture.init();
         defer fixture.deinit();
-        const values = [_]?data.Value{ .{ .int = 100 }, .{ .int = 100000 }, .{ .float = 7 }, .{ .float = -3 }, .{ .bool = true }, .{ .float = 2 }, .{ .float = -1 } };
+        const values = [_]?data.Value{ .{ .int = 100 }, .{ .int = 100000 }, .{ .float = 7 }, .{ .float = -3 }, .{ .bool = true }, .{ .float = 2 }, .{ .float = -1 }, null };
         var encoded: std.ArrayList(u8) = .empty;
         defer encoded.deinit(gpa);
         try app.settings.encode(gpa, Preferences.schema, &values, .default, &encoded);
@@ -726,6 +726,40 @@ test "court: an M30 preferences file loads unchanged, and the new volumes are th
     try testing.expectApproxEqAbs(@as(f32, 0.3), again.music.value, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 0.4), again.volume.value, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 1), again.effects.value, 1e-6);
+}
+
+test "court: an M31 preferences file follows the system default, and a chosen output is kept by name" {
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try TestEnv.init(gpa);
+    defer env.deinit(gpa);
+    var fixture = try PrefsFixture.init();
+    defer fixture.deinit();
+    // Version 2, as M31 to M44 wrote it.
+    const values = [_]?data.Value{ .{ .int = 1600 }, .{ .int = 900 }, .{ .float = 0.4 }, null, null, .{ .float = 0.3 }, null };
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(gpa);
+    try app.settings.encode(gpa, Preferences.schema_v2, &values, .default, &encoded);
+    try fixture.writeRaw(encoded.items);
+
+    var prefs = try fixture.open(true);
+    try testing.expectEqual(app.settings.State.loaded, prefs.file.state());
+    prefs.resolve(&env.store);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), prefs.music.value, 1e-6);
+    try testing.expectEqualStrings("", prefs.output());
+    // Headphones chosen: written at version 3 by name, read back, and kept across a resolve.
+    prefs.noteOutput("Headphones");
+    prefs.flush(gpa);
+    prefs.deinit(gpa);
+    var again = try fixture.open(true);
+    defer again.deinit(gpa);
+    again.resolve(&env.store);
+    try testing.expectEqualStrings("Headphones", again.output());
+    try testing.expectApproxEqAbs(@as(f32, 0.3), again.music.value, 1e-6);
+    // The system default chosen again is a choice too: an empty name.
+    again.noteOutput("");
+    again.resolve(&env.store);
+    try testing.expectEqualStrings("", again.output());
 }
 
 test "court: the config record refuses a goal time that is missing, non-finite or out of bounds" {
