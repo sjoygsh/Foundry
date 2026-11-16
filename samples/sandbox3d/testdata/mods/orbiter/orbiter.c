@@ -1,15 +1,20 @@
 #include "foundry.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* This library knows only the installed header. No host symbols or Zig imports. */
-static const FoundryApi_v6 *api;
+static const FoundryApi_v8 *api;
 static FoundryMod owner;
 static FoundryEntity parent, child;
 static FoundryInstance instance;
 static FoundryLight light;
 static FoundryBody3D body;
 static uint64_t ticks;
+/* Where the turn is, in ticks of the ordinary rate: equal to `ticks` until spin is first held,
+ * so a run that never spins makes M25's poses bit for bit. */
+static int64_t turns;
+static uint64_t spun;
 static int failed;
 
 static FoundryContentId id(const char *s) { return foundry_content_id(s, strlen(s)); }
@@ -18,6 +23,56 @@ static FoundryMat4 translated(float x, float y, float z)
 {
     FoundryMat4 m = {{1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1}};
     return m;
+}
+
+/* v8, inside the system: this step's view of the action and the keyboard (ADR-0090). Held,
+ * four ticks of turn a tick; with a shift held too, four back. A host with no input, or content
+ * without the action, turns at the ordinary rate. */
+static int64_t spin_rate(void)
+{
+    FoundryActionState spin;
+    FoundryKeyboardState keys;
+    int64_t rate = 4;
+    if (api->input_action(id("orbiter:action.spin"), &spin) != FOUNDRY_OK) return 1;
+    if (spin.pressed) (void)api->log_write(owner, FOUNDRY_LOG_INFO, str("orbiter: spin held"));
+    if (spin.released) {
+        char line[96];
+        (void)snprintf(line, sizeof line, "orbiter: spin released after %llu ticks at four times the turn",
+                       (unsigned long long)spun);
+        (void)api->log_write(owner, FOUNDRY_LOG_INFO, str(line));
+        spun = 0;
+    }
+    if (!spin.held) return 1;
+    ++spun;
+    if (api->input_keyboard(&keys) == FOUNDRY_OK && (keys.modifiers & FOUNDRY_MODIFIER_SHIFT)) rate = -4;
+    return rate;
+}
+
+/* Says once where spin is bound, with the player's layout's label for a key (v8). */
+static void announce(void)
+{
+    FoundryBinding binding;
+    FoundryStr label;
+    uint32_t count = 0, i, key;
+    char line[96];
+    size_t len;
+    if (api->input_action_binding_count(id("orbiter:action.spin"), &count) != FOUNDRY_OK) {
+        (void)api->log_write(owner, FOUNDRY_LOG_INFO, str("orbiter: no spin action; turning at one rate"));
+        return;
+    }
+    for (i = 0; i < count; ++i) {
+        if (api->input_action_binding(id("orbiter:action.spin"), i, &binding) != FOUNDRY_OK) continue;
+        if (binding.source.len < 5 || memcmp(binding.source.ptr, "key.", 4) != 0) continue;
+        if (api->input_key_from_name((FoundryStr){binding.source.ptr + 4, binding.source.len - 4}, &key) != FOUNDRY_OK) continue;
+        if (api->input_key_label(key, &label) != FOUNDRY_OK || label.len == 0 || label.len > 16) continue;
+        len = strlen("orbiter: spin is held on ");
+        memcpy(line, "orbiter: spin is held on ", len);
+        memcpy(line + len, label.ptr, (size_t)label.len);
+        len += (size_t)label.len;
+        memcpy(line + len, " or a pad's north", strlen(" or a pad's north") + 1);
+        (void)api->log_write(owner, FOUNDRY_LOG_INFO, str(line));
+        return;
+    }
 }
 
 static void update(void *ctx, const FoundryStep *step)
@@ -42,7 +97,8 @@ static void update(void *ctx, const FoundryStep *step)
         api->physics3d_body_set_pose(body, &pose) != FOUNDRY_OK ||
         api->render3d_light_set(light, &lamp) != FOUNDRY_OK) goto fault;
     ++ticks;
-    angle = (float)(ticks % 720) * (float)step->delta_ns * 1e-9f * 0.5f;
+    turns += spin_rate();
+    angle = (float)(((turns % 720) + 720) % 720) * (float)step->delta_ns * 1e-9f * 0.5f;
     local.rotation = (FoundryQuat){0,sinf(angle * 0.5f),0,cosf(angle * 0.5f)};
     if (api->world_transform_set(parent, &local) != FOUNDRY_OK) goto fault;
     return;
@@ -63,10 +119,10 @@ FOUNDRY_EXPORT FoundryResult foundry_mod_init(FoundryGetApi get_api, FoundryMod 
     FoundryMat4 world;
     FoundrySystemDesc system;
     /* No state survives a process: initialization is reproducible from content and floor. */
-    parent.bits=child.bits=instance.bits=light.bits=body.bits=0; ticks=0; failed=0;
+    parent.bits=child.bits=instance.bits=light.bits=body.bits=0; ticks=0; turns=0; spun=0; failed=0;
     owner = self;
-    api = (const FoundryApi_v6 *)get_api(FOUNDRY_API_VERSION_6);
-    if (!api || api->version != 6 || api->size != sizeof(*api)) return FOUNDRY_ERR_UNSUPPORTED;
+    api = (const FoundryApi_v8 *)get_api(FOUNDRY_API_VERSION_8);
+    if (!api || api->version != 8 || api->size != sizeof(*api)) return FOUNDRY_ERR_UNSUPPORTED;
 #define OK(expr) do { FoundryResult r = (expr); if (r != FOUNDRY_OK) { \
     (void)api->log_write(owner,FOUNDRY_LOG_WARN,str("orbiter: initialization refused: " #expr)); \
     if (parent.bits) (void)api->world_destroy_entity(parent); \
@@ -94,7 +150,8 @@ FOUNDRY_EXPORT FoundryResult foundry_mod_init(FoundryGetApi get_api, FoundryMod 
     memset(&system,0,sizeof(system)); system.id=id("orbiter:systems.turn");
     system.name=str("orbiter:systems.turn"); system.update=update;
     OK(api->world_register_system(owner,&system));
-    (void)api->log_write(owner,FOUNDRY_LOG_INFO,str("orbiter: v6 initialized (instance, override, light, hierarchy, solid)"));
+    announce();
+    (void)api->log_write(owner,FOUNDRY_LOG_INFO,str("orbiter: v8 initialized (instance, override, light, hierarchy, solid, spin)"));
     return FOUNDRY_OK;
 #undef OK
 }

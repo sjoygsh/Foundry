@@ -14,3 +14,12 @@ foundry:model_import orbiter:models.orbiter {
     source "models/orbiter.gltf"
     materials [ { name "Bronze" material orbiter:materials.bronze } ]
 }
+
+# The orbiter's own action, in the sandbox's context (`input.md` §10): a mod adds an action to a
+# game's context without overriding it. Held, it spins four times as fast; with a shift key held
+# too, the other way. O on the keyboard, north on a pad.
+foundry:input_action orbiter:action.spin {
+    kind     "button"
+    contexts [ sandbox3d:context.play ]
+    bindings [ { source "key.o" } { source "pad.north" } ]
+}

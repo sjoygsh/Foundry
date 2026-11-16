@@ -680,8 +680,9 @@ pub fn build(b: *std.Build) void {
     // the overlay that inspects it, hosted as the room hosts it. `physics3d` since M23
     // (`collision3d.md` §3): the first-person walk. The overlay itself is not granted it (§12).
     // `anim` since M24 Step 6: the sample owns patrol/playback, not an engine component.
-    // `nav` since M32 Step 6 (`navigation.md` §9.1): the walker's navigation mesh.
-    for ([_][]const u8{ "abi", "anim", "app", "asset", "core", "data", "debug", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
+    // `nav` since M32 Step 6 (`navigation.md` §9.1): the walker's navigation mesh. `input` since
+    // M45 Step 7 (`input.md` §11): the walk reads its actions' frame.
+    for ([_][]const u8{ "abi", "anim", "app", "asset", "core", "data", "debug", "input", "mod", "nav", "physics3d", "render2d", "render3d", "scene", "ui" }) |name| {
         sandbox3d_mod.addImport(name, modules.get(name).?);
     }
     sandbox3d_mod.addImport("platform", platform_module);
@@ -1757,7 +1758,9 @@ pub fn build(b: *std.Build) void {
     const author_job_mod = testNativeLibrary(b, target, optimize, "author_job_mod", "engine/tests/fixtures/author_job_mod.c", c_mod_flags);
     const hostile3d_mod = testNativeLibrary(b, target, optimize, "hostile3d_mod", "engine/tests/fixtures/hostile3d_mod.c", c_mod_flags);
     const render3d_client = testNativeLibrary(b, target, optimize, "render3d_client", "engine/tests/fixtures/render3d_client.c", c_mod_flags);
-    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod, author_job_mod, hostile3d_mod, render3d_client }) |library| {
+    // Every v8 input call and refusal, from C (`input.md` §10).
+    const input_client = testNativeLibrary(b, target, optimize, "input_client", "engine/tests/fixtures/input_client.c", c_mod_flags);
+    for ([_]*std.Build.Step.Compile{ pipeline_mod, shutdown_mod, no_init_mod, refused_mod, unknown_mod, no_shutdown_mod, callback_refused_mod, author_mod, author_job_mod, hostile3d_mod, render3d_client, input_client }) |library| {
         check_step.dependOn(&library.step);
     }
 
@@ -1773,6 +1776,7 @@ pub fn build(b: *std.Build) void {
     pipeline_options.addOptionPath("author_job_mod_path", author_job_mod.getEmittedBin());
     pipeline_options.addOptionPath("hostile3d_mod_path", hostile3d_mod.getEmittedBin());
     pipeline_options.addOptionPath("render3d_client_path", render3d_client.getEmittedBin());
+    pipeline_options.addOptionPath("input_client_path", input_client.getEmittedBin());
     // M30 Step 5 measures a stream's margin against the gallery's decodes (`music.md` §6.2).
     pipeline_options.addOptionPath("gallery_dir", b.path("samples/sandbox3d/content/models"));
     // M41 Step 4 pins the bytes the shipped environments prefilter to (`environment.md` §7.2).
@@ -1784,7 +1788,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "particles", "nav", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi" }) |name| {
+    for ([_][]const u8{ "core", "data", "platform", "physics2d", "physics3d", "particles", "nav", "ui", "rhi", "asset", "mod", "render2d", "render3d", "scene", "audio", "app", "author", "debug", "abi", "input" }) |name| {
         integration_mod.addImport(name, modules.get(name).?);
     }
     integration_mod.addImport("mod_pipeline_options", pipeline_options.createModule());

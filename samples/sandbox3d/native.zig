@@ -43,6 +43,9 @@ pub const Native = struct {
     host: abi.Host = .{},
     loader: abi.NativeLoaderOf(abi.Host) = undefined,
     instances: render3d.Instances = undefined,
+    /// The engine's input, lent to the table (`input.md` §10): what `orbiter` reads its action
+    /// and the keyboard from. Here, at the native host's final address, so the host can point at it.
+    input: app.InputSources = undefined,
     orbiter_owner: ?u64 = null,
     ticks: usize = 0,
     hash: u64 = 0xcbf29ce484222325,
@@ -56,7 +59,8 @@ pub const Native = struct {
     pub fn init(self: *Native, engine: *app.Engine, world: *scene.World, content: *render3d.Content, collision: *physics.World) !void {
         self.* = .{};
         self.instances = try .init(engine.gpa, .default);
-        self.host = .{ .engine = engine, .world = world, .render3d_content = content, .render3d_instances = &self.instances, .collision3d = collision, .collision3d_allocator = engine.gpa };
+        self.input = engine.inputSources();
+        self.host = .{ .engine = engine, .world = world, .render3d_content = content, .render3d_instances = &self.instances, .collision3d = collision, .collision3d_allocator = engine.gpa, .input = &self.input };
         self.host.bind();
         self.loader = .init(engine.gpa, &self.host);
     }

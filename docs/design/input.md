@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 6 (2026-11-16); Step 7 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 7 (2026-11-16); Step 8 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1697,3 +1697,168 @@ Twelve mutations, each restored.
 
 `zig build app-test` is 146/146. No platform backend, shader, RHI, ABI header or sample
 content changed, so no SDL3 cross-check, Vulkan check or C header compile applies.
+
+## Resolution — Step 7: `FoundryApi_v8`, and `sandbox3d` (2026-11-16)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 7. No M41
+code was read or changed. Both steps touch `samples/sandbox3d`; this one keeps to the walk, the
+native host, `orbiter`, one new content file and one new source file.
+
+**What the step pinned:**
+- **`FoundryApi_v8`**, eleven read-only calls after v7's 264, 275 in all, `FOUNDRY_API_VERSION`
+  8, and the native loader offering 1–8 in the same commit:
+  - `input_keyboard`, `input_key_from_name`, `input_key_name`, `input_key_label`, `input_mouse`,
+    `input_gamepad_slots`, `input_gamepad`, `input_action`, `input_action_binding_count`,
+    `input_action_binding` and `input_context_enabled`, in `abi/calls_input.zig`;
+  - their values in `abi/input_types.zig` and the header: `FoundryKeyboardState` (104 bytes,
+    three `uint64_t[4]` sets by key number, `FOUNDRY_MODIFIER_*` bits, `focused`),
+    `FoundryMouseState` (56), `FoundryGamepadState` (56), `FoundryActionState` (16) and
+    `FoundryBinding` (40);
+  - every number written out: `FoundryKey` (106, `Key`'s values), `FoundryMouseButton`,
+    `FoundryPadButton` (21), `FoundryPadAxis`, `FoundryPadKind`, `FoundryPadLabel`,
+    `FoundryMotionUnit`, `FoundryActionKind` and `FoundryAxis`. `agreement.zig` checks every
+    enumerator against the platform's and `input`'s enums by name and value, and `agreement.c`
+    every size and offset.
+- **`app.InputSources`** (`app/input_sources.zig`), what the host lends: the frame view and the
+  tick view (each a snapshot and an action frame), the effective map, the enabled contexts, the
+  player's overrides, and the platform's key labels. `Engine.inputSources()` fills one with
+  borrows that keep their addresses for the engine's life, so a host takes it once.
+- **`abi.Host.input: ?*const app.InputSources`**. Absent, every input call answers
+  `FOUNDRY_ERR_UNAVAILABLE`, after a null out-pointer is refused as
+  `FOUNDRY_ERR_INVALID_ARGUMENT`, as the sweeps require of every call.
+- **As the tick sees it:** `Host.systemUpdate` sets a thread-local flag around a native system's
+  callback, and every input call answers `tick` inside it and `frame` outside it.
+- **`engine/tests/abi_input.zig` and `fixtures/input_client.c`**, a C99 client of `foundry.h`
+  alone, loaded by the native loader. It calls every input entry point and every refusal, and its
+  system makes one entity for each step whose tick view was right; the host counts three. Run
+  with no input, every call answers unavailable.
+- **v1–v7 byte-identical:** a test pins the Wyhash of each `typedef struct FoundryApi_vN { … }
+  FoundryApi_vN;` declaration, comments and all, as this step found it. The diff of the header
+  is additions only, outside those seven.
+- **`sandbox3d`'s walk on actions:** `content/input.fdt` declares `sandbox3d:context.play`
+  (priority 10) and six actions, `move` (vector: WASD and the left stick), `turn` and `pitch`
+  (axes: the arrows and the right stick), `jump` (space, south), `look` (delta: mouse motion) and
+  `drag` (the right button). The sample enables the context at start, `walk.inputIntent` reads
+  `engine.actionFrame()`, and look reads `look` while the pointer is captured or `drag` is held.
+  The F-keys and the letter shortcuts stay raw keys. While the overlay's filter box types,
+  `setInputBlocked(.{ .keyboard = true })` hides the keyboard from every action, a mod's too.
+- **`orbiter` on v8:** its manifest asks for `abi { min 8 max 8 }`, and its package declares
+  `orbiter:action.spin` (`key.o`, `pad.north`) in `sandbox3d:context.play`. Inside its system it
+  reads the action and the keyboard: held, the turn advances four ticks a tick, and with a shift
+  held, four back. At init it reads the action's bindings and the key's layout label and logs
+  where spin is held.
+- **`native.zig`** keeps the engine's `InputSources` at the native host's final address and lends
+  it as `Host.input`.
+- **`FOUNDRY_SANDBOX3D_SPIN=<from>-<to>`** (`spin.zig`), an evidence affordance like
+  `FOUNDRY_SANDBOX3D_KEYS`. It holds a pad's north button over those frames: on SDL3 through
+  SDL's virtual joystick, and so SDL's own discovery, mapping and events, and headless through the
+  null backend's scripted pad. The press therefore reaches the mod through the snapshot, the
+  actions, the tick view and the table, and nothing goes around them.
+- **`docs/modding/input.md`**, written from `pulse`, a package and C library built in a scratch
+  directory outside the checkout against an installed prefix's `foundry.h` and `fpack`. It
+  compiled as C99 for macOS, Windows and Linux and as C++17, and ran in the installed
+  `sandbox3d`. `docs/modding/README.md` links it.
+
+**Where the code sharpened the design:**
+- **`abi.Sources` does not exist.** §10 named it after `debug.Sources`, but `abi`'s host is
+  `abi.Host` (`HostOf(E)`), whose subsystems are fields. The input is that host's `input` field,
+  typed `?*const app.InputSources` as §10 said.
+- **What "inside a system" means:** a native system's callback, through `systemUpdate`. The tick
+  view is the engine's last taken view, which is the step's own while a game runs its world for
+  that step (`while (engine.nextStep()) |step| world.update(…)`). A world updated outside any
+  step reads whatever step came last.
+- **The refusals, which §10 listed only by kind:**
+  - an unknown key name is `NOT_FOUND`, and a name that is not UTF-8 is `INVALID_ARGUMENT`;
+  - a key number past `FOUNDRY_KEY_MENU`, a slot past the count and a binding index past the
+    count are `INVALID_ARGUMENT`;
+  - an action or a context no content declares is `NOT_FOUND`, and a zero ID is
+    `INVALID_ARGUMENT`.
+- **Borrowed strings:** a key's name is static. A label and a binding's source are copied into
+  the host and borrowed until the next call of the same kind, so a mod never holds a pointer into
+  a platform buffer the next pump rewrites.
+- **Three fields §10 did not list:**
+  - `FoundryGamepadState.generation`, the slot's connection count (I1), because a mod must be
+    able to tell that another pad now sits in slot 1;
+  - `face[4]`, the face labels §4.1 reports separately, so a mod's prompt can name the button;
+  - `FoundryMouseState`'s pixel position beside the point one.
+- **`overridden` means in force:** the player has an override, and `Map.apply` neither ignored it
+  (`rebindable false`) nor refused it, read from the effective map's warnings.
+- **Grants for the close:** `abi` now reads `platform`'s snapshot values and `input`'s, beyond
+  CLAUDE.md §4.3's "`platform` for `Library` alone", and `sandbox3d` is granted `input` for the
+  action frame's type. Step 11 writes both into §4.3.
+- **The walk reads the frame's actions, not `Step.actions`.** Every action it steps on is a level
+  (held keys, sticks, a held jump) that is the same in every tick of the frame, and the mouse's
+  look was already applied once a frame. Reading the tick view would change no tick. The court's
+  walk, whose edges M40 handled with `Pending`, reads `Step.actions` at Step 8.
+- **`orbiter`'s pin holds by construction:** its turn is `turns`, which equals `ticks` until spin
+  is first held, so a run that never spins makes M25's poses to the bit.
+- **SDL drops a pad's events while no window of the process has focus**
+  (`SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS`, off by default). A window started from a shell on
+  the owner's Mac was not focused, so the first windowed run's press never arrived, and the log
+  said so: `spin` reports focus and whether the pad is seated. The second run set
+  `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1` in that process's environment, which SDL reads as the
+  hint. Foundry does not set it: a game should not read a pad while the player is in another
+  window.
+- **One header comment was reworded** ("what is true, never …" became "names what arrived, never
+  …"), because the C++ keyword guard reads a word before `,` or `)` as a parameter name.
+
+**The windowed run (macOS/Metal, Apple M5, 2026-11-16 20:01 IST, ten seconds):**
+`FOUNDRY_SANDBOX3D_FRAMES=420 FOUNDRY_SANDBOX3D_PACKAGES=orbiter:content
+FOUNDRY_SANDBOX3D_NATIVE=orbiter:content FOUNDRY_SANDBOX3D_SPIN=120-300
+SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1 zig build sandbox3d -Drhi=metal`:
+
+```
+info(mod): [orbiter:content] orbiter: spin is held on O or a pad's north
+info(mod): [orbiter:content] orbiter: v8 initialized (instance, override, light, hierarchy, solid, spin)
+info(sandbox3d): spin: north down at frame 120 (window not focused, pad seated)
+info(mod): [orbiter:content] orbiter: spin held
+info(sandbox3d): spin: north up at frame 300 (window not focused, pad seated)
+info(mod): [orbiter:content] orbiter: spin released after 180 ticks at four times the turn
+info(sandbox3d): stopped after 420 frames (0 skipped), 422 ticks
+```
+
+The `O` is Cocoa's label for `key.o` on the Mac's layout. The input span read a median of
+0.046 ms over 240 frames, under §13's 0.05 ms, with no court map yet (that budget is Step 8's).
+
+**Every tour pin holds**, from `FOUNDRY_SANDBOX3D_WALK=tour` with `orbiter` selected and
+consented, headless: the player's replay `b85b52c97d259db4`, the walker `655e865f98779129`, the
+pacer `e46c09dc62b1eeac`, `222e0a9b12fd152c` and `47f67027ff3a12b0`, the corner
+`e2992f93e5323345`, the yard `1052a9ae891b0d27`, and the orbiter's native poses
+`d6ac3adfabc2c0c2`, M25's value.
+`FOUNDRY_SANDBOX3D_WALK=tilted` passes too: worst 0.00001 m from upright for both tours, and
+0.01017 m and 0.00106 m for the yard, as before.
+
+**The exit, met:**
+- the fixture's every call and refusal pass, in the integration graph, with input and without;
+- v1–v7 are byte-identical, by the pinned declarations, and every v7 entry is the same function at
+  the same offset in v8;
+- `orbiter` spins on its action in a windowed run, above;
+- every tour pin holds, above.
+
+**Each guard was broken once, and each failed its test:**
+- the tick view never chosen inside a system failed the calls' system test and the C client;
+- `systemUpdate` not setting the flag failed the system test;
+- a host looked up before a null out-pointer failed the C client's no-input run;
+- the slot bound and the key-number bound moved by one each failed the refusal test;
+- `overridden` ignoring the map's warnings failed the frame-view test, on pause;
+- a parameter renamed in v7's declaration failed the byte-identity test;
+- v8 left out of the loader's versions failed both C client runs;
+- the walk's forward sign flipped failed the walk test;
+- an unknown context answered as disabled failed the refusal test and the C client;
+- an unknown key given its name as a label failed the sources' and the calls' tests.
+
+Eleven mutations, each restored.
+
+**Bar:** every line of `AGENTS.md` §3 exited 0, plus its conditional extras: `zig build test
+-Drhi=metal`, the null graph, and, since the ABI changed, `author_client.c`, `net_client.c`,
+`render3d_client.c`, `author_job_mod.c` and the new `input_client.c` against the installed header,
+each as C99 and C++17 for macOS, Linux and Windows (30 compiles), and `dist -Dapp=room`, whose
+release imports `abi`. `sandbox3d` is not a `dist` application, and its new content file compiles
+in the bar's install. The counts:
+- `zig build test` 3,209/3,219 (ten skips);
+- null 3,191/3,201 (ten skips);
+- Metal 3,224/3,245 (21 skips);
+- every check, the four thirty-frame samples and `fdt-check`.
+
+No platform backend, shader, RHI or native-window code changed, so no SDL3 cross-check or Vulkan
+check applies.

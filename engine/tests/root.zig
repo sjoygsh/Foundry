@@ -20,6 +20,7 @@ pub const std_options = app.std_options;
 
 pub const asset_pipeline = @import("asset_pipeline.zig");
 pub const abi_authoring = @import("abi_authoring.zig");
+pub const abi_input = @import("abi_input.zig");
 pub const abi_mod_manager = @import("abi_mod_manager.zig");
 pub const abi_render_pipeline = @import("abi_render_pipeline.zig");
 pub const debug_overlay = @import("debug_overlay.zig");
@@ -48,6 +49,7 @@ pub const world_pipeline = @import("world_pipeline.zig");
 test {
     _ = asset_pipeline;
     _ = abi_authoring;
+    _ = abi_input;
     _ = abi_mod_manager;
     _ = abi_render_pipeline;
     _ = debug_overlay;

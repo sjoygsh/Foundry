@@ -40,6 +40,7 @@ const offered_api_versions = [_]u32{
     types.api_version_5,
     types.api_version_6,
     types.api_version_7,
+    types.api_version_8,
 };
 
 fn acceptsOffered(range: mod.Range) bool {
@@ -247,5 +248,7 @@ test "native compatibility considers every offered table version" {
     try testing.expect(acceptsOffered(.{ .min = 5, .max = 5 }));
     try testing.expect(acceptsOffered(.{ .min = 6, .max = 6 }));
     try testing.expect(acceptsOffered(.{ .min = 7, .max = 7 }));
-    try testing.expect(!acceptsOffered(.{ .min = 8 }));
+    // v8 is published in the same commit as its table (`input.md` §10).
+    try testing.expect(acceptsOffered(.{ .min = 8, .max = 8 }));
+    try testing.expect(!acceptsOffered(.{ .min = 9 }));
 }
