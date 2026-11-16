@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 4 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 5 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1012,3 +1012,114 @@ integration graph 165/168 (three skips, as before). No shader, Vulkan or ABI cod
 
 Next is Step 5: residency, the fourth uniform and image-based lighting. Nothing loads or draws
 an environment yet.
+
+## Resolution — Step 5: residency, the fourth uniform and image-based lighting (2026-11-16)
+
+An environment now lights a frame. `render3d.Renderer` owns environments by
+`EnvironmentHandle` (I1), `render3d.Content` loads them by content ID, and both lit shaders add
+the environment's diffuse harmonics and specular cube to every lit draw. `FrameView` gains
+`environment`, `environment_intensity` (0 to 65504) and `environment_rotation` (radians about
++Y). With `environment = null` the frame is M40's: the lanes are zero, the bit is clear, the
+black cube is bound, and every M22–M40 readback holds unchanged on Metal.
+
+**Where the implementation corrects or sharpens §7.4 and §8:**
+- **Two levels own an environment.** The renderer's is GPU state: `createEnvironment` makes
+  an empty one, `writeEnvironment` copies a `Prefiltered` into a new cube texture and its
+  harmonics, `destroyEnvironment` is deferred inside the submission window as a material's
+  is, and a write there is refused (`InFrame`). A `Prefiltered` whose size, level count, byte
+  length or harmonics `prefilter` could not have made is refused (`InvalidEnvironment`) before
+  anything is made. `Content` holds the record, its faces and the prefilter, and its handle is
+  the renderer's, stable across every rewrite, as a material's is.
+- **An empty or pending environment lights nothing.** A frame may name one: the bit stays
+  clear and the black cube stays bound. That is how a requested environment waits, and why
+  `begin` refuses only a stale or destroyed handle.
+- **A rewrite makes a new cube, never writes in place.** A reload may change the size. The old
+  cube becomes an orphan and is destroyed once no frame slot's groups bind it: each `prepare`
+  rebinds its own slot's world and caster groups to the frame's cube when they bind another, then
+  destroys every orphan that no slot binds. No bind group ever names a destroyed texture,
+  which Vulkan forbids. The caster group binds the cube too, because a shadowless frame draws
+  its world pass with that group (M40).
+- **Faces are decoded by a private loader,** `loader.faceLoader`: the PNG on the pool, the
+  record's colour space beside it, nothing uploaded. Its registry entries are keyed apart from
+  `textureLoader`'s (`acquireWith`), so a face that is also a material texture is decoded once
+  for each. Faces up to 4,096 texels on a side are accepted.
+- **The prefilter's job copies its faces' pixels,** so the task never reads a payload the
+  registry might reload under it. `acquireEnvironment` runs it on the calling thread and returns
+  a ready handle, or `InvalidEnvironmentRecord` holding nothing, the refusal said by field or
+  face. `requestEnvironment` decodes faces and prefilters on the registry's `core.Tasks`
+  (ADR-0083). `environmentState` settles it: it writes a finished prefilter outside the window,
+  and starts another when a face's payload has changed since the cube was built, which is how a
+  face file's hot reload is followed. The old cube lights until the new one lands. A job whose
+  environment is released while it runs is kept until it finishes, then freed.
+  `contentChanged` re-reads every environment record and prefilters again as it was obtained.
+  A record that no longer reads keeps what it had, as a model's does.
+- **`counts.w` is now bits:** `frame_translucent` (1, M40's switch) and `frame_environment` (2).
+  Both lit shaders test bit 1 for the transmittance atlas. `FrameUniform` is 4,416 bytes:
+  `environment_sh` is at 4,256 and `environment` at 4,400. Every Metal shader that declares
+  `Frame` asserts that size, and the SPIR-V agreement check pins both new offsets and bindings 5
+  and 6.
+- **Binding 5 is a cube, and binding 6 its trilinear clamped sampler,** in the frame group.
+  Metal numbers textures and samplers across groups in order, so every material texture and
+  sampler moved up by one (3 to 7) in `lit.metal`, `unlit.metal`, `particle.metal` and
+  `shadow.metal`. GLSL's set and binding numbers did not move.
+- **The yaw:** the environment is turned by `environment_rotation` about +Y, so a world
+  direction reads the cube along itself turned back (`lighting.environmentDirection`). The
+  normal and the reflection are both turned, and the harmonics are evaluated at the turned
+  normal, so no harmonic rotation is needed.
+- **The term:** `(harmonics(n) × (1 − dielectric) × base × (1 − metal) + cube(r, roughness × top)
+  × intensity × specular DFG) × occlusion`. The harmonics are multiplied by the intensity once,
+  in `packEnvironment`, and the oracle multiplies them the same way. The constant ambient is
+  added beside it (§4). `lighting.dfg` is now shared by `ambient` and `environmentTerm`, unchanged
+  in value.
+- **The oracle** is `lighting.shadeLit`, `shade` with an `EnvironmentLight`. `shade` is
+  unchanged, so every M22–M40 call stands. It reads the same prefiltered bytes through
+  `Prefiltered.sample`: bilinear within a face, clamped at its edge, and linear between the
+  two levels either side of the lod. The GPU's seamless filter blends across an edge, so the
+  readbacks compare reflections away from a face's edge.
+
+**Readbacks on Metal, at 1× and 4×, within ±2/255 of the oracle:**
+- **A mirror plane** reflects each of the six faces of a six-colour cube in place. It is
+  untilted, or tilted ±35° about +X to reach ±Y, and yawed a quarter, minus a quarter and a half
+  to reach −X, +X and −Z. At three pixels each, the oracle matches, and the face's high channels
+  read at least 40 above its low ones. The test caught that a positive turn about +X tips the
+  reflection toward −Y.
+- **Rough dielectric, rough metal and diffuse planes** under the gradient and the cube are
+  tested with a yaw, intensities from 0.7 to 1.5, constant ambient and a directional light.
+
+**Other tests:**
+- **Null and Metal:**
+  - every write refusal, inside the window and with stale handles, changing nothing;
+  - the uniform's lanes and bit only when a written environment is named;
+  - an orphaned cube kept until both slots rebind;
+  - a destroy in the window deferred past its frame.
+- **`lighting`:** a constant environment lights exactly as the same constant ambient does, and
+  the yaw's direction and packing.
+- **`asset`:** the sampler's texel centres, level blend and clamp.
+- **`engine/tests/environment_residency.zig`, over the real compiler, registry and renderer:**
+  - acquired gradient and faces environments carry the prefilter's own harmonics;
+  - each refusal is by name (no record, not an environment, a face not square, in linear
+    light, or not a texture), holding nothing;
+  - a requested environment lights nothing until it settles, then matches an acquired one under
+    immediate, reversed and pooled completion;
+  - acquiring a pending environment completes it on the calling thread;
+  - a face's file reload and a record's luminance edit are followed behind the same handle,
+    and a record that is gone keeps its light;
+  - an environment released mid-prefilter is freed once its job finishes.
+
+**Guards broken, each failing a test:**
+- the level count's check (the "written whole" test, through a cube one level short with its bytes
+  cut to match, since the byte length check masked it otherwise);
+- the orphan sweep's bound test (the "outlives" test);
+- the harmonics' intensity (the `lighting` constant-environment test);
+- a face's reload (the residency reload test);
+- the cube's lod scale (the mirror test);
+- the yaw's sign in `lit.metal` (the mirror and the rough-surface tests);
+- one harmonic's basis (the rough-surface test).
+
+A check in `begin` that refused a doomed environment survived its mutation: `begin` frees every
+doomed environment before it reads the handle, so nothing doomed is left to name. It was
+removed. A destroyed handle is refused because it is stale.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples, `fdt-check`, the five Vulkan checks (shaders changed) and `zig build dist
+-Dapp=court` pass. Tests: null 3,149/3,159 (ten skips), Metal 3,164/3,185 (21 skips).

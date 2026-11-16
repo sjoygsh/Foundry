@@ -19,11 +19,16 @@ layout(set=0,binding=0,std140) uniform Frame {
     layout(offset=672) vec4 shadow_tile_parameters[32];
     layout(offset=1184) mat4 shadow_matrices[32];
     layout(offset=3232) PackedLight lights[16];
+    layout(offset=4256) vec4 environment_sh[9];
+    layout(offset=4400) vec4 environment;
 } frame;
 layout(set=0,binding=1) uniform texture2D shadow_image;
 layout(set=0,binding=2) uniform samplerShadow shadow_sampler;
 layout(set=0,binding=3) uniform texture2D tint_image;
 layout(set=0,binding=4) uniform sampler tint_sampler;
+// The environment's specular cube and its trilinear sampler (environment.md §8).
+layout(set=0,binding=5) uniform textureCube environment_image;
+layout(set=0,binding=6) uniform sampler environment_sampler;
 layout(set=2,binding=0,std140) uniform Material {
     layout(offset=0) vec4 base_color;
     layout(offset=16) float alpha_cutoff;
@@ -69,6 +74,19 @@ vec2 ambient_dfg(float rough, float nv) {
     float a=min(r.x*r.x,exp2(-9.28*nv))*r.x+r.y;
     return vec2(-1.04,1.04)*a+r.zw;
 }
+// Nine pre-convolved coefficients, rgb, already times the intensity: asset.environment.evaluate.
+vec3 environmentHarmonics(vec3 n) {
+    vec3 r=frame.environment_sh[0].rgb*0.282095;
+    r+=frame.environment_sh[1].rgb*(0.488603*n.y);
+    r+=frame.environment_sh[2].rgb*(0.488603*n.z);
+    r+=frame.environment_sh[3].rgb*(0.488603*n.x);
+    r+=frame.environment_sh[4].rgb*(1.092548*n.x*n.y);
+    r+=frame.environment_sh[5].rgb*(1.092548*n.y*n.z);
+    r+=frame.environment_sh[6].rgb*(0.315392*(3*n.z*n.z-1));
+    r+=frame.environment_sh[7].rgb*(1.092548*n.x*n.z);
+    r+=frame.environment_sh[8].rgb*(0.546274*(n.x*n.x-n.y*n.y));
+    return r;
+}
 const vec3 TINTS[4]=vec3[4](vec3(1,.25,.25),vec3(.25,1,.25),vec3(.25,.25,1),vec3(1,1,.25));
 // One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
 // clamped two texels inside its tile so none reads a neighbour's depth; w is -1 when the point
@@ -95,7 +113,7 @@ vec4 tileShadow(uint t, vec3 normal, float axial) {
     vec4 tile=frame.shadow_tiles[t];
     if (any(lessThan(q.xy,tile.xy)) || any(greaterThan(q.xy,tile.zw)) || q.z < 0 || q.z > 1) return vec4(1,1,1,-1);
     vec2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
-    bool tinted=frame.counts.w != 0;
+    bool tinted=(frame.counts.w & 1u) != 0;
     float visibility=0;
     vec3 transmit=vec3(0);
     if (p.z != 0) {
@@ -219,6 +237,14 @@ void main() {
     vec3 spec=max(f0*ab.x+ab.y,vec3(0));
     float dielectric=.04*ab.x+ab.y;
     result+=frame.ambient.rgb*((1-dielectric)*base.rgb*(1-metal)+spec)*ao;
+    // The environment (environment.md §8), as lit.metal reads it.
+    if ((frame.counts.w & 2u) != 0) {
+        float c=frame.environment.z, s=frame.environment.w;
+        vec3 r=2*dot(n,v)*n-v;
+        vec3 irradiance=environmentHarmonics(vec3(c*n.x-s*n.z,n.y,s*n.x+c*n.z));
+        vec3 radiance=textureLod(samplerCube(environment_image,environment_sampler),vec3(c*r.x-s*r.z,r.y,s*r.x+c*r.z),rough*frame.environment.x).rgb*frame.environment.y;
+        result+=(irradiance*(1-dielectric)*base.rgb*(1-metal)+radiance*spec)*ao;
+    }
     result+=material.emissive_strength.rgb*texture(sampler2D(emissive_image,emissive_sampler),uv).rgb*material.emissive_strength.w;
     if (frame.counts.z != 0 && cascade < frame.counts.y)
         result*=mix(TINTS[cascade],cascade+1 < frame.counts.y ? TINTS[cascade+1] : vec3(1),next_weight);

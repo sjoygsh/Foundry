@@ -361,8 +361,8 @@ fn requireMeshVertex(bytes: []const u8, uv: bool, color: bool) Error!void {
 fn requireLightFrame(bytes: []const u8) Error!void {
     try requireFrameMatrix(bytes);
     const frame = try namedId(bytes, "Frame") orelse return error.DecorationMismatch;
-    // `lighting.FrameUniform`'s third layout (`shadows-local.md` §8).
-    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 128 }, .{ 6, 144 }, .{ 7, 160 }, .{ 8, 672 }, .{ 9, 1184 }, .{ 10, 3232 } }) |field|
+    // `lighting.FrameUniform`'s fourth layout (`environment.md` §8).
+    inline for (.{ .{ 1, 64 }, .{ 2, 80 }, .{ 3, 96 }, .{ 4, 112 }, .{ 5, 128 }, .{ 6, 144 }, .{ 7, 160 }, .{ 8, 672 }, .{ 9, 1184 }, .{ 10, 3232 }, .{ 11, 4256 }, .{ 12, 4400 } }) |field|
         try require(try hasMemberDecoration(bytes, frame, field[0], Decoration.offset, field[1]));
     const light = try namedId(bytes, "PackedLight") orelse return error.DecorationMismatch;
     inline for (0..4) |member|
@@ -509,6 +509,9 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             // The transmittance atlas and its point sampler (`shadows-local.md` §9).
             try require(try bindingHasType(bytes, 0, 3, Storage.uniform_constant, Op.type_image));
             try require(try bindingHasType(bytes, 0, 4, Storage.uniform_constant, Op.type_sampler));
+            // The environment's cube and its sampler (`environment.md` §8).
+            try require(try bindingHasType(bytes, 0, 5, Storage.uniform_constant, Op.type_image));
+            try require(try bindingHasType(bytes, 0, 6, Storage.uniform_constant, Op.type_sampler));
             inline for (2..5) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
             const material = try namedId(bytes, "Material") orelse return error.DecorationMismatch;
             try require(try hasMemberDecoration(bytes, material, 2, Decoration.offset, 32));

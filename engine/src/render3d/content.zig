@@ -34,6 +34,8 @@ const Vec3 = core.math.Vec3;
 const Light = renderer_mod.Light;
 const MaterialDesc = renderer_mod.MaterialDesc;
 const MaterialHandle = renderer_mod.MaterialHandle;
+const EnvironmentHandle = renderer_mod.EnvironmentHandle;
+const environment = asset.environment;
 const Renderer = renderer_mod.Renderer;
 const TextureHandle = renderer_mod.TextureHandle;
 const log = core.log.scoped(.render3d);
@@ -144,6 +146,11 @@ pub const Error = error{
     InvalidModel,
     InvalidOverride,
     SkeletonMismatch,
+    EnvironmentNotFound,
+    NotAnEnvironment,
+    /// An acquired environment whose record, faces or prefilter refused it: said once, by
+    /// field or face, and nothing is held.
+    InvalidEnvironmentRecord,
 } || renderer_mod.Error;
 
 /// Magenta, opaque and untextured: visible, and not a colour a real material is taken for.
@@ -151,8 +158,10 @@ pub const placeholder: MaterialDesc = .{ .base_color = .{ 1, 0, 1, 1 } };
 
 /// The RHI borrows labels, and a record's name is borrowed from package bytes a reload frees.
 const material_label = "render3d content material";
+const environment_label = "render3d content environment";
 
 const MaterialTag = opaque {};
+const EnvironmentTag = opaque {};
 const EntryHandle = core.Handle(MaterialTag);
 
 const MaterialEntry = struct {
@@ -210,6 +219,58 @@ const Mode = enum { acquire, request };
 
 const NamedClip = struct { name: []u8, handle: asset.AssetHandle };
 
+/// Where an environment is (`environment.md` §7.4). An acquired one is `ready` or refused.
+pub const EnvironmentState = enum {
+    /// Its faces are decoding, or its prefilter is running, on the background pool. It lights
+    /// nothing yet: a frame naming it draws as if it named none.
+    pending,
+    ready,
+    /// Its record, a face or the prefilter refused it. Said once; it lights nothing.
+    failed,
+};
+
+/// One prefilter, on the pool or the calling thread. **What the task touches:** `environment`,
+/// `faces` and `result`, all its own; the main thread reads `result` only once `done` is set.
+const PrefilterJob = struct {
+    gpa: Allocator,
+    environment: environment.Environment,
+    faces: [6]environment.Face = undefined,
+    face_count: usize = 0,
+    result: (Allocator.Error || environment.Error)!environment.Prefiltered = error.OutOfMemory,
+    done: core.tasks.Done = .{},
+    started: bool = false,
+
+    fn run(context: *anyopaque) void {
+        const job: *PrefilterJob = @ptrCast(@alignCast(context));
+        job.result = environment.prefilter(job.gpa, job.environment, job.faces[0..job.face_count]);
+    }
+
+    fn destroy(job: *PrefilterJob) void {
+        for (job.faces[0..job.face_count]) |*face| face.image.deinit(job.gpa);
+        if (job.result) |*prefiltered| prefiltered.deinit(job.gpa) else |_| {}
+        job.gpa.destroy(job);
+    }
+};
+
+const EnvironmentEntry = struct {
+    id: ContentId,
+    refs: u32,
+    /// The renderer's, and stable for the entry's life: what a frame names.
+    handle: EnvironmentHandle,
+    mode: Mode,
+    /// The record as last read.
+    environment: environment.Environment,
+    /// A `faces` environment's six, through `loader.faceLoader`; `.none` for a gradient.
+    faces: [6]asset.AssetHandle = @splat(.none),
+    /// The face payloads the cube was last prefiltered from: a different current one means a
+    /// file reload, and a prefilter again.
+    built_from: [6]?*const loader.FaceImage = @splat(null),
+    /// A prefilter is wanted: the record was read, and nothing has been made from it yet.
+    wanted: bool = true,
+    job: ?*PrefilterJob = null,
+    state: EnvironmentState = .pending,
+};
+
 pub const Content = struct {
     gpa: Allocator,
     renderer: *Renderer,
@@ -217,6 +278,9 @@ pub const Content = struct {
     limits: Limits,
     materials: core.HandlePool(MaterialTag, MaterialEntry) = .empty,
     models: core.HandlePool(Model, ModelEntry) = .empty,
+    environments: core.HandlePool(EnvironmentTag, EnvironmentEntry) = .empty,
+    /// Prefilters still running for environments released since; freed once each finishes.
+    abandoned: std.ArrayList(*PrefilterJob) = .empty,
 
     const Self = @This();
 
@@ -246,6 +310,18 @@ pub const Content = struct {
             self.freeModel(entry.value);
         }
         self.models.deinit(self.gpa);
+        // A running prefilter reads only its own copies, but its job is freed here.
+        self.assets.tasks.wait();
+        var environments = self.environments.iterator();
+        while (environments.next()) |entry| {
+            if (entry.value.job) |job| job.destroy();
+            for (entry.value.faces) |face| if (!face.isNone()) self.assets.release(face);
+            self.renderer.destroyEnvironment(entry.value.handle);
+        }
+        self.environments.deinit(self.gpa);
+        for (self.abandoned.items) |job| job.destroy();
+        self.abandoned.deinit(self.gpa);
+        _ = self.assets.unloadWith(self.gpa, loader.faceLoader());
         _ = self.assets.unloadWith(self.gpa, loader.meshLoader(self.renderer));
         _ = self.assets.unloadWith(self.gpa, loader.textureLoader(self.renderer));
         self.* = undefined;
@@ -500,6 +576,245 @@ pub const Content = struct {
         self.releaseEntry(entry);
     }
 
+    // -- environments (`environment.md` §7.4) ------------------------------------------
+
+    /// A `foundry:environment` by content ID, faces decoded and prefiltered on this thread: the
+    /// handle a frame names in `FrameView.environment`, ready when this returns. The same ID
+    /// again is the same handle with one more reference. A record, face or prefilter that
+    /// refuses it is said by name and returns `InvalidEnvironmentRecord`, holding nothing.
+    pub fn acquireEnvironment(self: *Self, id: ContentId) Error!EnvironmentHandle {
+        const handle = try self.retainEnvironment(id, .acquire);
+        const entry = self.environments.get(handle).?;
+        if (entry.state == .pending) try self.completeEnvironment(handle);
+        if (self.environments.getConst(handle).?.state == .failed) {
+            self.releaseEntryEnvironment(handle);
+            return error.InvalidEnvironmentRecord;
+        }
+        return self.environments.getConst(handle).?.handle;
+    }
+
+    /// `acquireEnvironment` without waiting (ADR-0083): faces decode and the prefilter runs on
+    /// the registry's background pool, and `environmentState` settles it. Only what needs no
+    /// work is refused now: no record, or not an environment. Until it is ready a frame may
+    /// name it, and it lights nothing.
+    pub fn requestEnvironment(self: *Self, id: ContentId) Error!EnvironmentHandle {
+        const handle = try self.retainEnvironment(id, .request);
+        return self.environments.getConst(handle).?.handle;
+    }
+
+    /// Where the environment is, settling it first: a finished prefilter is written to the
+    /// renderer here, outside a frame's submission window, and a face whose file reloaded is
+    /// prefiltered again, the old cube lighting until the new one lands. A game asks before
+    /// each frame that names a requested environment. Null for a handle this did not issue.
+    pub fn environmentState(self: *Self, handle: EnvironmentHandle) Error!?EnvironmentState {
+        const entry = self.environmentEntryOf(handle) orelse return null;
+        try self.settleEnvironment(entry);
+        self.sweepAbandoned();
+        return self.environments.getConst(entry).?.state;
+    }
+
+    pub fn releaseEnvironment(self: *Self, handle: EnvironmentHandle) void {
+        const entry = self.environmentEntryOf(handle) orelse {
+            log.warn("release of an environment handle Content did not issue", .{});
+            return;
+        };
+        self.releaseEntryEnvironment(entry);
+    }
+
+    fn retainEnvironment(self: *Self, id: ContentId, mode: Mode) Error!core.Handle(EnvironmentTag) {
+        var existing = self.environments.iterator();
+        while (existing.next()) |entry| if (entry.value.id.eql(id)) {
+            entry.value.refs += 1;
+            return entry.id;
+        };
+        const record = self.assets.store.lookup(id) orelse return error.EnvironmentNotFound;
+        if (!record.schema_id.eql(environment.schema.id)) return error.NotAnEnvironment;
+        const handle = try self.renderer.createEnvironment();
+        errdefer self.renderer.destroyEnvironment(handle);
+        const entry = try self.environments.add(self.gpa, .{
+            .id = id,
+            .refs = 1,
+            .handle = handle,
+            .mode = mode,
+            .environment = undefined,
+        });
+        errdefer _ = self.environments.remove(entry);
+        try self.readEnvironment(entry, mode);
+        return entry;
+    }
+
+    /// Reads the record and obtains its faces, new ones held before old ones are released. A
+    /// record that no longer reads keeps what the entry had, said once, as a model's does.
+    fn readEnvironment(self: *Self, handle: core.Handle(EnvironmentTag), mode: Mode) Error!void {
+        const id = self.environments.getConst(handle).?.id;
+        const why: []const u8 = blk: {
+            const record = self.assets.store.lookup(id) orelse break :blk "its record is not in any loaded package";
+            if (!record.schema_id.eql(environment.schema.id)) break :blk "its record is not a foundry:environment";
+            const decoded = environment.decode(record.fields) catch |err| break :blk environment.describe(err);
+            var faces: [6]asset.AssetHandle = @splat(.none);
+            errdefer for (faces) |face| if (!face.isNone()) self.assets.release(face);
+            if (decoded.source == .faces) for (decoded.source.faces, &faces) |face_id, *face| {
+                face.* = self.obtain(mode, face_id, loader.faceLoader()) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => {
+                        for (faces) |held| if (!held.isNone()) self.assets.release(held);
+                        break :blk "a face is not a loadable foundry:texture";
+                    },
+                };
+            };
+            const entry = self.environments.get(handle).?;
+            for (entry.faces) |face| if (!face.isNone()) self.assets.release(face);
+            entry.faces = faces;
+            entry.environment = decoded;
+            entry.mode = mode;
+            entry.wanted = true;
+            return;
+        };
+        const entry = self.environments.get(handle).?;
+        log.warn("environment {f}: {s}", .{ id, why });
+        // A ready environment keeps lighting with what it had; one never made has failed.
+        if (entry.state != .ready) {
+            entry.state = .failed;
+            entry.wanted = false;
+        }
+    }
+
+    /// Advances one entry as far as it can go without waiting: a finished job is written, a
+    /// wanted prefilter whose faces are all here is started, a reloaded face is wanted again.
+    fn settleEnvironment(self: *Self, handle: core.Handle(EnvironmentTag)) Error!void {
+        const entry = self.environments.get(handle).?;
+        if (entry.job) |job| {
+            if (!job.done.isSet()) return;
+            try self.landEnvironment(handle);
+            return;
+        }
+        if (!entry.wanted and entry.state == .ready) {
+            for (entry.faces, entry.built_from) |face, built| {
+                if (face.isNone()) continue;
+                if (loader.faceOf(self.assets, face) != built) entry.wanted = true;
+            }
+        }
+        if (!entry.wanted) return;
+        for (entry.faces) |face| if (!face.isNone() and self.assets.state(face).? == .pending) return;
+        const job = try self.startPrefilter(handle) orelse return;
+        if (entry.mode == .acquire) {
+            PrefilterJob.run(job);
+            job.done.set();
+            try self.landEnvironment(handle);
+            return;
+        }
+        self.assets.tasks.start(.{ .context = job, .call = PrefilterJob.run }, &job.done) catch {
+            // The pool's queue is full: nothing started, and the next settle tries again.
+            job.destroy();
+            self.environments.get(handle).?.job = null;
+            return;
+        };
+        job.started = true;
+    }
+
+    /// The job for a wanted prefilter, its faces copied so the task reads nothing the registry
+    /// may reload under it; null, and the entry failed, when a face did not load.
+    fn startPrefilter(self: *Self, handle: core.Handle(EnvironmentTag)) Error!?*PrefilterJob {
+        const entry = self.environments.get(handle).?;
+        const job = try self.gpa.create(PrefilterJob);
+        job.* = .{ .gpa = self.gpa, .environment = entry.environment };
+        errdefer job.destroy();
+        var built: [6]?*const loader.FaceImage = @splat(null);
+        for (entry.faces, &built) |face, *from| {
+            if (face.isNone()) continue;
+            const image = loader.faceOf(self.assets, face) orelse {
+                const id = self.assets.idOf(face).?;
+                log.warn("environment {f}: face {f} did not load", .{ entry.id, id });
+                job.destroy();
+                entry.wanted = false;
+                if (entry.state != .ready) entry.state = .failed;
+                return null;
+            };
+            from.* = image;
+            const pixels = try self.gpa.dupe(u8, image.image.pixels);
+            job.faces[job.face_count] = .{ .image = .{ .width = image.image.width, .height = image.image.height, .pixels = pixels }, .color_space = image.color_space };
+            job.face_count += 1;
+        }
+        entry.built_from = built;
+        entry.wanted = false;
+        entry.job = job;
+        return job;
+    }
+
+    /// A finished job's cube written to the renderer, or its refusal said. Inside a frame's
+    /// submission window the write waits for the next settle.
+    fn landEnvironment(self: *Self, handle: core.Handle(EnvironmentTag)) Error!void {
+        const entry = self.environments.get(handle).?;
+        const job = entry.job.?;
+        if (job.result) |*prefiltered| {
+            self.renderer.writeEnvironment(entry.handle, prefiltered, environment_label) catch |err| switch (err) {
+                error.InFrame => return,
+                else => return err,
+            };
+            entry.state = .ready;
+        } else |err| switch (err) {
+            error.OutOfMemory => {
+                entry.job = null;
+                job.destroy();
+                return error.OutOfMemory;
+            },
+            else => |refusal| {
+                log.warn("environment {f}: {s}", .{ entry.id, environment.describe(refusal) });
+                if (entry.state != .ready) entry.state = .failed;
+            },
+        }
+        entry.job = null;
+        job.destroy();
+    }
+
+    /// `acquireEnvironment` of a requested one: every face completed here, any running job
+    /// waited for, and the prefilter run on this thread.
+    fn completeEnvironment(self: *Self, handle: core.Handle(EnvironmentTag)) Error!void {
+        const entry = self.environments.get(handle).?;
+        entry.mode = .acquire;
+        for (entry.faces) |face| if (!face.isNone()) try self.completeAsset(face);
+        if (entry.job != null) self.assets.tasks.wait();
+        try self.settleEnvironment(handle);
+        // A job that landed inside the window is written by the next settle; there is none
+        // here to wait for, so an acquire inside the window is refused as a write is.
+        if (self.environments.getConst(handle).?.state == .pending) return error.InFrame;
+    }
+
+    fn releaseEntryEnvironment(self: *Self, handle: core.Handle(EnvironmentTag)) void {
+        const entry = self.environments.get(handle) orelse return;
+        entry.refs -= 1;
+        if (entry.refs != 0) return;
+        if (entry.job) |job| {
+            if (job.done.isSet() or !job.started) job.destroy() else self.abandoned.append(self.gpa, job) catch {
+                // No room to remember it: wait for it here, which only a teardown would.
+                self.assets.tasks.wait();
+                job.destroy();
+            };
+        }
+        for (entry.faces) |face| if (!face.isNone()) self.assets.release(face);
+        self.renderer.destroyEnvironment(entry.handle);
+        _ = self.environments.remove(handle);
+    }
+
+    fn sweepAbandoned(self: *Self) void {
+        var i: usize = 0;
+        while (i < self.abandoned.items.len) {
+            const job = self.abandoned.items[i];
+            if (!job.done.isSet()) {
+                i += 1;
+                continue;
+            }
+            job.destroy();
+            _ = self.abandoned.swapRemove(i);
+        }
+    }
+
+    fn environmentEntryOf(self: *Self, handle: EnvironmentHandle) ?core.Handle(EnvironmentTag) {
+        var it = self.environments.iterator();
+        while (it.next()) |entry| if (entry.value.handle.eql(handle)) return entry.id;
+        return null;
+    }
+
     // -- reload ------------------------------------------------------------------------
 
     /// Re-reads every model and material record, after a package reload has moved `app`'s
@@ -512,6 +827,19 @@ pub const Content = struct {
     pub fn contentChanged(self: *Self) Error!void {
         var materials = self.materials.iterator();
         while (materials.next()) |entry| try self.resolveMaterial(entry.id, if (entry.value.pending) .request else .acquire);
+
+        // Environments re-read and prefiltered again as they were obtained: an acquired one on
+        // this thread, a requested one on the pool, lighting with its old cube meanwhile.
+        var environments = self.environments.iterator();
+        while (environments.next()) |entry| {
+            if (entry.value.job != null) {
+                // A prefilter of the old record is running; it lands, and this one follows it.
+                if (entry.value.mode == .acquire) self.assets.tasks.wait();
+                try self.settleEnvironment(entry.id);
+            }
+            try self.readEnvironment(entry.id, entry.value.mode);
+            try self.settleEnvironment(entry.id);
+        }
 
         var models = self.models.iterator();
         while (models.next()) |entry| {

@@ -44,6 +44,62 @@ pub fn meshLoader(renderer: *Renderer) asset.Loader {
     };
 }
 
+/// A `foundry:texture`'s pixels on the CPU, for an environment's prefilter (`environment.md`
+/// §7.4): the PNG decoded on the pool, its record's colour space beside it, and nothing
+/// uploaded. Keyed apart from `textureLoader`'s entries, so a face that is also a material's
+/// texture is decoded once for each and neither waits on the other.
+pub const FaceImage = struct {
+    image: asset.Image,
+    color_space: asset.ColorSpace,
+};
+
+/// The largest face side a decode accepts: `asset.environment.max_size` times eight, which
+/// is more box filtering than any face needs.
+pub const max_face_dimension: u32 = asset.environment.max_size * 8;
+
+pub fn faceLoader() asset.Loader {
+    return .{
+        .schema = asset.schemas.texture.id,
+        .load = loadFace,
+        .unload = unloadFace,
+        .split = .{ .decode = decodeFace, .finish = asset.adoptDecoded, .discard = discardFace, .after_finish = .adopt },
+    };
+}
+
+pub fn faceOf(registry: *asset.Registry, handle: asset.AssetHandle) ?*const FaceImage {
+    const loaded = registry.getIfLoader(handle, faceLoader()) orelse return null;
+    return @ptrCast(@alignCast(loaded.payload.pointer() orelse return null));
+}
+
+fn loadFace(_: ?*anyopaque, gpa: Allocator, record: asset.Record, bytes: []const u8) asset.LoadError!asset.Payload {
+    return faceLoader().loadWhole(gpa, record, bytes);
+}
+
+fn decodeFace(_: ?*const anyopaque, gpa: Allocator, record: asset.Record, bytes: []const u8) asset.LoadError!asset.Decoded {
+    const face = try gpa.create(FaceImage);
+    errdefer gpa.destroy(face);
+    face.* = .{
+        .image = asset.png.decode(gpa, bytes, .{ .max_dimension = max_face_dimension }) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidAsset,
+        },
+        .color_space = enumField(asset.ColorSpace, record, asset.schemas.color_space_field, .srgb),
+    };
+    return .fromPointer(face);
+}
+
+fn discardFace(gpa: Allocator, decoded: asset.Decoded) void {
+    const face: *FaceImage = @ptrCast(@alignCast(decoded.pointer().?));
+    face.image.deinit(gpa);
+    gpa.destroy(face);
+}
+
+fn unloadFace(_: ?*anyopaque, gpa: Allocator, payload: asset.Payload) void {
+    const face: *FaceImage = @ptrCast(@alignCast(payload.pointer().?));
+    face.image.deinit(gpa);
+    gpa.destroy(face);
+}
+
 pub fn textureOf(registry: *asset.Registry, handle: asset.AssetHandle, renderer: *Renderer) ?renderer_mod.TextureHandle {
     const loaded = registry.getIfLoader(handle, textureLoader(renderer)) orelse return null;
     return loaded.payload.asHandle(renderer_mod.TextureHandle);

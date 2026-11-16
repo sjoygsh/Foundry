@@ -311,7 +311,20 @@ pub const FrameView = struct {
     /// Point and spot lights cast (`shadows-local.md` §11); false draws M39's frame, so a
     /// sample can compare.
     local_shadows: bool = true,
+    /// The one environment lighting this frame (`environment.md` §4): its harmonics and its
+    /// specular cube light every lit draw, added to `ambient`. Null is M40's frame exactly. An
+    /// environment not yet written lights nothing.
+    environment: ?EnvironmentHandle = null,
+    /// Scales the environment's light, 0 to 65504.
+    environment_intensity: f32 = 1,
+    /// Radians about +Y that the environment is turned by.
+    environment_rotation: f32 = 0,
 };
+
+/// A prefiltered environment on the GPU (`environment.md` §7.4): its specular cube and its
+/// harmonics, owned by its creator, written whole and replaced in place behind its handle.
+pub const Environment = opaque {};
+pub const EnvironmentHandle = core.Handle(Environment);
 
 /// One granted tile, as a host reports it (`shadows-local.md` §11).
 pub const ShadowTile = struct {
@@ -436,6 +449,9 @@ pub const Error = error{
     InvalidPixelLength,
     TextureSizeMismatch,
     InvalidMipChain,
+    /// A stale environment handle, or a prefiltered environment whose shape is not one
+    /// `asset.environment.prefilter` makes (`environment.md` §7.4).
+    InvalidEnvironment,
 } || asset.MeshError || rhi.ResourceError || rhi.MapError || rhi.CommandError || rhi.VertexUpdateError || Allocator.Error;
 
 /// A kept upload buffer (M27 Step 10). `reusable_from` is the first frame in which no
@@ -644,12 +660,92 @@ const FrameSlot = struct {
     uniform: rhi.BufferHandle,
     group: rhi.BindGroupHandle,
     shadow_group: rhi.BindGroupHandle = .none,
+    /// The cube both groups bind at binding 5: an environment's, or the black fallback. A cube
+    /// no environment owns any more is destroyed once no slot binds it (`orphan_cubes`).
+    bound_cube: rhi.TextureHandle,
+};
+
+/// One environment (`environment.md` §7.4). `cube` is `.none` until it is first written, and
+/// such an environment lights nothing.
+const EnvironmentState = struct {
+    cube: rhi.TextureHandle = .none,
+    levels: u32 = 0,
+    harmonics: asset.environment.Harmonics = @splat(.{ 0, 0, 0 }),
+    doomed: bool = false,
 };
 
 const DrawConstants = extern struct {
     world: Mat4,
     cofactor: [3][4]f32,
 };
+
+/// A cube of `levels` levels from `size`, its faces' bytes laid out as
+/// `asset.environment.Prefiltered.bytes` is: level by level, face by face, rows top first. One
+/// staging buffer, one copy a face a level, one submit; the buffer is retired behind the copy.
+fn createCube(device: *rhi.Device, label: []const u8, size: u32, levels: u32, bytes: []const u8) Error!rhi.TextureHandle {
+    const cube = try device.createTexture(.{
+        .label = label,
+        .size = .{ .width = size, .height = size },
+        .format = .rgba16_float,
+        .usage = .{ .sampled = true, .copy_dst = true, .copy_src = true },
+        .mip_levels = levels,
+        .kind = .cube,
+        .layers = 6,
+    });
+    errdefer device.destroyTexture(cube);
+    const staging = try device.createBuffer(.{ .label = label, .size = bytes.len, .usage = .{ .copy_src = true }, .memory = .upload });
+    defer device.destroyBuffer(staging);
+    const mapped = try device.mapBuffer(staging);
+    @memcpy(mapped[0..bytes.len], bytes);
+    device.unmapBuffer(staging);
+    const cmd = try device.beginCommandBuffer();
+    var consumed = false;
+    errdefer if (!consumed) cmd.discard();
+    try cmd.textureBarrier(&.{.{ .texture = cube, .from = .undefined, .to = .copy_dst }});
+    var offset: u64 = 0;
+    for (0..levels) |level| {
+        const side = size >> @intCast(level);
+        for (0..6) |face| {
+            try cmd.copyBufferToTexture(.{
+                .src = staging,
+                .src_offset = offset,
+                .dst = cube,
+                .dst_mip_level = @intCast(level),
+                .dst_layer = @intCast(face),
+                .size = .{ .width = side, .height = side },
+            });
+            offset += @as(u64, side) * side * asset.environment.Prefiltered.bytes_per_texel;
+        }
+    }
+    try cmd.textureBarrier(&.{.{ .texture = cube, .from = .copy_dst, .to = .shader_read }});
+    consumed = true;
+    try cmd.submit();
+    return cube;
+}
+
+/// Six `rgba16_float` texels of black, alpha 1 (f16 1.0 is 0x3c00).
+fn blackTexels() [6 * asset.environment.Prefiltered.bytes_per_texel]u8 {
+    var texels: [6 * asset.environment.Prefiltered.bytes_per_texel]u8 = @splat(0);
+    for (0..6) |face| std.mem.writeInt(u16, texels[face * 8 + 6 ..][0..2], 0x3c00, .little);
+    return texels;
+}
+
+/// What `asset.environment.prefilter` makes, and nothing else: a size it allows, the level
+/// count that size has, exactly the bytes those levels need, and finite harmonics. The bytes
+/// themselves are half floats the GPU reads whatever they hold.
+fn validPrefiltered(p: asset.environment.Prefiltered) bool {
+    const env = asset.environment;
+    if (p.size < env.min_size or p.size > env.max_size or !std.math.isPowerOfTwo(p.size)) return false;
+    if (p.levels != env.levelsFor(p.size)) return false;
+    var expected: usize = 0;
+    for (0..p.levels) |level| {
+        const side: usize = p.size >> @intCast(level);
+        expected += 6 * side * side * env.Prefiltered.bytes_per_texel;
+    }
+    if (p.bytes.len != expected) return false;
+    for (p.harmonics) |h| for (h) |v| if (!std.math.isFinite(v)) return false;
+    return true;
+}
 
 fn unitValue(value: f32) bool {
     return std.math.isFinite(value) and value >= 0 and value <= 1;
@@ -803,6 +899,15 @@ pub const Renderer = struct {
     /// Meshes and materials destroyed inside the submission window, freed when it closes.
     doomed_meshes: std.ArrayList(MeshHandle) = .empty,
     doomed_materials: std.ArrayList(MaterialHandle) = .empty,
+    doomed_environments: std.ArrayList(EnvironmentHandle) = .empty,
+    environments: core.HandlePool(Environment, EnvironmentState) = .empty,
+    /// One black texel a face, one level: what binding 5 holds with no environment, so the
+    /// frame group's shape never varies (`environment.md` §8).
+    environment_fallback: rhi.TextureHandle,
+    /// Trilinear and clamped: a level between two is their blend, as the oracle reads it.
+    environment_sampler: rhi.SamplerHandle,
+    /// Cubes replaced or destroyed while a slot's groups still bound them.
+    orphan_cubes: std.ArrayList(rhi.TextureHandle) = .empty,
     uploads: UploadCounts = .{},
     particle_counts: ParticleCounts = .{},
 
@@ -864,6 +969,9 @@ pub const Renderer = struct {
                 // The transmittance atlas and its point sampler (`shadows-local.md` §9).
                 .{ .binding = 3, .type = .sampled_texture, .visibility = .{ .fragment = true } },
                 .{ .binding = 4, .type = .sampler, .visibility = .{ .fragment = true } },
+                // The environment's specular cube and its sampler (`environment.md` §8).
+                .{ .binding = 5, .type = .sampled_texture, .dimension = .cube, .visibility = .{ .fragment = true } },
+                .{ .binding = 6, .type = .sampler, .visibility = .{ .fragment = true } },
             },
         });
         errdefer device.destroyBindGroupLayout(frame_layout);
@@ -912,6 +1020,11 @@ pub const Renderer = struct {
         errdefer device.destroyTexture(translucent_fallback);
         const translucent_sampler = try device.createSampler(.{ .label = "render3d transmittance" });
         errdefer device.destroySampler(translucent_sampler);
+        const black: [6 * asset.environment.Prefiltered.bytes_per_texel]u8 = blackTexels();
+        const environment_fallback = try createCube(device, "render3d empty environment", 1, 1, &black);
+        errdefer device.destroyTexture(environment_fallback);
+        const environment_sampler = try device.createSampler(.{ .label = "render3d environment", .min_filter = .linear, .mag_filter = .linear, .mip_filter = .linear });
+        errdefer device.destroySampler(environment_sampler);
         // Initialise even though Step 3's uniform always disables shadow lookup.
         const shadow_cmd = try device.beginCommandBuffer();
         var shadow_consumed = false;
@@ -981,9 +1094,11 @@ pub const Renderer = struct {
                     .{ .binding = 2, .resource = .{ .sampler = shadow_sampler } },
                     .{ .binding = 3, .resource = .{ .sampled_texture = translucent_fallback } },
                     .{ .binding = 4, .resource = .{ .sampler = translucent_sampler } },
+                    .{ .binding = 5, .resource = .{ .sampled_texture = environment_fallback } },
+                    .{ .binding = 6, .resource = .{ .sampler = environment_sampler } },
                 },
             });
-            slot.* = .{ .uniform = uniform, .group = group };
+            slot.* = .{ .uniform = uniform, .group = group, .bound_cube = environment_fallback };
             built_slots += 1;
         }
 
@@ -1000,6 +1115,8 @@ pub const Renderer = struct {
             .shadow_fallback = shadow_fallback,
             .shadow_sampler = shadow_sampler,
             .translucent_fallback = translucent_fallback,
+            .environment_fallback = environment_fallback,
+            .environment_sampler = environment_sampler,
             .translucent_sampler = translucent_sampler,
             // With shadows off nothing is granted, but the allocator still has a valid shape.
             .shadow_atlas = .init(@max(shadowPageSide(config), 2 * shadow_atlas.min_side), config.shadow_atlas_pages),
@@ -1047,6 +1164,12 @@ pub const Renderer = struct {
         self.recording = false;
         self.doomed_meshes.deinit(self.gpa);
         self.doomed_materials.deinit(self.gpa);
+        self.doomed_environments.deinit(self.gpa);
+        var environments = self.environments.iterator();
+        while (environments.next()) |entry| if (!entry.value.cube.isNone()) self.device.destroyTexture(entry.value.cube);
+        self.environments.deinit(self.gpa);
+        for (self.orphan_cubes.items) |cube| self.device.destroyTexture(cube);
+        self.orphan_cubes.deinit(self.gpa);
         if (self.skin_buffer) |*buffer| buffer.deinit();
         self.gpa.free(self.skin_bytes);
         self.palettes.deinit(self.gpa);
@@ -1106,6 +1229,8 @@ pub const Renderer = struct {
         if (!self.translucent_target.isNone()) self.device.destroyTexture(self.translucent_target);
         self.device.destroyTexture(self.translucent_fallback);
         self.device.destroySampler(self.translucent_sampler);
+        self.device.destroyTexture(self.environment_fallback);
+        self.device.destroySampler(self.environment_sampler);
         self.device.destroyRenderPipeline(self.tone_pipeline);
         self.device.destroyShaderModule(self.tone_vertex);
         self.device.destroyShaderModule(self.tone_fragment);
@@ -1826,6 +1951,120 @@ pub const Renderer = struct {
         _ = self.meshes.remove(handle);
     }
 
+    // -- environments (`environment.md` §7.4) ------------------------------------------
+
+    /// An environment with nothing written yet: a frame naming it lights nothing until
+    /// `writeEnvironment` fills it. Its handle is stable across every write.
+    pub fn createEnvironment(self: *Self) Error!EnvironmentHandle {
+        return self.environments.add(self.gpa, .{});
+    }
+
+    /// Replaces the environment's cube and harmonics with `prefiltered`'s, which the renderer
+    /// copies: the caller may free it at once. The new cube is a new GPU texture, so its size
+    /// may change; the old one is destroyed once no frame slot binds it. Refused inside a frame's
+    /// submission window (`runtime-geometry.md` §4.2); a refusal changes nothing.
+    pub fn writeEnvironment(self: *Self, handle: EnvironmentHandle, prefiltered: *const asset.environment.Prefiltered, label: []const u8) Error!void {
+        if (self.recording) return error.InFrame;
+        const state = self.environments.get(handle) orelse return error.InvalidEnvironment;
+        if (state.doomed) return error.InvalidEnvironment;
+        if (!validPrefiltered(prefiltered.*)) return error.InvalidEnvironment;
+        try self.orphan_cubes.ensureUnusedCapacity(self.gpa, 1);
+        const cube = try createCube(self.device, label, prefiltered.size, prefiltered.levels, prefiltered.bytes);
+        self.uploads.uploaded_bytes += prefiltered.bytes.len;
+        if (!state.cube.isNone()) self.orphan_cubes.appendAssumeCapacity(state.cube);
+        state.* = .{ .cube = cube, .levels = prefiltered.levels, .harmonics = prefiltered.harmonics };
+    }
+
+    /// Whether the environment has been written: false for one only created. Null for a handle
+    /// this renderer does not hold, or one destroyed.
+    pub fn environmentWritten(self: *const Self, handle: EnvironmentHandle) ?bool {
+        const state = self.environments.getConst(handle) orelse return null;
+        if (state.doomed) return null;
+        return !state.cube.isNone();
+    }
+
+    /// Inside a frame's submission window the environment is only doomed: the frame that names
+    /// it still draws with it, a new `begin` naming it is refused, and it is freed when the
+    /// window closes, as `destroyMaterial`'s is.
+    pub fn destroyEnvironment(self: *Self, handle: EnvironmentHandle) void {
+        const state = self.environments.get(handle) orelse return;
+        if (state.doomed) return;
+        if (self.recording) {
+            if (self.doomed_environments.append(self.gpa, handle)) |_| {
+                state.doomed = true;
+                return;
+            } else |_| {
+                // No room to defer it: the frame naming it draws as if it had none.
+                log.warn("environment destroyed mid-frame without room to defer it; freed now", .{});
+                if (self.view.environment) |named| if (named.eql(handle)) {
+                    self.view.environment = null;
+                };
+            }
+        }
+        self.freeEnvironment(handle);
+    }
+
+    /// Its cube joins the orphans, whatever binds it, and the handle answers nothing more.
+    fn freeEnvironment(self: *Self, handle: EnvironmentHandle) void {
+        const state = self.environments.get(handle).?;
+        if (!state.cube.isNone()) {
+            self.orphan_cubes.append(self.gpa, state.cube) catch {
+                // No room to wait for the slots: rebind each to the fallback now, which only
+                // a device failure stops, and destroy the cube.
+                for (self.slots) |*slot| if (slot.bound_cube.eql(state.cube)) {
+                    self.bindCube(slot, self.environment_fallback) catch log.warn("an environment's cube could not be unbound; it is destroyed anyway", .{});
+                };
+                self.device.destroyTexture(state.cube);
+            };
+        }
+        _ = self.environments.remove(handle);
+    }
+
+    /// Binds `cube` in `slot`'s world and caster groups, rebuilding them only if it is not what
+    /// they bind, then destroys each orphaned cube no slot binds any more. The replaced groups
+    /// and cubes are retired by the device once no frame in flight reads them (ADR-0035).
+    fn bindCube(self: *Self, slot: *FrameSlot, cube: rhi.TextureHandle) Error!void {
+        if (!slot.bound_cube.eql(cube)) {
+            const shadow = if (self.shadow_target.isNone()) self.shadow_fallback else self.shadow_target;
+            const translucent = if (self.translucent_target.isNone()) self.translucent_fallback else self.translucent_target;
+            const world = try self.frameGroup(slot.uniform, shadow, translucent, cube);
+            errdefer self.device.destroyBindGroup(world);
+            const caster = if (slot.shadow_group.isNone()) rhi.BindGroupHandle.none else try self.frameGroup(slot.uniform, self.shadow_fallback, self.translucent_fallback, cube);
+            self.device.destroyBindGroup(slot.group);
+            slot.group = world;
+            if (!caster.isNone()) {
+                self.device.destroyBindGroup(slot.shadow_group);
+                slot.shadow_group = caster;
+            }
+            slot.bound_cube = cube;
+        }
+        var i: usize = 0;
+        while (i < self.orphan_cubes.items.len) {
+            const orphan = self.orphan_cubes.items[i];
+            const bound = for (self.slots) |other| {
+                if (other.bound_cube.eql(orphan)) break true;
+            } else false;
+            if (bound) {
+                i += 1;
+                continue;
+            }
+            self.device.destroyTexture(orphan);
+            _ = self.orphan_cubes.swapRemove(i);
+        }
+    }
+
+    fn frameGroup(self: *Self, uniform: rhi.BufferHandle, shadow: rhi.TextureHandle, translucent: rhi.TextureHandle, cube: rhi.TextureHandle) Error!rhi.BindGroupHandle {
+        return self.device.createBindGroup(.{ .label = "render3d frame", .layout = self.frame_layout, .entries = &.{
+            .{ .binding = 0, .resource = .{ .uniform_buffer = .{ .buffer = uniform, .size = @sizeOf(lighting.FrameUniform) } } },
+            .{ .binding = 1, .resource = .{ .sampled_texture = shadow } },
+            .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
+            .{ .binding = 3, .resource = .{ .sampled_texture = translucent } },
+            .{ .binding = 4, .resource = .{ .sampler = self.translucent_sampler } },
+            .{ .binding = 5, .resource = .{ .sampled_texture = cube } },
+            .{ .binding = 6, .resource = .{ .sampler = self.environment_sampler } },
+        } });
+    }
+
     /// Frees what was destroyed inside the window, once nothing can still record it: when
     /// `recordFrame` ends, when a frame is abandoned by the next `begin`, and at `deinit`.
     fn freeDoomed(self: *Self) void {
@@ -1841,6 +2080,8 @@ pub const Renderer = struct {
             _ = self.meshes.remove(handle);
         }
         self.doomed_meshes.clearRetainingCapacity();
+        for (self.doomed_environments.items) |handle| self.freeEnvironment(handle);
+        self.doomed_environments.clearRetainingCapacity();
     }
 
     pub fn begin(self: *Self, view: FrameView) Error!void {
@@ -1855,8 +2096,15 @@ pub const Renderer = struct {
         }
         for (view.ambient) |channel| if (!std.math.isFinite(channel) or channel < 0) return error.InvalidCamera;
         if (!std.math.isFinite(view.shadow_distance) or view.shadow_distance <= 0) return error.InvalidCamera;
+        if (!std.math.isFinite(view.environment_intensity) or view.environment_intensity < 0 or view.environment_intensity > 65504 or
+            !std.math.isFinite(view.environment_rotation)) return error.InvalidCamera;
         // A frame begun and never recorded is abandoned: nothing will record its draws.
         self.freeDoomed();
+        // `freeDoomed` has just freed every environment destroyed inside the last window, so a
+        // destroyed handle is stale here and no doomed one survives to be named.
+        if (view.environment) |handle| {
+            if (self.environments.getConst(handle) == null) return error.InvalidEnvironment;
+        }
         self.view = view;
         self.view_matrix = view.camera.viewMatrix();
         self.view_projection = view.camera.viewProjection(view.target_size.width, view.target_size.height);
@@ -2135,7 +2383,7 @@ pub const Renderer = struct {
             const forward = Mat4.fromQuat(self.view.camera.rotation).mulPoint(Vec3.forward);
             uniform.counts[2] = @intFromBool(self.view.shadow_tint);
             // The lit shaders read the transmittance atlas only in a frame that drew into it.
-            uniform.counts[3] = @intFromBool(self.translucent_order.items.len != 0);
+            if (self.translucent_order.items.len != 0) uniform.counts[3] |= lighting.frame_translucent;
             uniform.camera_forward = .{ forward.x, forward.y, forward.z, self.config.shadow_cascade_blend };
             const texel_u = 1 / @as(f32, @floatFromInt(atlas.width));
             const texel_v = 1 / @as(f32, @floatFromInt(atlas.height));
@@ -2158,8 +2406,18 @@ pub const Renderer = struct {
                 uniform.lights[li].cone_shadow[3] = @floatFromInt(tiles[1]);
             }
         }
+        // The environment's lanes and bit, and its cube bound in this slot's groups (§8).
+        var cube = self.environment_fallback;
+        if (self.view.environment) |handle| {
+            const state = self.environments.getConst(handle).?; // `begin` checked it; a destroy since is deferred.
+            if (!state.cube.isNone()) {
+                lighting.packEnvironment(&uniform, state.harmonics, state.levels, self.view.environment_intensity, self.view.environment_rotation);
+                cube = state.cube;
+            }
+        }
         @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
         self.device.unmapBuffer(slot.uniform);
+        try self.bindCube(&self.slots[frame.slot], cube);
         self.frame = frame;
     }
 
@@ -2329,6 +2587,8 @@ pub const Renderer = struct {
                 .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
                 .{ .binding = 3, .resource = .{ .sampled_texture = self.translucent_fallback } },
                 .{ .binding = 4, .resource = .{ .sampler = self.translucent_sampler } },
+                .{ .binding = 5, .resource = .{ .sampled_texture = slot.bound_cube } },
+                .{ .binding = 6, .resource = .{ .sampler = self.environment_sampler } },
             } });
             built += 1;
         }
@@ -2373,6 +2633,8 @@ pub const Renderer = struct {
                 .{ .binding = 2, .resource = .{ .sampler = self.shadow_sampler } },
                 .{ .binding = 3, .resource = .{ .sampled_texture = target } },
                 .{ .binding = 4, .resource = .{ .sampler = self.translucent_sampler } },
+                .{ .binding = 5, .resource = .{ .sampled_texture = slot.bound_cube } },
+                .{ .binding = 6, .resource = .{ .sampler = self.environment_sampler } },
             } });
             built += 1;
         }
@@ -6252,4 +6514,332 @@ test "particle light is exposed emission plus ambient times base colour, as lit 
     view.ambient = .{ 0.4, 0.8, 0.2 };
     const lit_by_room = try particleFrame(&fx, view, &.{.{ .mesh = quad, .material = smoke, .world = .identity }});
     try expectDisplayTexel(displayTexel(format, .{ 0.2, 0.2, 0.2 }), lit_by_room[centre..][0..4].*);
+}
+
+// -- environments (`environment.md` §7.4, §8) ----------------------------------------------
+
+/// A face colour a channel at a time: high or low, so each face reads as its own pattern.
+const env_face_colours = [6][3]u8{ .{ 255, 40, 40 }, .{ 40, 255, 40 }, .{ 40, 40, 255 }, .{ 255, 255, 40 }, .{ 255, 40, 255 }, .{ 40, 255, 255 } };
+
+/// Six solid faces of `env_face_colours`, or the yard-like gradient, prefiltered at `size`.
+fn testEnvironment(gpa: Allocator, faces: bool, size: u32) !asset.environment.Prefiltered {
+    const env = asset.environment;
+    if (!faces) return env.prefilter(gpa, .{ .source = .{ .gradient = .{
+        .zenith = .{ .rgb = .{ 0.25, 0.45, 1 }, .l = 0.9 },
+        .horizon = .{ .rgb = .{ 0.85, 0.9, 1 }, .l = 0.7 },
+        .ground = .{ .rgb = .{ 0.35, 0.3, 0.22 }, .l = 0.4 },
+        .sharpness = 3,
+    } }, .size = size }, &.{});
+    var images: [6]asset.Image = undefined;
+    var made: usize = 0;
+    defer for (images[0..made]) |*image| image.deinit(gpa);
+    var list: [6]env.Face = undefined;
+    for (&images, &list, env_face_colours) |*image, *face, colour| {
+        image.* = try asset.Image.alloc(gpa, size, size);
+        made += 1;
+        for (0..size) |y| for (0..size) |x| {
+            image.pixel(@intCast(x), @intCast(y)).* = .{ colour[0], colour[1], colour[2], 255 };
+        };
+        face.* = .{ .image = image.*, .color_space = .srgb };
+    }
+    return env.prefilter(gpa, .{ .source = .{ .faces = @splat(.none) }, .luminance = 0.6, .size = size }, &list);
+}
+
+/// A unit quad on z = 0 facing +Z, placed by its draw's world matrix.
+fn envQuad(renderer: *Renderer) !MeshHandle {
+    const positions = [_]Vec3{ .init(-1, -1, 0), .init(1, -1, 0), .init(1, 1, 0), .init(-1, 1, 0) };
+    const normals = [_]Vec3{.init(0, 0, 1)} ** 4;
+    const indices = [_]u16{ 0, 1, 2, 0, 2, 3 };
+    return renderer.createMesh(.{
+        .vertex_count = 4,
+        .streams = &.{
+            .{ .semantic = .position, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&positions) },
+            .{ .semantic = .normal, .format = .float32x3, .bytes = std.mem.sliceAsBytes(&normals) },
+        },
+        .index_format = .uint16,
+        .indices = std.mem.sliceAsBytes(&indices),
+        .submeshes = &.{.{ .first_index = 0, .index_count = 6 }},
+        .bounds = try asset.Mesh.computeBounds(&positions),
+    }, "environment plane");
+}
+
+test "an environment is written whole, refused by shape and inside the window, and changes nothing when refused" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var good = try testEnvironment(testing.allocator, false, 16);
+    defer good.deinit(testing.allocator);
+    const handle = try fx.renderer.createEnvironment();
+    try testing.expectEqual(@as(?bool, false), fx.renderer.environmentWritten(handle));
+
+    // Each shape `prefilter` cannot make, refused before anything is made.
+    var bad = good;
+    bad.size = 24;
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(handle, &bad, "bad"));
+    bad = good;
+    bad.levels += 1;
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(handle, &bad, "bad"));
+    // One level short, its bytes cut to match: only the level count refuses it.
+    bad = good;
+    bad.levels -= 1;
+    bad.bytes = good.bytes[0..good.faceOffset(good.levels - 1, 0)];
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(handle, &bad, "bad"));
+    bad = good;
+    bad.bytes = good.bytes[0 .. good.bytes.len - 8];
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(handle, &bad, "bad"));
+    bad = good;
+    bad.harmonics[4][1] = std.math.nan(f32);
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(handle, &bad, "bad"));
+    try testing.expectEqual(@as(?bool, false), fx.renderer.environmentWritten(handle));
+    try testing.expect(fx.renderer.environments.getConst(handle).?.cube.isNone());
+
+    try fx.renderer.writeEnvironment(handle, &good, "good");
+    try testing.expectEqual(@as(?bool, true), fx.renderer.environmentWritten(handle));
+    try testing.expectEqual(@as(usize, 0), fx.renderer.orphan_cubes.items.len);
+
+    // Inside the window a write is refused; a stale handle anywhere.
+    var view = testView(32);
+    view.environment = handle;
+    try fx.renderer.begin(view);
+    try testing.expectError(error.InFrame, fx.renderer.writeEnvironment(handle, &good, "good"));
+    try finishTestFrame(&fx);
+    const gone = try fx.renderer.createEnvironment();
+    fx.renderer.destroyEnvironment(gone);
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(gone, &good, "good"));
+    try testing.expectEqual(@as(?bool, null), fx.renderer.environmentWritten(gone));
+    view.environment = gone;
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.begin(view));
+    view.environment = handle;
+    for ([_]f32{ -1, std.math.inf(f32), 70000 }) |intensity| {
+        view.environment_intensity = intensity;
+        try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    }
+    view.environment_intensity = 1;
+    view.environment_rotation = std.math.nan(f32);
+    try testing.expectError(error.InvalidCamera, fx.renderer.begin(view));
+    fx.renderer.destroyEnvironment(handle);
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "the fourth uniform carries the environment's lanes and bit only when one written is named" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var prefiltered = try testEnvironment(testing.allocator, false, 32);
+    defer prefiltered.deinit(testing.allocator);
+    const handle = try fx.renderer.createEnvironment();
+    defer fx.renderer.destroyEnvironment(handle);
+
+    const Case = struct { named: bool, written: bool };
+    for ([_]Case{ .{ .named = false, .written = false }, .{ .named = true, .written = false }, .{ .named = true, .written = true }, .{ .named = false, .written = true } }) |case| {
+        if (case.written and fx.renderer.environmentWritten(handle) == false) try fx.renderer.writeEnvironment(handle, &prefiltered, "sky");
+        var view = testView(32);
+        view.ambient = .{ 0.1, 0.2, 0.3 };
+        if (case.named) view.environment = handle;
+        view.environment_intensity = 3;
+        view.environment_rotation = 0.5;
+        try fx.renderer.begin(view);
+        const frame = try fx.device.beginFrame();
+        const cmd = try fx.device.beginCommandBuffer();
+        try fx.renderer.prepare(cmd, frame);
+        const mapped = try fx.device.mapBuffer(fx.renderer.slots[frame.slot].uniform);
+        var uniform: lighting.FrameUniform = undefined;
+        @memcpy(std.mem.asBytes(&uniform), mapped[0..@sizeOf(lighting.FrameUniform)]);
+        fx.device.unmapBuffer(fx.renderer.slots[frame.slot].uniform);
+        try fx.renderer.recordFrame(cmd, frame, false);
+        try cmd.submit();
+        try fx.device.endFrame();
+        const slot = fx.renderer.slots[frame.slot];
+        if (case.named and case.written) {
+            try testing.expectEqual(lighting.frame_environment, uniform.counts[3]);
+            try testing.expectEqual([4]f32{ @floatFromInt(prefiltered.levels - 1), 3, @cos(@as(f32, 0.5)), @sin(@as(f32, 0.5)) }, uniform.environment);
+            for (prefiltered.harmonics, uniform.environment_sh) |h, lane| try testing.expectEqual([4]f32{ h[0] * 3, h[1] * 3, h[2] * 3, 0 }, lane);
+            try testing.expect(slot.bound_cube.eql(fx.renderer.environments.getConst(handle).?.cube));
+        } else {
+            // M40's frame exactly: the lanes zero, the bit clear, the black cube bound.
+            try testing.expectEqual(@as(u32, 0), uniform.counts[3]);
+            try testing.expectEqual(std.mem.zeroes([4]f32), uniform.environment);
+            try testing.expectEqual(std.mem.zeroes([9][4]f32), uniform.environment_sh);
+            try testing.expect(slot.bound_cube.eql(fx.renderer.environment_fallback));
+        }
+    }
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+test "a destroyed or rewritten environment's cube outlives the frames that bind it, and a destroy in the window is deferred" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var small = try testEnvironment(testing.allocator, false, 16);
+    defer small.deinit(testing.allocator);
+    var large = try testEnvironment(testing.allocator, true, 32);
+    defer large.deinit(testing.allocator);
+    const mesh = try litQuad(&fx.renderer, 0);
+    const material = try fx.renderer.createMaterial(.{ .shading = lit_id }, "lit");
+    const handle = try fx.renderer.createEnvironment();
+    try fx.renderer.writeEnvironment(handle, &small, "small");
+    var view = testView(32);
+    view.environment = handle;
+    for (0..2) |_| {
+        try fx.renderer.begin(view);
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+        try finishTestFrame(&fx);
+    }
+    const first = fx.renderer.environments.getConst(handle).?.cube;
+    // Both slots bind the first cube; a rewrite of another size orphans it until each rebinds.
+    try fx.renderer.writeEnvironment(handle, &large, "large");
+    try testing.expectEqual(@as(usize, 1), fx.renderer.orphan_cubes.items.len);
+    try testing.expect(fx.renderer.orphan_cubes.items[0].eql(first));
+    try fx.renderer.begin(view);
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(usize, 1), fx.renderer.orphan_cubes.items.len);
+    try fx.renderer.begin(view);
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    try finishTestFrame(&fx);
+    try testing.expectEqual(@as(usize, 0), fx.renderer.orphan_cubes.items.len);
+
+    // Destroyed after `begin`: the frame still records with it, and it is gone afterwards.
+    try fx.renderer.begin(view);
+    try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+    fx.renderer.destroyEnvironment(handle);
+    try testing.expectEqual(@as(?bool, null), fx.renderer.environmentWritten(handle));
+    try testing.expect(fx.renderer.environments.getConst(handle) != null);
+    try finishTestFrame(&fx);
+    try testing.expect(fx.renderer.environments.getConst(handle) == null);
+    try testing.expectError(error.InvalidEnvironment, fx.renderer.begin(view));
+    // The frames after it unbind its cube, and the cube goes.
+    view.environment = null;
+    for (0..2) |_| {
+        try fx.renderer.begin(view);
+        try fx.renderer.drawMesh(.{ .mesh = mesh, .material = material, .world = .identity });
+        try finishTestFrame(&fx);
+    }
+    try testing.expectEqual(@as(usize, 0), fx.renderer.orphan_cubes.items.len);
+    for (fx.renderer.slots) |slot| try testing.expect(slot.bound_cube.eql(fx.renderer.environment_fallback));
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+/// One frame of `quad` under `material` at `world`, lit by the environment and `view`, read back.
+fn environmentReadback(fx: *TestFixture, view: FrameView, quad: MeshHandle, material: MaterialHandle, world: Mat4, readback: rhi.BufferHandle) ![material_test_bytes]u8 {
+    try fx.renderer.begin(view);
+    try fx.renderer.drawMesh(.{ .mesh = quad, .material = material, .world = world });
+    return cascadeReadback(fx, readback, null);
+}
+
+/// Where pixel (x, y)'s view ray, from the origin, meets the plane through `c` facing `n`.
+fn planePoint(x: usize, y: usize, c: Vec3, n: Vec3) Vec3 {
+    const d = Vec3.init((@as(f32, @floatFromInt(x)) + 0.5) / 16 - 1, 1 - (@as(f32, @floatFromInt(y)) + 0.5) / 16, -1);
+    return Vec3.scale(d, Vec3.dot(c, n) / Vec3.dot(d, n));
+}
+
+test "a mirror reflects each of the six faces in place, by tilt and by yaw, at 1x and 4x" {
+    if (rhi.backend == .null) return;
+    var prefiltered = try testEnvironment(testing.allocator, true, 64);
+    defer prefiltered.deinit(testing.allocator);
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const format = fx.device.capabilities().surface_format;
+        const quad = try envQuad(&fx.renderer);
+        const surface: lighting.Surface = .{ .base = .{ 1, 1, 1 }, .metallic = 1, .roughness = 0 };
+        const mirror = try fx.renderer.createMaterial(.{ .shading = lit_id, .metallic = 1, .roughness = 0 }, "mirror");
+        const handle = try fx.renderer.createEnvironment();
+        try fx.renderer.writeEnvironment(handle, &prefiltered, "faces");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        // A plane turned by `tilt` about +X faces (0, -sin t, cos t), and the centre's reflection
+        // is (0, -sin 2t, cos 2t): +Z untilted, -Y at +35° and +Y at -35°; a yaw then turns +Z
+        // onto -X (a quarter), +X (minus a quarter) and -Z (a half).
+        const Case = struct { face: usize, tilt: f32 = 0, yaw: f32 = 0 };
+        const quarter = std.math.pi / 2.0;
+        for ([_]Case{
+            .{ .face = 4 },                     .{ .face = 1, .yaw = quarter }, .{ .face = 0, .yaw = -quarter },
+            .{ .face = 5, .yaw = std.math.pi }, .{ .face = 2, .tilt = -0.61 },  .{ .face = 3, .tilt = 0.61 },
+        }) |case| {
+            var view = testView(material_test_size);
+            view.environment = handle;
+            view.environment_rotation = case.yaw;
+            const turn = Mat4.fromQuat(core.math.Quat.fromAxisAngle(.init(1, 0, 0), case.tilt));
+            const world = Mat4.translation(.init(0, 0, -2)).mul(turn).mul(Mat4.scaling(.init(3, 3, 1)));
+            const n = turn.mulDirection(.init(0, 0, 1)).normalize();
+            const bytes = try environmentReadback(&fx, view, quad, mirror, world, readback);
+            const light: lighting.EnvironmentLight = .{ .cube = &prefiltered, .rotation = case.yaw };
+            for ([_][2]usize{ .{ 16, 16 }, .{ 13, 18 }, .{ 19, 14 } }) |xy| {
+                const p = planePoint(xy[0], xy[1], .init(0, 0, -2), n);
+                const expected = lighting.shadeLit(surface, p, n, .zero, &.{}, .{ 0, 0, 0 }, null, light);
+                const actual = readTexel(&bytes, xy[0], xy[1]);
+                try expectDisplayTexel(displayTexel(format, expected), actual);
+                // In place: the face's high channels read brighter than its low ones.
+                const colour = env_face_colours[case.face];
+                for (0..3) |hi| for (0..3) |lo| if (colour[hi] > colour[lo]) {
+                    const channel = if (format == .bgra8_unorm or format == .bgra8_unorm_srgb) [3]usize{ 2, 1, 0 } else [3]usize{ 0, 1, 2 };
+                    try testing.expect(actual[channel[hi]] > actual[channel[lo]] + 40);
+                };
+            }
+        }
+    }
+}
+
+test "rough and diffuse surfaces under an environment match the oracle, with ambient and a light, at 1x and 4x" {
+    if (rhi.backend == .null) return;
+    var gradient = try testEnvironment(testing.allocator, false, 64);
+    defer gradient.deinit(testing.allocator);
+    var faces = try testEnvironment(testing.allocator, true, 64);
+    defer faces.deinit(testing.allocator);
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const format = fx.device.capabilities().surface_format;
+        const quad = try envQuad(&fx.renderer);
+        const sky = try fx.renderer.createEnvironment();
+        try fx.renderer.writeEnvironment(sky, &gradient, "gradient");
+        const room = try fx.renderer.createEnvironment();
+        try fx.renderer.writeEnvironment(room, &faces, "faces");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        const light: Light = .{ .kind = .directional, .color = .{ 1, 0.9, 0.8 }, .intensity = 0.6, .world = Mat4.fromQuat(core.math.Quat.lookRotation(.init(0.3, -0.4, -1), .up).?) };
+        const Case = struct { surface: lighting.Surface, faces: bool, tilt: f32, yaw: f32 = 0, intensity: f32 = 1 };
+        for ([_]Case{
+            .{ .surface = .{ .base = .{ 0.8, 0.8, 0.8 }, .roughness = 1 }, .faces = false, .tilt = 0.3 },
+            .{ .surface = .{ .base = .{ 0.7, 0.5, 0.2 }, .metallic = 1, .roughness = 0.45 }, .faces = false, .tilt = 0.5, .intensity = 1.5 },
+            .{ .surface = .{ .base = .{ 0.6, 0.3, 0.1 }, .roughness = 0.6 }, .faces = false, .tilt = -0.4 },
+            .{ .surface = .{ .base = .{ 0.9, 0.9, 0.9 }, .metallic = 1, .roughness = 0.3 }, .faces = true, .tilt = 0.1, .yaw = 0.4 },
+            .{ .surface = .{ .base = .{ 0.5, 0.6, 0.7 }, .roughness = 1 }, .faces = true, .tilt = 0.2, .yaw = 2.2, .intensity = 0.7 },
+        }) |case| {
+            const material = try fx.renderer.createMaterial(.{
+                .shading = lit_id,
+                .base_color = .{ case.surface.base[0], case.surface.base[1], case.surface.base[2], 1 },
+                .metallic = case.surface.metallic,
+                .roughness = case.surface.roughness,
+            }, "under the sky");
+            defer fx.renderer.destroyMaterial(material);
+            var view = testView(material_test_size);
+            view.ambient = .{ 0.02, 0.03, 0.04 };
+            view.environment = if (case.faces) room else sky;
+            view.environment_rotation = case.yaw;
+            view.environment_intensity = case.intensity;
+            const turn = Mat4.fromQuat(core.math.Quat.fromAxisAngle(.init(1, 0, 0), case.tilt));
+            const world = Mat4.translation(.init(0, 0, -2)).mul(turn).mul(Mat4.scaling(.init(3, 3, 1)));
+            const n = turn.mulDirection(.init(0, 0, 1)).normalize();
+            try fx.renderer.begin(view);
+            try fx.renderer.addLight(light);
+            try fx.renderer.drawMesh(.{ .mesh = quad, .material = material, .world = world });
+            const bytes = try cascadeReadback(&fx, readback, null);
+            const environment: lighting.EnvironmentLight = .{ .cube = if (case.faces) &faces else &gradient, .rotation = case.yaw, .intensity = case.intensity };
+            var checked: usize = 0;
+            for ([_][2]usize{ .{ 16, 16 }, .{ 8, 12 }, .{ 24, 20 }, .{ 12, 25 }, .{ 21, 7 } }) |xy| {
+                const p = planePoint(xy[0], xy[1], .init(0, 0, -2), n);
+                // Away from a face's edge, where the GPU's seamless filter and the oracle's clamp
+                // would part (`asset.environment.Prefiltered.sample`).
+                const v = Vec3.scale(p, -1).normalize();
+                const r = Vec3.sub(Vec3.scale(n, 2 * Vec3.dot(n, v)), v);
+                const e = lighting.environmentDirection(r, @cos(case.yaw), @sin(case.yaw));
+                const a = [3]f32{ @abs(e.x), @abs(e.y), @abs(e.z) };
+                const major = @max(a[0], @max(a[1], a[2]));
+                if (case.faces and (a[0] + a[1] + a[2] - major) > major) continue;
+                const expected = lighting.shadeLit(case.surface, p, n, .zero, &.{light}, view.ambient, null, environment);
+                try expectDisplayTexel(displayTexel(format, expected), readTexel(&bytes, xy[0], xy[1]));
+                checked += 1;
+            }
+            try testing.expect(checked >= 2);
+        }
+    }
 }

@@ -21,8 +21,9 @@ struct Frame {
     float4 shadow_tile_parameters[32];
     float4x4 shadow_matrices[32];
     PackedLight lights[16];
+    float4 environment_sh[9]; float4 environment;
 };
-static_assert(sizeof(Frame) == 4256, "Frame must match lighting.zig");
+static_assert(sizeof(Frame) == 4416, "Frame must match lighting.zig");
 struct Material { float4 base_color; float alpha_cutoff; float p0,p1,p2; float4 surface; float4 emissive_strength; };
 static_assert(sizeof(Material) == 64, "Material must match renderer.zig");
 
@@ -46,15 +47,15 @@ static float4 shade(VertexOut in, constant Frame &frame, constant Material &mate
 fragment float4 fragmentParticle(VertexOut in [[stage_in]],
                                  constant Frame &frame [[buffer(9)]],
                                  constant Material &material [[buffer(10)]],
-                                 texture2d<float> image [[texture(2)]],
-                                 sampler image_sampler [[sampler(2)]])
+                                 texture2d<float> image [[texture(3)]],
+                                 sampler image_sampler [[sampler(3)]])
 { return shade(in, frame, material, image, image_sampler); }
 
 fragment float4 fragmentParticleMask(VertexOut in [[stage_in]],
                                      constant Frame &frame [[buffer(9)]],
                                      constant Material &material [[buffer(10)]],
-                                     texture2d<float> image [[texture(2)]],
-                                     sampler image_sampler [[sampler(2)]])
+                                     texture2d<float> image [[texture(3)]],
+                                     sampler image_sampler [[sampler(3)]])
 {
     float4 value = shade(in, frame, material, image, image_sampler);
     if (value.a < material.alpha_cutoff) discard_fragment();

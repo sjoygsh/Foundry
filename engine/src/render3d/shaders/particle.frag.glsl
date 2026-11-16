@@ -19,6 +19,8 @@ layout(set=0,binding=0,std140) uniform Frame {
     layout(offset=672) vec4 shadow_tile_parameters[32];
     layout(offset=1184) mat4 shadow_matrices[32];
     layout(offset=3232) PackedLight lights[16];
+    layout(offset=4256) vec4 environment_sh[9];
+    layout(offset=4400) vec4 environment;
 } frame;
 layout(set=2,binding=0,std140) uniform Material {
     layout(offset=0) vec4 base_color;

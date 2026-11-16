@@ -302,6 +302,48 @@ pub const Prefiltered = struct {
         return out;
     }
 
+    /// The cube along `d` (any length but zero) at fractional level `lod`, as the lit shaders
+    /// read it (`environment.md` §8's oracle): bilinear within the face `d` meets, clamped at
+    /// its edge, and linear between the two levels either side of `lod`, which is clamped to
+    /// the cube's levels. Where the GPU's seamless filter blends a neighbouring face at an edge,
+    /// this does not, so an oracle compares texels away from face edges.
+    pub fn sample(self: Prefiltered, d: [3]f32, lod: f32) [3]f32 {
+        const top: f32 = @floatFromInt(self.levels - 1);
+        const at = @min(@max(lod, 0), top);
+        const m0: u32 = @intFromFloat(@floor(at));
+        const t = at - @as(f32, @floatFromInt(m0));
+        const where = faceOf(d);
+        const a = self.bilinearAt(m0, where);
+        if (t == 0) return a;
+        const b = self.bilinearAt(m0 + 1, where);
+        return .{ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t };
+    }
+
+    fn bilinearAt(self: Prefiltered, level: u32, where: FaceUv) [3]f32 {
+        const size = self.levelSize(level);
+        const s: f32 = @floatFromInt(size);
+        const last = s - 1;
+        const fx = @min(@max((where.u + 1) * 0.5 * s - 0.5, 0), last);
+        const fy = @min(@max((where.v + 1) * 0.5 * s - 0.5, 0), last);
+        const x0: u32 = @intFromFloat(@floor(fx));
+        const y0: u32 = @intFromFloat(@floor(fy));
+        const x1 = @min(x0 + 1, size - 1);
+        const y1 = @min(y0 + 1, size - 1);
+        const tx = fx - @as(f32, @floatFromInt(x0));
+        const ty = fy - @as(f32, @floatFromInt(y0));
+        const a = self.texel(level, where.face, x0, y0);
+        const b = self.texel(level, where.face, x1, y0);
+        const c = self.texel(level, where.face, x0, y1);
+        const e = self.texel(level, where.face, x1, y1);
+        var out: [3]f32 = undefined;
+        for (&out, 0..) |*o, ch| {
+            const upper = a[ch] + (b[ch] - a[ch]) * tx;
+            const lower = c[ch] + (e[ch] - c[ch]) * tx;
+            o.* = upper + (lower - upper) * ty;
+        }
+        return out;
+    }
+
     pub fn deinit(self: *Prefiltered, gpa: Allocator) void {
         gpa.free(self.bytes);
         self.* = undefined;
@@ -907,6 +949,40 @@ test "level 0 is the faces in linear light times the luminance, box-filtered to 
             try testing.expectEqual(@as(f32, want), got[c]);
         }
     };
+}
+
+test "the oracle's sampler reads a texel at its centre, its face by direction, and blends levels" {
+    const gpa = testing.allocator;
+    var images: [6]Image = undefined;
+    for (&images, 0..) |*image, f| {
+        image.* = try Image.alloc(gpa, 16, 16);
+        for (0..16) |y| for (0..16) |x| {
+            image.pixel(@intCast(x), @intCast(y)).* = .{ @intCast((x * 13 + f * 37) % 256), @intCast((y * 11 + f * 5) % 256), @intCast((x * y + f) % 256), 255 };
+        };
+    }
+    defer for (&images) |*image| image.deinit(gpa);
+    var faces: [6]Face = undefined;
+    for (&faces, images) |*face, image| face.* = .{ .image = image, .color_space = .srgb };
+    var out = try prefilter(gpa, facesEnv(16, 2), &faces);
+    defer out.deinit(gpa);
+    // Each texel's own direction, at every level, is that texel, on the face it belongs to.
+    for (0..out.levels) |level| for (0..6) |f| {
+        const s = out.levelSize(@intCast(level));
+        for ([_][2]u32{ .{ 0, 0 }, .{ s / 2, 1 }, .{ s - 1, s - 1 } }) |xy| {
+            const d = texelDirection(@intCast(f), xy[0], xy[1], s);
+            const want = out.texel(@intCast(level), @intCast(f), xy[0], xy[1]);
+            const got = out.sample(d, @floatFromInt(level));
+            for (0..3) |c| try testing.expectApproxEqAbs(want[c], got[c], 1e-5 * @max(1, @abs(want[c])));
+        }
+    };
+    // Between two levels, the blend of each; past the last, the last; below 0, level 0.
+    const d = texelDirection(4, 3, 5, 16);
+    const a = out.sample(d, 0);
+    const b = out.sample(d, 1);
+    const mid = out.sample(d, 0.25);
+    for (0..3) |c| try testing.expectApproxEqAbs(a[c] + (b[c] - a[c]) * 0.25, mid[c], 1e-5 * @max(1, @abs(a[c])));
+    try testing.expectEqual(out.sample(d, @floatFromInt(out.levels - 1)), out.sample(d, 99));
+    try testing.expectEqual(a, out.sample(d, -3));
 }
 
 test "one bright texel spreads at roughness 1 as GGX's cosine lobe predicts" {

@@ -52,7 +52,7 @@ vertex VertexOut vertexUvColor(PositionUvColorIn in [[stage_in]],
 fragment void fragmentMain() {}
 fragment void fragmentMask(VertexOut in [[stage_in]],
     constant Material &material [[buffer(10)]],
-    texture2d<float> image [[texture(2)]], sampler image_sampler [[sampler(2)]]) {
+    texture2d<float> image [[texture(3)]], sampler image_sampler [[sampler(3)]]) {
     float alpha=image.sample(image_sampler,in.uv).a*in.color.a*material.base_color.a;
     if (alpha < material.alpha_cutoff) discard_fragment();
 }
@@ -60,7 +60,7 @@ fragment void fragmentMask(VertexOut in [[stage_in]],
 // caster's depth in alpha, which the pass keeps by max: the translucent depth nearest the light.
 fragment float4 fragmentTranslucent(VertexOut in [[stage_in]],
     constant Material &material [[buffer(10)]],
-    texture2d<float> image [[texture(2)]], sampler image_sampler [[sampler(2)]]) {
+    texture2d<float> image [[texture(3)]], sampler image_sampler [[sampler(3)]]) {
     float4 base=image.sample(image_sampler,in.uv)*in.color*material.base_color;
     return float4(mix(float3(1),base.rgb,base.a),in.position.z);
 }

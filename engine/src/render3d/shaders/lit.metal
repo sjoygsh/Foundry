@@ -7,13 +7,14 @@ struct Frame {
     float4 camera_forward; float4 shadow_splits; float4 shadow_parameters;
     float4 shadow_tiles[32]; float4 shadow_tile_parameters[32]; float4x4 shadow_matrices[32];
     PackedLight lights[16];
+    float4 environment_sh[9]; float4 environment;
 };
 struct Constants { float4x4 world; float3x3 cofactor; };
 struct Material {
     float4 base_color; float alpha_cutoff; float p0,p1,p2;
     float4 surface; float4 emissive_strength;
 };
-static_assert(sizeof(Frame)==4256, "Frame matches lighting.zig");
+static_assert(sizeof(Frame)==4416, "Frame matches lighting.zig");
 static_assert(sizeof(Constants)==112, "Constants matches renderer.zig");
 static_assert(sizeof(Material)==64, "Material matches renderer.zig");
 struct VertexOut {
@@ -94,6 +95,19 @@ float2 ambient_dfg(float rough, float nv) {
     float a=min(r.x*r.x,exp2(-9.28*nv))*r.x+r.y;
     return float2(-1.04,1.04)*a+r.zw;
 }
+// Nine pre-convolved coefficients, rgb, already times the intensity: asset.environment.evaluate.
+static float3 environmentHarmonics(constant Frame &frame,float3 n) {
+    float3 r=frame.environment_sh[0].rgb*0.282095f;
+    r+=frame.environment_sh[1].rgb*(0.488603f*n.y);
+    r+=frame.environment_sh[2].rgb*(0.488603f*n.z);
+    r+=frame.environment_sh[3].rgb*(0.488603f*n.x);
+    r+=frame.environment_sh[4].rgb*(1.092548f*n.x*n.y);
+    r+=frame.environment_sh[5].rgb*(1.092548f*n.y*n.z);
+    r+=frame.environment_sh[6].rgb*(0.315392f*(3*n.z*n.z-1));
+    r+=frame.environment_sh[7].rgb*(1.092548f*n.x*n.z);
+    r+=frame.environment_sh[8].rgb*(0.546274f*(n.x*n.x-n.y*n.y));
+    return r;
+}
 constant float3 TINTS[4]={float3(1,.25,.25),float3(.25,1,.25),float3(.25,.25,1),float3(1,1,.25)};
 // One tile's 3x3 comparison filter (shadows-cascaded.md §5, shadows-local.md §6), each tap
 // clamped two texels inside its tile so none reads a neighbour's depth; w is -1 when the point
@@ -121,7 +135,7 @@ static float4 tileShadow(constant Frame &frame,uint t,float3 world,float3 normal
     float4 tile=frame.shadow_tiles[t];
     if (any(q.xy<tile.xy) || any(q.xy>tile.zw) || q.z<0 || q.z>1) return float4(1,1,1,-1);
     float2 lo=tile.xy+frame.shadow_parameters.zw, hi=tile.zw-frame.shadow_parameters.zw;
-    bool tinted=frame.counts.w != 0;
+    bool tinted=(frame.counts.w & 1u) != 0;
     float visibility=0;
     float3 transmit=0;
     if (p.z != 0) {
@@ -162,7 +176,8 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
     texture2d<float> normal_image,sampler normal_sampler,
     texture2d<float> ao_image,sampler ao_sampler,
     texture2d<float> emissive_image,sampler emissive_sampler,
-    depth2d<float> shadow_image,sampler shadow_sampler,texture2d<float> tint_image,sampler tint_sampler) {
+    depth2d<float> shadow_image,sampler shadow_sampler,texture2d<float> tint_image,sampler tint_sampler,
+    texturecube<float> environment_image,sampler environment_sampler) {
     float4 base=base_image.sample(base_sampler,in.uv)*material.base_color*in.color;
     if (mask && base.a < material.alpha_cutoff) discard_fragment();
     float4 mr=mr_image.sample(mr_sampler,in.uv);
@@ -250,6 +265,16 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
     float3 spec=max(f0*ab.x+ab.y,float3(0));
     float dielectric=.04*ab.x+ab.y;
     result+=frame.ambient.rgb*((1-dielectric)*base.rgb*(1-metal)+spec)*ao;
+    // The environment (environment.md §8), when counts.w's second bit binds one: its harmonics at
+    // the normal, and its cube along the reflection at roughness times its top level, both turned
+    // by its yaw, through the same split sum as the constant ambient (lighting.environmentTerm).
+    if ((frame.counts.w & 2u) != 0) {
+        float c=frame.environment.z, s=frame.environment.w;
+        float3 r=2*dot(n,v)*n-v;
+        float3 irradiance=environmentHarmonics(frame,float3(c*n.x-s*n.z,n.y,s*n.x+c*n.z));
+        float3 radiance=environment_image.sample(environment_sampler,float3(c*r.x-s*r.z,r.y,s*r.x+c*r.z),level(rough*frame.environment.x)).rgb*frame.environment.y;
+        result+=(irradiance*(1-dielectric)*base.rgb*(1-metal)+radiance*spec)*ao;
+    }
     result+=material.emissive_strength.rgb*emissive_image.sample(emissive_sampler,in.uv).rgb*material.emissive_strength.w;
     if (frame.counts.z != 0 && cascade < frame.counts.y)
         result*=mix(TINTS[cascade],cascade+1 < frame.counts.y ? TINTS[cascade+1] : float3(1),next_weight);
@@ -258,45 +283,49 @@ static float4 shade(VertexOut in,bool front,bool mask,bool normal_map,
 }
 fragment float4 fragmentLit0(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
-    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
-    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
-    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
-    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    texture2d<float> base_image [[texture(3)]],sampler base_sampler [[sampler(3)]],
+    texture2d<float> mr_image [[texture(4)]],sampler mr_sampler [[sampler(4)]],
+    texture2d<float> normal_image [[texture(5)]],sampler normal_sampler [[sampler(5)]],
+    texture2d<float> ao_image [[texture(6)]],sampler ao_sampler [[sampler(6)]],
+    texture2d<float> emissive_image [[texture(7)]],sampler emissive_sampler [[sampler(7)]],
     depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
-    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
-    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]],
+    texturecube<float> environment_image [[texture(2)]],sampler environment_sampler [[sampler(2)]]) {
+    return shade(in,front,false,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler,environment_image,environment_sampler);
 }
 fragment float4 fragmentLit1(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
-    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
-    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
-    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
-    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    texture2d<float> base_image [[texture(3)]],sampler base_sampler [[sampler(3)]],
+    texture2d<float> mr_image [[texture(4)]],sampler mr_sampler [[sampler(4)]],
+    texture2d<float> normal_image [[texture(5)]],sampler normal_sampler [[sampler(5)]],
+    texture2d<float> ao_image [[texture(6)]],sampler ao_sampler [[sampler(6)]],
+    texture2d<float> emissive_image [[texture(7)]],sampler emissive_sampler [[sampler(7)]],
     depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
-    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
-    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]],
+    texturecube<float> environment_image [[texture(2)]],sampler environment_sampler [[sampler(2)]]) {
+    return shade(in,front,true,false,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler,environment_image,environment_sampler);
 }
 fragment float4 fragmentLit2(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
-    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
-    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
-    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
-    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    texture2d<float> base_image [[texture(3)]],sampler base_sampler [[sampler(3)]],
+    texture2d<float> mr_image [[texture(4)]],sampler mr_sampler [[sampler(4)]],
+    texture2d<float> normal_image [[texture(5)]],sampler normal_sampler [[sampler(5)]],
+    texture2d<float> ao_image [[texture(6)]],sampler ao_sampler [[sampler(6)]],
+    texture2d<float> emissive_image [[texture(7)]],sampler emissive_sampler [[sampler(7)]],
     depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
-    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
-    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]],
+    texturecube<float> environment_image [[texture(2)]],sampler environment_sampler [[sampler(2)]]) {
+    return shade(in,front,false,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler,environment_image,environment_sampler);
 }
 fragment float4 fragmentLit3(VertexOut in [[stage_in]],bool front [[front_facing]],
     constant Frame &frame [[buffer(9)]],constant Material &material [[buffer(10)]],
-    texture2d<float> base_image [[texture(2)]],sampler base_sampler [[sampler(2)]],
-    texture2d<float> mr_image [[texture(3)]],sampler mr_sampler [[sampler(3)]],
-    texture2d<float> normal_image [[texture(4)]],sampler normal_sampler [[sampler(4)]],
-    texture2d<float> ao_image [[texture(5)]],sampler ao_sampler [[sampler(5)]],
-    texture2d<float> emissive_image [[texture(6)]],sampler emissive_sampler [[sampler(6)]],
+    texture2d<float> base_image [[texture(3)]],sampler base_sampler [[sampler(3)]],
+    texture2d<float> mr_image [[texture(4)]],sampler mr_sampler [[sampler(4)]],
+    texture2d<float> normal_image [[texture(5)]],sampler normal_sampler [[sampler(5)]],
+    texture2d<float> ao_image [[texture(6)]],sampler ao_sampler [[sampler(6)]],
+    texture2d<float> emissive_image [[texture(7)]],sampler emissive_sampler [[sampler(7)]],
     depth2d<float> shadow_image [[texture(0)]],sampler shadow_sampler [[sampler(0)]],
-    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]]) {
-    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler);
+    texture2d<float> tint_image [[texture(1)]],sampler tint_sampler [[sampler(1)]],
+    texturecube<float> environment_image [[texture(2)]],sampler environment_sampler [[sampler(2)]]) {
+    return shade(in,front,true,true,frame,material,base_image,base_sampler,mr_image,mr_sampler,normal_image,normal_sampler,ao_image,ao_sampler,emissive_image,emissive_sampler,shadow_image,shadow_sampler,tint_image,tint_sampler,environment_image,environment_sampler);
 }

@@ -1,6 +1,7 @@
 //! Pure light packing and display maths. `docs/design/light.md` §3 and §7.
 const std = @import("std");
 const core = @import("core");
+const asset = @import("asset");
 const Mat4 = core.math.Mat4;
 const Vec3 = core.math.Vec3;
 
@@ -31,16 +32,17 @@ pub const PackedLight = extern struct {
 /// Tiles a frame's shadows may use, cascades included (`shadows-local.md` §5, §8).
 pub const max_shadow_tiles = 32;
 
-/// The third layout (`shadows-local.md` §8), 4,256 bytes. Every shader that declares `Frame`
-/// declares all of it and asserts the size.
+/// The fourth layout (`environment.md` §8), 4,416 bytes: the third (`shadows-local.md` §8) and
+/// the environment's 160. Every shader that declares `Frame` declares all of it and asserts the
+/// size.
 pub const FrameUniform = extern struct {
     view_projection: Mat4,
     camera_exposure: [4]f32,
     /// rgb: ambient radiance; w: the widest penumbra in texels, `Config.shadow_penumbra_max`
     /// (`shadows-local.md` §10), written when a frame has shadow tiles.
     ambient: [4]f32,
-    /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: the
-    /// translucent switch (`shadows-local.md` §9).
+    /// x: lights; y: cascades fitted, 0 turning the lookup off; z: the cascade tint; w: bits,
+    /// `frame_translucent` (`shadows-local.md` §9) and `frame_environment` (`environment.md` §8).
     counts: [4]u32,
     /// xyz: the camera's forward axis, for view depth; w: the blend band's fraction.
     camera_forward: [4]f32,
@@ -60,7 +62,40 @@ pub const FrameUniform = extern struct {
     /// w for a perspective tile.
     shadow_matrices: [max_shadow_tiles]Mat4,
     lights: [max_lights]PackedLight,
+    /// The environment's nine harmonics, rgb, already times its intensity (`environment.md` §8).
+    environment_sh: [9][4]f32,
+    /// x: the specular cube's top level; y: its intensity; zw: the yaw's cosine and sine.
+    environment: [4]f32,
 };
+
+/// `FrameUniform.counts[3]`'s bits: the lit shaders read the transmittance atlas, and the
+/// environment.
+pub const frame_translucent: u32 = 1;
+pub const frame_environment: u32 = 2;
+
+/// The environment a frame is lit by, as the oracle reads it (`environment.md` §8): the
+/// prefiltered cube and harmonics the renderer uploaded, one intensity for both, and a yaw.
+pub const EnvironmentLight = struct {
+    cube: *const asset.environment.Prefiltered,
+    intensity: f32 = 1,
+    /// Radians about +Y: the environment is turned by this, so a world direction reads the
+    /// cube along itself turned back (`environmentDirection`).
+    rotation: f32 = 0,
+};
+
+/// The cube's direction for world direction `d`, the environment turned by the yaw whose
+/// cosine and sine these are: `d` turned by its negative about +Y.
+pub fn environmentDirection(d: Vec3, cos_yaw: f32, sin_yaw: f32) Vec3 {
+    return .init(cos_yaw * d.x - sin_yaw * d.z, d.y, sin_yaw * d.x + cos_yaw * d.z);
+}
+
+/// Writes the environment's lanes and its bit. The harmonics are multiplied by the intensity
+/// here, once, as the oracle multiplies them, so the GPU and the CPU sum the same numbers.
+pub fn packEnvironment(uniform: *FrameUniform, harmonics: asset.environment.Harmonics, levels: u32, intensity: f32, rotation: f32) void {
+    for (harmonics, &uniform.environment_sh) |h, *lane| lane.* = .{ h[0] * intensity, h[1] * intensity, h[2] * intensity, 0 };
+    uniform.environment = .{ @floatFromInt(levels - 1), intensity, @cos(rotation), @sin(rotation) };
+    uniform.counts[3] |= frame_environment;
+}
 
 /// Validate before packing. Scale the axis first to avoid overflow/underflow in length.
 pub fn direction(world: Mat4) Vec3 {
@@ -602,13 +637,7 @@ pub fn brdf(surface: Surface, n: Vec3, v: Vec3, l: Vec3) [3]f32 {
 /// Constant radiance split-sum: analytic DFG fit, Karis (2014),
 /// Physically Based Shading on Mobile, unrealengine.com. No environment map.
 pub fn ambient(surface: Surface, nv: f32, radiance: [3]f32) [3]f32 {
-    const rough = std.math.clamp(surface.roughness, 0.045, 1);
-    const rx = 1 - rough;
-    const ry = 0.0425 - 0.0275 * rough;
-    const rz = 1.04 - 0.572 * rough;
-    const rw = -0.04 + 0.022 * rough;
-    const a = @min(rx * rx, @exp2(-9.28 * @max(nv, 0))) * rx + ry;
-    const ab = [2]f32{ -1.04 * a + rz, 1.04 * a + rw };
+    const ab = dfg(surface.roughness, nv);
     const dielectric = 0.04 * ab[0] + ab[1];
     var result: [3]f32 = undefined;
     for (surface.base, radiance, &result) |base, light, *value| {
@@ -620,10 +649,60 @@ pub fn ambient(surface: Surface, nv: f32, radiance: [3]f32) [3]f32 {
     return result;
 }
 
+/// The split sum's scale and bias for F0 at a roughness and `n·v`: the analytic fit both
+/// `ambient` and `environmentTerm` read, as the lit shaders' `ambient_dfg` does.
+fn dfg(roughness: f32, nv: f32) [2]f32 {
+    const rough = std.math.clamp(roughness, 0.045, 1);
+    const rx = 1 - rough;
+    const ry = 0.0425 - 0.0275 * rough;
+    const rz = 1.04 - 0.572 * rough;
+    const rw = -0.04 + 0.022 * rough;
+    const a = @min(rx * rx, @exp2(-9.28 * @max(nv, 0))) * rx + ry;
+    return .{ -1.04 * a + rz, 1.04 * a + rw };
+}
+
+/// What an environment adds at a point (`environment.md` §8), before exposure: its harmonics at
+/// the normal times the dielectric's diffuse, and its cube along the reflection, at roughness
+/// times the top level, times the split sum's specular, both times occlusion. `n` and `v` are
+/// unit, `v` toward the eye.
+pub fn environmentTerm(surface: Surface, n: Vec3, v: Vec3, environment: EnvironmentLight) [3]f32 {
+    const cube = environment.cube;
+    const nv = Vec3.dot(n, v);
+    const ab = dfg(surface.roughness, @max(nv, 0));
+    const dielectric = 0.04 * ab[0] + ab[1];
+    const cos_yaw = @cos(environment.rotation);
+    const sin_yaw = @sin(environment.rotation);
+    var scaled: asset.environment.Harmonics = undefined;
+    for (cube.harmonics, &scaled) |h, *out| out.* = .{ h[0] * environment.intensity, h[1] * environment.intensity, h[2] * environment.intensity };
+    const turned_n = environmentDirection(n, cos_yaw, sin_yaw);
+    const irradiance = asset.environment.evaluate(scaled, .{ turned_n.x, turned_n.y, turned_n.z });
+    const r = Vec3.sub(Vec3.scale(n, 2 * nv), v);
+    const turned_r = environmentDirection(r, cos_yaw, sin_yaw);
+    const rough = std.math.clamp(surface.roughness, 0.045, 1);
+    const top: f32 = @floatFromInt(cube.levels - 1);
+    const sampled = cube.sample(.{ turned_r.x, turned_r.y, turned_r.z }, rough * top);
+    var result: [3]f32 = undefined;
+    for (surface.base, irradiance, sampled, &result) |base, diffuse, specular_light, *value| {
+        const f0 = 0.04 * (1 - surface.metallic) + base * surface.metallic;
+        const specular = @max(f0 * ab[0] + ab[1], 0);
+        value.* = (diffuse * (1 - dielectric) * base * (1 - surface.metallic) + specular_light * environment.intensity * specular) * surface.occlusion;
+    }
+    return result;
+}
+
 pub fn shade(surface: Surface, position: Vec3, normal: Vec3, camera: Vec3, lights: []const Light, ambient_radiance: [3]f32, exposure: ?f32) [3]f32 {
+    return shadeLit(surface, position, normal, camera, lights, ambient_radiance, exposure, null);
+}
+
+/// `shade` with an environment: the oracle every lit readback compares against (`light.md` §8,
+/// `environment.md` §8).
+pub fn shadeLit(surface: Surface, position: Vec3, normal: Vec3, camera: Vec3, lights: []const Light, ambient_radiance: [3]f32, exposure: ?f32, environment: ?EnvironmentLight) [3]f32 {
     const n = normal.normalize();
     const v = Vec3.sub(camera, position).normalize();
     var result = ambient(surface, @max(Vec3.dot(n, v), 0), ambient_radiance);
+    if (environment) |light| {
+        for (&result, environmentTerm(surface, n, v, light)) |*value, added| value.* += added;
+    }
     for (lights) |light| {
         var l = Vec3.scale(direction(light.world), -1);
         var falloff: f32 = 1;
@@ -684,8 +763,8 @@ pub fn toneMap(input: [3]f32) [3]f32 {
 test "frame packing pins every uniform offset and light stride" {
     const t = std.testing;
     try t.expectEqual(@as(usize, 64), @sizeOf(PackedLight));
-    try t.expectEqual(@as(usize, 4256), @sizeOf(FrameUniform));
-    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "camera_forward", 112 }, .{ "shadow_splits", 128 }, .{ "shadow_parameters", 144 }, .{ "shadow_tiles", 160 }, .{ "shadow_tile_parameters", 672 }, .{ "shadow_matrices", 1184 }, .{ "lights", 3232 } }) |field|
+    try t.expectEqual(@as(usize, 4416), @sizeOf(FrameUniform));
+    inline for (.{ .{ "view_projection", 0 }, .{ "camera_exposure", 64 }, .{ "ambient", 80 }, .{ "counts", 96 }, .{ "camera_forward", 112 }, .{ "shadow_splits", 128 }, .{ "shadow_parameters", 144 }, .{ "shadow_tiles", 160 }, .{ "shadow_tile_parameters", 672 }, .{ "shadow_matrices", 1184 }, .{ "lights", 3232 }, .{ "environment_sh", 4256 }, .{ "environment", 4400 } }) |field|
         try t.expectEqual(@as(usize, field[1]), @offsetOf(FrameUniform, field[0]));
     const light: Light = .{ .kind = .spot, .intensity = 70, .range = 9, .world = Mat4.translation(.init(3, 4, 5)) };
     const frame = packFrame(.identity, .init(1, 2, 3), null, .{ 4, 5, 6 }, &.{light});
@@ -914,4 +993,37 @@ test "a penumbra's width is the gap times the light's size over the blocker's di
     const ortho = orthographicPenumbraScale(0.0047, 40, 0.02);
     try testing.expectApproxEqRel(3 * @tan(@as(f32, 0.0047)) / 0.02, (3.0 / 40.0) * ortho, 1e-5);
     try testing.expectEqual(@as(f32, 0), orthographicPenumbraScale(0, 40, 0.02));
+}
+
+test "a constant environment lights exactly as constant ambient does, and a yaw turns the cube by +Y" {
+    const gpa = std.testing.allocator;
+    const grey: asset.environment.Colour = .{ .rgb = .{ 0.5, 0.25, 0.125 }, .l = 2 };
+    var cube = try asset.environment.prefilter(gpa, .{ .source = .{ .gradient = .{ .zenith = grey, .horizon = grey, .ground = grey } }, .size = 16 }, &.{});
+    defer cube.deinit(gpa);
+    const radiance = grey.radiance();
+    const n = Vec3.init(0.3, 0.8, 0.52).normalize();
+    for ([_]Surface{
+        .{ .base = .{ 0.8, 0.5, 0.2 }, .roughness = 0.3 },
+        .{ .base = .{ 0.9, 0.7, 0.4 }, .metallic = 1, .roughness = 0.7, .occlusion = 0.5 },
+        .{ .base = .{ 0.2, 0.6, 0.9 }, .metallic = 0.3, .roughness = 1 },
+    }) |surface| for ([_]Vec3{ n, Vec3.init(0, 0.2, 1).normalize() }) |v| {
+        const expected = ambient(surface, @max(Vec3.dot(n, v), 0), .{ radiance[0] * 1.5, radiance[1] * 1.5, radiance[2] * 1.5 });
+        const actual = environmentTerm(surface, n, v, .{ .cube = &cube, .intensity = 1.5, .rotation = 1.3 });
+        for (expected, actual) |e, a| try std.testing.expectApproxEqRel(e, a, 2e-3);
+    };
+    // Turned a quarter, the cube's +Z face lies toward world +X, and its +X toward world -Z.
+    const quarter = std.math.pi / 2.0;
+    const toward_x = environmentDirection(.init(1, 0, 0), @cos(quarter), @sin(quarter));
+    try std.testing.expectApproxEqAbs(@as(f32, 1), toward_x.z, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), toward_x.x, 1e-6);
+    const toward_minus_z = environmentDirection(.init(0, 0, -1), @cos(quarter), @sin(quarter));
+    try std.testing.expectApproxEqAbs(@as(f32, 1), toward_minus_z.x, 1e-6);
+    try std.testing.expectEqual(@as(f32, 0.25), environmentDirection(.init(0, 0.25, 0), 0.6, 0.8).y);
+    // Packed, the harmonics carry the intensity and the bit joins the translucent one.
+    var uniform = std.mem.zeroes(FrameUniform);
+    uniform.counts[3] = frame_translucent;
+    packEnvironment(&uniform, cube.harmonics, cube.levels, 2, 0);
+    try std.testing.expectEqual(frame_translucent | frame_environment, uniform.counts[3]);
+    try std.testing.expectEqual([4]f32{ @floatFromInt(cube.levels - 1), 2, 1, 0 }, uniform.environment);
+    try std.testing.expectEqual(cube.harmonics[0][1] * 2, uniform.environment_sh[0][1]);
 }
