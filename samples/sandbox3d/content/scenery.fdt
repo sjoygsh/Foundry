@@ -1,0 +1,82 @@
+# M41's scenery (`docs/design/environment.md` §11, ADR-0083, ADR-0085): what surrounds the sample
+# and what shows it. Read by `samples/sandbox3d/scenery.zig`.
+#
+# - **The environments.** One lights a frame and stands behind it as its sky (§4). The sample
+#   chooses by where the camera is: inside the room's walls the room's, anywhere else the yard's
+#   day. `--environment=off` submits neither, as M40 drew.
+# - **The spheres.** Two rows of seven on the strip of hillside west of the yard's stones, drawn
+#   and never collided with, so no tour pin moves: the near row dielectric, the far row metal, and
+#   roughness from 0 to 1 along each. Their materials are the records below, which a mod restates
+#   by ID.
+# - **The lamp.** `models/lamp.glb`, written by scripts/m41/make_lamp.py: a standing lamp whose one
+#   `KHR_lights_punctual` spot the import makes `sandbox3d:models.lamp.light0`, and whose metal is
+#   normal-mapped with no tangents in the file, so the import generates them (ADR-0086). It stands
+#   in M37's corner and is not solid; the sample submits its light with `modelLights`.
+
+foundry:model_import sandbox3d:models.lamp {
+    source "models/lamp.glb"
+    lights [ { name "Lamp" casts_shadow true source_radius 0.04 } ]
+}
+
+@schema scenery {
+    # A `foundry:environment` each; either may be left out, and a frame then has none there.
+    outdoors id (optional)
+    indoors  id (optional)
+    # The room's walls, about the origin, in metres: the camera inside this square, below
+    # `indoors_height`, is indoors.
+    indoors_half   f32 (default 3)
+    indoors_height f32 (default 3)
+
+    lamp id (optional)
+    lamp_position { x f32 y f32 z f32 }
+    lamp_yaw f32 (default 0)
+
+    # The first sphere's centre, the step from one to the next along a row, and from the first
+    # row to the second; each is placed on the hillside by its height below the centre.
+    sphere_origin { x f32 y f32 z f32 }
+    sphere_step   { x f32 y f32 z f32 }
+    sphere_row    { x f32 y f32 z f32 }
+    sphere_radius f32 (default 0.35)
+    dielectric [id]
+    metal      [id]
+}
+
+scenery sandbox3d:scenery.main {
+    outdoors sandbox3d:environments.day
+    indoors  sandbox3d:environments.room
+    lamp sandbox3d:models.lamp
+    # M37's corner is centred on (-20, 0, 0); the lamp stands at its south-east, beside the floor.
+    lamp_position { x -17 y 0 z 2.5 }
+    lamp_yaw 3.1416
+    # The yard is centred on (70, 0, 0) and its stones start 29 m west of it.
+    sphere_origin { x 39.2 y 0 z -3 }
+    sphere_step   { x 0 y 0 z 1 }
+    sphere_row    { x -1 y 0 z 0 }
+    sphere_radius 0.35
+    dielectric [
+        sandbox3d:materials.sphere.d0 sandbox3d:materials.sphere.d1 sandbox3d:materials.sphere.d2
+        sandbox3d:materials.sphere.d3 sandbox3d:materials.sphere.d4 sandbox3d:materials.sphere.d5
+        sandbox3d:materials.sphere.d6
+    ]
+    metal [
+        sandbox3d:materials.sphere.m0 sandbox3d:materials.sphere.m1 sandbox3d:materials.sphere.m2
+        sandbox3d:materials.sphere.m3 sandbox3d:materials.sphere.m4 sandbox3d:materials.sphere.m5
+        sandbox3d:materials.sphere.m6
+    ]
+}
+
+# Roughness 0, 1/6, ... 1: a white dielectric, then a gold-coloured metal.
+foundry:material sandbox3d:materials.sphere.d0 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.0 }
+foundry:material sandbox3d:materials.sphere.d1 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.1667 }
+foundry:material sandbox3d:materials.sphere.d2 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.3333 }
+foundry:material sandbox3d:materials.sphere.d3 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.5 }
+foundry:material sandbox3d:materials.sphere.d4 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.6667 }
+foundry:material sandbox3d:materials.sphere.d5 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 0.8333 }
+foundry:material sandbox3d:materials.sphere.d6 { shading foundry:shading.lit base_color { r 0.8 g 0.8 b 0.8 a 1 } metallic 0 roughness 1.0 }
+foundry:material sandbox3d:materials.sphere.m0 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.0 }
+foundry:material sandbox3d:materials.sphere.m1 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.1667 }
+foundry:material sandbox3d:materials.sphere.m2 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.3333 }
+foundry:material sandbox3d:materials.sphere.m3 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.5 }
+foundry:material sandbox3d:materials.sphere.m4 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.6667 }
+foundry:material sandbox3d:materials.sphere.m5 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 0.8333 }
+foundry:material sandbox3d:materials.sphere.m6 { shading foundry:shading.lit base_color { r 1 g 0.78 b 0.34 a 1 } metallic 1 roughness 1.0 }

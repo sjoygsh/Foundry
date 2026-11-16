@@ -152,6 +152,7 @@ const Native = native_mod.Native;
 const orrery_mod = @import("orrery.zig");
 const Orrery = orrery_mod.Orrery;
 const LightSettings = @import("light_settings.zig").LightSettings;
+const scenery_mod = @import("scenery.zig");
 
 const Mat4 = core.math.Mat4;
 const Quat = core.math.Quat;
@@ -316,7 +317,7 @@ pub fn main(init: std.process.Init) !void {
         if (!options.parse(arg)) {
             var buffer: [256]u8 = undefined;
             var err = std.Io.File.stderr().writer(init.io, &buffer);
-            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadows=off] [--shadow-cascades=1|2|3|4] [--shadow-tint] [--shadow-proof] [--local-shadows=off] [--penumbra=off]\n") catch {};
+            err.interface.writeAll("usage: sandbox3d [--msaa=1|4] [--cull=on|off] [--shadows=off] [--shadow-cascades=1|2|3|4] [--shadow-tint] [--shadow-proof] [--local-shadows=off] [--penumbra=off] [--environment=off]\n") catch {};
             err.interface.flush() catch {};
             // A mistyped command line is the operator's to fix, not a crash to trace.
             std.process.exit(2);
@@ -342,6 +343,8 @@ const Options = struct {
     local_shadows: bool = true,
     /// Lights keep their content's `source_radius`; off submits every light with 0, M39's filter.
     penumbra: bool = true,
+    /// A frame names the scenery's environment, M41 (`environment.md` §10); off names none.
+    environment: bool = true,
 
     /// False for anything this sample does not take.
     fn parse(self: *Options, arg: []const u8) bool {
@@ -365,6 +368,8 @@ const Options = struct {
             self.local_shadows = false;
         } else if (std.mem.eql(u8, arg, "--penumbra=off")) {
             self.penumbra = false;
+        } else if (std.mem.eql(u8, arg, "--environment=off")) {
+            self.environment = false;
         } else return false;
         return true;
     }
@@ -590,6 +595,17 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
             return error.TourFailed;
         }
         log.info("tour: replay pass ({d} ticks, {x:0>16}); unpaced moves median {d:.4}ms p95 {d:.4}ms", .{ tour.len, tour.hash, ms(unpaced.median_ns), ms(unpaced.p95_ns) });
+        // M41 (`environment.md` §11): the tour walks the room and the yard, so with environments
+        // on its frames drew both skies, and with them off none.
+        if (sample.scenery.settings != null) {
+            const both = sample.scenery.outdoor_frames > 0 and sample.scenery.indoor_frames > 0;
+            const none = sample.scenery.outdoor_frames == 0 and sample.scenery.indoor_frames == 0;
+            if (if (sample.scenery.enabled) !both else !none) {
+                log.warn("tour: FAIL environment ({d} yard frames, {d} room frames, environments {s})", .{ sample.scenery.outdoor_frames, sample.scenery.indoor_frames, if (sample.scenery.enabled) "on" else "off" });
+                return error.EnvironmentTourFailed;
+            }
+            log.info("tour: environment pass ({s})", .{if (sample.scenery.enabled) "the yard's and the room's skies drawn" else "no sky drawn"});
+        }
         log.info("tour: pass", .{});
         const walker = &sample.walkers[0];
         if (!walker.proofPassed()) return error.WalkerTourFailed;
@@ -730,6 +746,9 @@ fn report(gpa: std.mem.Allocator, engine: *app.Engine, sample: *Sample, skipped_
         const bodies = held.bodies_static + held.bodies_kinematic;
         log.info("yard: {d} moves among {d} bodies, median {d:.4}ms p95 {d:.4}ms; movers' moveBody, {d} together, median {d:.4}ms p95 {d:.4}ms", .{ yard_moves.count, bodies, ms(yard_moves.median_ns), ms(yard_moves.p95_ns), sample.yard.movers.items.len, ms(movers.median_ns), ms(movers.p95_ns) });
     }
+    // M41's (`environment.md` §11): how many frames drew each environment as their sky. A tour
+    // walks the room and the yard, so with environments on it draws both, and with them off none.
+    log.info("environment: {s}; {d} frames under the yard's sky, {d} under the room's", .{ if (sample.scenery.enabled) "on" else "off", sample.scenery.outdoor_frames, sample.scenery.indoor_frames });
     const stats = sample.world.frameStats();
     log.info("skinning: {d} draws, {d} vertices, {d} budget drops", .{ stats.skinned_draws, stats.skinned_vertices, stats.skin_budget_dropped });
     log.info("lighting: {d} lights, {d} shadow draws, {d} shadow culled", .{ stats.lights, stats.shadow_draws, stats.shadow_culled });
@@ -907,7 +926,7 @@ const Settings = struct {
                 .spacing = distanceField(record, "crate_spacing", 0.5, 100) orelse 0,
                 .clearance = distanceField(record, "crate_clearance", 0, 100) orelse 0,
             },
-            .lighting = LightSettings.read(record.fields) catch blk: {
+            .lighting = LightSettings.read(&engine.store, record.fields) catch blk: {
                 log.warn("invalid exposure, ambient or lights in '{s}'; lighting disabled", .{config_id});
                 break :blk .{};
             },
@@ -1129,6 +1148,8 @@ const Sample = struct {
     local_shadows: bool = true,
     /// Lights are submitted with their content's size, or with 0 under `--penumbra=off`.
     penumbra: bool = true,
+    /// M41's environments, spheres and lamp (`scenery.zig`).
+    scenery: scenery_mod.Scenery = .{},
     /// Whether the overlay's open panels are kept between runs: a person's session only,
     /// never one bounded, keyed or touring, which must write nothing of a player's.
     remembers_panels: bool = false,
@@ -1193,6 +1214,7 @@ const Sample = struct {
             .panels = panels,
             .shadow_tint = options.shadow_tint,
             .local_shadows = options.local_shadows,
+            .scenery = .{ .enabled = options.environment },
             .penumbra = options.penumbra,
         };
     }
@@ -1331,6 +1353,7 @@ const Sample = struct {
         self.extras.refresh(self.gpa, &engine.store, &self.walk.world, &engine.assets, if (self.content) |*content| content else null);
         // After the corner, for the same reason.
         self.yard.refresh(self.gpa, &engine.store, &self.walk.world, &engine.assets, if (self.content) |*content| content else null, engine.os);
+        self.scenery.refresh(self.gpa, &engine.store, if (self.content) |*content| content else null);
         if (!self.yard_said) if (self.yard.baked_ns) |baked| {
             log.info("collision: addMesh of the hillside, {d} triangles with its baked tree, {d:.3} ms against 5 ms; built at load it took {d:.3} ms", .{ self.yard.triangles, ms(baked), ms(self.yard.built_ns.?) });
             self.yard_said = true;
@@ -1870,6 +1893,9 @@ const Sample = struct {
             .shadow_distance = if (!self.shadow_ground.isNone()) 20 else self.settings.shadow_distance,
             .shadow_tint = self.shadow_tint,
             .local_shadows = self.local_shadows,
+            // One environment a frame (`environment.md` §4): the room's inside its walls, the
+            // day's anywhere else, and none until it is ready or under `--environment=off`.
+            .environment = if (self.content) |*content| self.scenery.environment(content, position) else null,
         };
         // Particle meshes are written here, outside the window, for this frame's camera.
         if (self.effects) |effects| effects.prepare(engine, view);
@@ -1888,7 +1914,17 @@ const Sample = struct {
         // Lights are content values, submitted in authored order. The reader refused
         // an invalid list as a whole before it can reach this frame.
         // `--penumbra=off` submits each with radius 0, M39's filter (`shadows-local.md` §12).
+        // The last frame's statistics: which environment it drew as its sky.
+        self.scenery.noteFrame(self.world.frameStats());
+        var lamp_lights: [4]render3d.Light = undefined;
+        const lamp = if (self.content) |*content| self.scenery.lampLights(content, &lamp_lights) else lamp_lights[0..0];
         for (self.settings.lighting.lights[0..self.settings.lighting.len]) |light| {
+            var submitted = light;
+            if (!self.penumbra) submitted.source_radius = 0;
+            try self.world.addLight(submitted);
+        }
+        // The lamp's, placed by its model (ADR-0085), after the config's.
+        for (lamp) |light| {
             var submitted = light;
             if (!self.penumbra) submitted.source_radius = 0;
             try self.world.addLight(submitted);
@@ -1902,6 +1938,7 @@ const Sample = struct {
         if (self.content) |*content| try self.props.draw(content);
         if (self.content) |*content| self.extras.draw(&self.walk.world, content);
         if (self.content) |*content| self.yard.draw(&self.walk.world, content);
+        if (self.content) |*content| self.scenery.draw(content, Ground{ .yard = &self.yard });
         if (self.corner) |corner| try corner.draw(&self.world, &self.content.?);
         if (self.effects) |effects| try effects.draw();
         if (self.content) |*content| try self.crowd.draw(content, self.crate);
@@ -2042,6 +2079,7 @@ const Sample = struct {
         if (self.content) |*content| self.props.deinit(self.gpa, &self.walk.world, content, &engine.assets);
         self.extras.deinit(self.gpa, &self.walk.world, &engine.assets, if (self.content) |*c| c else null);
         self.yard.deinit(self.gpa, &self.walk.world, &engine.assets, if (self.content) |*c| c else null);
+        self.scenery.deinit(if (self.content) |*c| c else null);
         if (self.content) |*content| for (self.walkers) |*walker| walker.deinit(self.gpa, &self.walk.world, content, &self.rigs);
         self.pacer.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null, &self.rigs);
         self.pacer_block.deinit(self.gpa, &self.walk.world, if (self.content) |*c| c else null);
@@ -2123,6 +2161,19 @@ fn uiColor(r: u8, g: u8, b: u8, a: u8) ui.Color {
     const c = render2d.Color.srgb8(r, g, b, a);
     return .{ .r = c.r, .g = c.g, .b = c.b, .a = c.a };
 }
+
+/// What lifts M41's spheres onto the yard's hillside: its height under a point, about the
+/// yard's origin, or null off the yard.
+const Ground = struct {
+    yard: *const yard_mod.Yard,
+    pub fn heightAt(self: Ground, at: Vec3) ?f32 {
+        const ys = self.yard.settings orelse return null;
+        const x = at.x - ys.origin.x;
+        const z = at.z - ys.origin.z;
+        if (@abs(x) > yard_mod.half or @abs(z) > yard_mod.half) return null;
+        return ys.origin.y + yard_mod.height(x, z);
+    }
+};
 
 /// `FOUNDRY_SANDBOX3D_KEYS`: `key@frame` pairs, comma-separated, for evidence runs. Host
 /// bootstrap like the frame limit (ADR-0031), never a game setting.
@@ -2277,6 +2328,7 @@ const testing = std.testing;
 test {
     _ = orrery_mod;
     _ = @import("light_settings.zig");
+    _ = @import("scenery_tests.zig");
     _ = walk_mod;
     _ = @import("walk_tests.zig");
     _ = @import("extras_tests.zig");
@@ -2367,7 +2419,11 @@ test "sample proof switches are explicit and the last setting given wins" {
     try testing.expect(!options.local_shadows);
     try testing.expect(options.parse("--penumbra=off"));
     try testing.expect(!options.penumbra);
-    for ([_][]const u8{ "--local-shadows", "--local-shadows=on", "--local-shadows=OFF", "--penumbra", "--penumbra=on" }) |bad| {
+    // M41's (`environment.md` §10): environments are on unless switched off.
+    try testing.expect(options.environment);
+    try testing.expect(options.parse("--environment=off"));
+    try testing.expect(!options.environment);
+    for ([_][]const u8{ "--local-shadows", "--local-shadows=on", "--local-shadows=OFF", "--penumbra", "--penumbra=on", "--environment", "--environment=on", "--environment=OFF" }) |bad| {
         try testing.expect(!options.parse(bad));
     }
     for ([_][]const u8{ "--shadow-cascades=0", "--shadow-cascades=5", "--shadow-cascades=", "--shadow-cascades=12", "--shadow-cascades" }) |bad| {

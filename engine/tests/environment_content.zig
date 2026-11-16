@@ -1,7 +1,7 @@
 //! The shipped environments' bytes, pinned (`docs/design/environment.md` §7.2 and §12, ADR-0083).
 //!
-//! Each of the yard's, the room's and the court's environments is read from its sample's own
-//! `environments.fdt`, compiled and decoded as content, its faces decoded from the PNGs the
+//! Each of the yard's, the room's and the court's environments, and the `dusk` mod's evening
+//! over the yard, is read from its package's own `environments.fdt`, compiled and decoded as content, its faces decoded from the PNGs the
 //! package ships, and prefiltered. The cube's bytes and the harmonics are pinned by hash, so a
 //! change to the prefilter, the records or the faces moves a pin on purpose, and a pin that
 //! differs between macOS and Windows is ADR-0083's revisit trigger.
@@ -19,6 +19,8 @@ const environment = asset.environment;
 
 const Shipped = struct {
     dir: []const u8,
+    /// Below `dir`, for a package that is not a sample's own content.
+    sub: []const u8 = "",
     namespace: []const u8,
     id: []const u8,
     /// For a `faces` environment, its faces' files, in its order. The IDs a package derives
@@ -34,10 +36,14 @@ const room_faces = [6][]const u8{
 };
 
 const shipped = [_]Shipped{
-    .{ .dir = options.sandbox3d_content_dir, .namespace = "sandbox3d", .id = "sandbox3d:environments.day", .bytes_hash = 0x1b6380a933adfaa0, .harmonics_hash = 0x14989442fc0e9cd3 },
+    .{ .dir = options.sandbox3d_content_dir, .namespace = "sandbox3d", .id = "sandbox3d:environments.day", .bytes_hash = 0xfd2510abb5d7d05b, .harmonics_hash = 0x3323b101cc30d51b },
     .{ .dir = options.sandbox3d_content_dir, .namespace = "sandbox3d", .id = "sandbox3d:environments.room", .faces = room_faces, .bytes_hash = 0x791b29c33b9f8dd, .harmonics_hash = 0xa78bf24dea1bd746 },
     .{ .dir = options.court_content_dir, .namespace = "court", .id = "court:environments.night", .bytes_hash = 0xc960faa26d6ae8c6, .harmonics_hash = 0x382ab0a4e7a68891 },
+    // The `dusk` mod's override of the yard's day, by the same ID (`environment.md` §11).
+    .{ .dir = options.sandbox3d_content_dir, .sub = "../testdata/mods/dusk", .namespace = "dusk", .id = "sandbox3d:environments.day", .bytes_hash = 0x92078d56937dbcbd, .harmonics_hash = 0x7b9b585eae809adf },
 };
+const day = 0;
+const dusk = 3;
 
 /// `textures/room/px.png` is `sandbox3d:textures.room.px`, as `fpack` derives it.
 fn derivedId(gpa: Allocator, namespace: []const u8, path: []const u8) ![]u8 {
@@ -49,7 +55,7 @@ fn derivedId(gpa: Allocator, namespace: []const u8, path: []const u8) ![]u8 {
 }
 
 fn prefilterShipped(gpa: Allocator, os: *platform.os.Os, case: Shipped) !environment.Prefiltered {
-    const path = try platform.os.joinPath(gpa, &.{ case.dir, "environments.fdt" });
+    const path = try platform.os.joinPath(gpa, &.{ case.dir, case.sub, "environments.fdt" });
     defer gpa.free(path);
     const text = try os.readFile(gpa, path, 1 << 20);
     defer gpa.free(text);
@@ -102,7 +108,7 @@ test "M41 the yard's, the room's and the court's environments prefilter to pinne
     const gpa = testing.allocator;
     const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-environments", .env = &.{} });
     defer os.deinit();
-    // Every pin is checked before any fails, so a deliberate change prints all three.
+    // Every pin is checked before any fails, so a deliberate change prints all four.
     var wrong: usize = 0;
     for (shipped) |case| {
         var out = try prefilterShipped(gpa, os, case);
@@ -117,4 +123,26 @@ test "M41 the yard's, the room's and the court's environments prefilter to pinne
         }
     }
     try testing.expectEqual(@as(usize, 0), wrong);
+}
+
+/// Level 0's texel at the middle of the +Y face, the zenith, as linear RGB in cd/m².
+fn zenith(out: environment.Prefiltered) [3]f32 {
+    return out.texel(0, 2, out.size / 2, out.size / 2);
+}
+
+test "M41 the dusk mod's evening replaces the yard's day, seen in the zenith's texel" {
+    const gpa = testing.allocator;
+    const os = try platform.os.Os.init(gpa, .{ .app_name = "foundry-environments", .env = &.{} });
+    defer os.deinit();
+    var base = try prefilterShipped(gpa, os, shipped[day]);
+    defer base.deinit(gpa);
+    var evening = try prefilterShipped(gpa, os, shipped[dusk]);
+    defer evening.deinit(gpa);
+    // Each is its own record's zenith, colour times luminance, to an f16's precision: the day's
+    // (0.25, 0.45, 1) at 40 cd/m², and dusk's (0.08, 0.12, 0.45) at 4.
+    const want = [2][3]f32{ .{ 10, 18, 40 }, .{ 0.32, 0.48, 1.8 } };
+    for ([_]environment.Prefiltered{ base, evening }, want) |out, expected| {
+        const got = zenith(out);
+        for (got, expected) |g, e| try testing.expectApproxEqRel(e, g, 0.01);
+    }
 }

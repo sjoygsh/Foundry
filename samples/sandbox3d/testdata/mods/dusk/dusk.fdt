@@ -16,20 +16,31 @@ sandbox3d:config sandbox3d:config.main {
     font foundry:fonts.debug
     exposure_ev100 4
     ambient { r 0.8 g 1.5 b 4 }
+    # Since M41 the list names light records (`environment.md` §6.4): the base's sun and lamps,
+    # whose records this package overrides below, and a spot of its own.
     lights [
-        { kind "directional" intensity 60 color { r 0.32 g 0.45 b 1 }
-            position { x 0 y 0 z 0 } direction { x -2 y -0.5 z -1 } casts_shadow true }
-        { kind "point" intensity 60 range 8 position { x -1.5 y 2 z 1.5 }
-            color { r 1 g 0.35 b 0.08 } direction { x -1 y -2 z -1 } casts_shadow true
-            source_radius 0.08 }
-        { kind "point" intensity 30 range 8 position { x 1.5 y 2 z -1.5 }
-            color { r 1 g 0.4 b 0.12 } direction { x -1 y -2 z -1 } casts_shadow true
-            source_radius 0.08 }
-        { kind "spot" intensity 40 range 8 inner_cone 0.35 outer_cone 0.5236
-            position { x 0 y 1.8 z 2.4 } direction { x 0 y -1.8 z -2.4 }
-            color { r 1 g 0.5 b 0.2 } casts_shadow true source_radius 0.08 }
+        { light sandbox3d:lights.sun position { x 0 y 0 z 0 } direction { x -2 y -0.5 z -1 } }
+        { light sandbox3d:lights.lamp_warm position { x -1.5 y 2 z 1.5 } direction { x -1 y -2 z -1 } }
+        { light sandbox3d:lights.lamp_cool position { x 1.5 y 2 z -1.5 } direction { x -1 y -2 z -1 } }
+        { light dusk:lights.spot position { x 0 y 1.8 z 2.4 } direction { x 0 y -1.8 z -2.4 } }
     ]
 }
+
+# The base's lights at dusk: a low blue sun and two orange lamps, each a whole-record override.
+foundry:light sandbox3d:lights.sun {
+    kind "directional" intensity 60 color { r 0.32 g 0.45 b 1 } casts_shadow true
+}
+foundry:light sandbox3d:lights.lamp_warm {
+    kind "point" intensity 60 range 8 color { r 1 g 0.35 b 0.08 } casts_shadow true source_radius 0.08
+}
+foundry:light sandbox3d:lights.lamp_cool {
+    kind "point" intensity 30 range 8 color { r 1 g 0.4 b 0.12 } casts_shadow true source_radius 0.08
+}
+foundry:light dusk:lights.spot {
+    kind "spot" intensity 40 range 8 inner_cone 0.35 outer_cone 0.5236
+    color { r 1 g 0.5 b 0.2 } casts_shadow true source_radius 0.08
+}
+
 foundry:material sandbox3d:models.room.material0 {
     shading foundry:shading.lit
     base_color_texture sandbox3d:models.room.texture0

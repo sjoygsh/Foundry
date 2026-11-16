@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 6 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 7 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1191,3 +1191,120 @@ thirty-frame samples, `fdt-check`, the five Vulkan checks (shaders changed) and 
 -Dapp=court` pass. Tests: null 3,163/3,173 (ten skips), Metal 3,196/3,217 (21 skips). A first
 null run, beside the Metal suite and the partner's builds, failed only `author`'s five-second
 glTF mutation sweep on time; alone it passed.
+
+## Resolution — Step 7: the yard, the room and the lamp, on Metal (2026-11-16)
+
+**What the step pinned (`sandbox3d`, §6.4, §11):**
+- **The lights are records.** `sandbox3d:config`'s `lights` is now `{ light id, position,
+  direction }`, and the four lights are `foundry:light` records: `sandbox3d:lights.sun`,
+  `lamp_warm`, `lamp_cool` and `glass_spot`, with M40's values unchanged. `light_settings.zig`
+  looks each up in the store, refuses one that is missing, not a `foundry:light`, or refused by
+  `asset.light.decode`, and converts it with `render3d.content.lightOf`. It still refuses a
+  second casting sun and anything `lighting.valid` refuses, as a whole list.
+- **`sandbox3d:scenery.main`** (`content/scenery.fdt`, read by `scenery.zig`) names the yard's and
+  the room's environments, the lamp and its place, and the spheres' rows and materials. It is
+  read whole or refused whole, by bounds on every number and exactly seven materials a row.
+- **One environment a frame, chosen by the camera** (§4). §4 says the room is "a separate
+  frame", but the sample draws one frame with everything in it. So the frame names the room's
+  environment while the camera is inside the room's walls (3 m either way of the origin, below
+  3 m), and the day's anywhere else. Both are requested at load and prefiltered on the pool; a
+  frame names one only once it is ready, so no frame waits. `--environment=off` names neither.
+- **The spheres:** two rows of seven, 0.35 m, on the strip of hillside west of the yard's stones
+  (x 38.2 and 39.2, z −3 to 3), each lifted onto the hillside by `yard.height`. The near row is a
+  white dielectric and the far row a gold metal, roughness 0, 1/6, … 1 along each. They are one
+  runtime sphere mesh drawn fourteen times with fourteen `foundry:material` records, and they are
+  not bodies.
+- **The lamp:** `models/lamp.glb`, written by `scripts/m41/make_lamp.py` with `make_scene.py`'s
+  writer, the normal map's PNG in the GLB's BIN chunk. It has a foot, a post, an arm and a shade,
+  and one `KHR_lights_punctual` spot, "Lamp", 90 cd, range 6, cones 0.45 and 0.75, pointing down
+  from under the shade. Its metal parts carry a normal map of rings and no `TANGENT`, and the
+  import notes that it generated MikkTSpace tangents for each of the three. `foundry:model_import`'s
+  `lights` makes the spot cast, with a radius of 0.04. The lamp stands at (−17, 0, 2.5) in M37's
+  corner, is not solid, and is drawn as a model; its light is submitted after the config's through
+  `modelLights`. The frame has five lights.
+- **`dusk`** restates the config with the base's three records and its own `dusk:lights.spot`,
+  and overrides the three base records with its blue sun and orange lamps. Its
+  `environments.fdt` overrides `sandbox3d:environments.day` with an evening gradient.
+  `docs/modding/content-mods.md` now describes light records, the two ways a mod changes a
+  light, glTF lights and environments.
+
+**Where the implementation corrected the design:**
+- **The day's luminances are the sample's, not a real day's.** §7.1 put the zenith near 6,000
+  cd/m² at EV100 15 against a 100,000-lux sun. The sandbox's sun is 700 lux at EV100 6, so the
+  day kept a real sky's ratio to its sun, about 0.07 cd/m² a lux: zenith 40, horizon 60,
+  ground 15. Drawn at EV100 6, the zenith is mid-blue rather than white. Step 4's pin moved on
+  purpose, to `0xfd2510abb5d7d05b` (bytes) and `0x3323b101cc30d51b` (harmonics).
+- **The mod's override is pinned beside the shipped ones.** `environment_content.zig` prefilters
+  dusk's record too (bytes `0x92078d56937dbcbd`, harmonics `0x7b9b585eae809adf`). It reads the
+  zenith texel at the middle of level 0's +Y face for the day and for dusk, and each equals its
+  own record's zenith times its luminance within 1%. That is §12's "the mod's override seen in a
+  pinned texel", read from the prefiltered cube the sky draws. It is not a readback of the
+  sample's window, since the sample has no readback path and gets none (it is not given `rhi`).
+- **The tour's new pins are its frames' skies.** The tour's pins are simulation hashes, and
+  rendering does not reach the simulation, so the spheres and the lamp, which are not solid,
+  cannot move them. What the tour gains is a check over what its frames drew, from `Stats`: with
+  environments on, frames under the yard's sky and under the room's must both be counted (the
+  walk crosses the room and the yard), and with them off, none.
+- **`FrameView.environment` is optional,** so "none" is `null`. Passing the `.none` handle was
+  refused at `begin` as `InvalidEnvironment` on the first frame.
+
+**The tour,** headless, on null, every pin held with environments on and off: the player
+`b85b52c97d259db4`, the walker `655e865f98779129`, the pacer's three replays and M34's save
+(`e46c09dc62b1eeac`, `222e0a9b12fd152c`, `47f67027ff3a12b0`), the corner `e2992f93e5323345` and
+the yard `1052a9ae891b0d27`. With environments on, 1,530 frames drew the yard's sky and 420 the
+room's; off, none did.
+
+**The budget, windowed on the M5, from a relocated, read-only ReleaseSafe install.** The install
+was made with `zig build install -Drhi=metal -Doptimize=ReleaseSafe` to a staging prefix, then
+moved and made read-only. Each run was 900 frames, saves redirected to scratch, and nothing under
+Application Support changed. A windowed run starts walking in the room, under its environment;
+F3 at frame 1 switches to the orbit, outside the walls, under the day; Y at frame 1 puts the
+player in the yard. The last 240 frames of each run:
+
+| Run | Sky drawn | Frame work, median / p95 (max) | `render.world`, median / p95 | Pacing p95 | Skipped |
+| --- | --- | --- | --- | --- | --- |
+| The room, walking | the room's, 895 frames | 4.084 / 4.271 ms (4.434) | 2.362 / 2.467 ms | 17.07 ms | 0 |
+| The room, `--environment=off` | none | 4.111 / 4.308 ms (4.473) | 2.384 / 2.510 ms | 17.16 ms | 0 |
+| The orbit | the day's, 847 frames | 4.262 / 4.450 ms (4.566) | 2.525 / 2.644 ms | 17.21 ms | 0 |
+| The orbit, `--environment=off` | none | 1.058 / 1.175 ms (1.358) | 0.596 / 0.662 ms | 16.67 ms | 0 |
+| The yard | the day's, 894 frames | 0.531 / 0.592 ms (0.634) | 0.127 / 0.142 ms | 16.67 ms | 0 |
+| The yard, `--environment=off` | none | 0.528 / 0.599 ms (0.881) | 0.128 / 0.145 ms | 16.67 ms | 0 |
+
+- **The orbit's two runs differ by 3 ms, and that is run-to-run spread, not the environment.**
+  Repeated, the orbit read 1.131 ms with environments on and 1.883 ms off, and walking in the room
+  with them off read 2.241 ms. The same scene moves between about 1 and 4.5 ms from run to run, on
+  or off. No run measured more than 4.57 ms of the frame's 16.67.
+- **What the environment costs on the CPU** is within that spread: one more bind group and one
+  more draw a frame. Its cost is GPU work, and GPU timing is M73's.
+- **The exit holds:** the yard and the room each hold 60 Hz with their environments, no frame was
+  skipped in any run, and every earlier pin holds with the environment off.
+
+**What this step leaves to the owner's eye.** The runs measure counts, time and which sky was
+drawn, and capture no image (no screen capture is used). How the spheres' highlights, the room's
+painted faces and the lamp's pool of light look is first seen when the owner plays the court at
+Step 8, or opens the sandbox: walk with WASD, Y for the yard and the spheres, L for M37's corner
+and the lamp, F3 for the orbit.
+
+**Guards broken, each failing a test:**
+- the light record's schema check (a record of another schema with a light's fields): the
+  lighting test;
+- the indoors height in the environment's choice: the scenery choice test;
+- a row of exactly seven (a row one long): the scenery refusal test;
+- the sphere radius's upper bound: the scenery refusal test;
+- the sphere's winding: the sphere test;
+- `--environment=off` taken as a prefix: the options test;
+- the tour's sky count, with the room's frames uncounted: the tour failed with
+  `EnvironmentTourFailed`.
+
+A first fixture for the schema check, a record of another schema with no light fields, failed to
+decode anyway, so the mutant survived; the lookalike record replaced it. The first row-length case,
+a row one short, also failed without the guard; the row one long is the case that needs it.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples, `fdt-check`, and `zig build dist` for the court and the room (a sample's
+content changed) pass. Tests: null 3,182/3,192 (ten skips), Metal 3,215/3,236 (21 skips),
+`sandbox3d-test` 79/80 (one skip), `court-test` 87/89 (two skips). No shader, Vulkan or ABI code
+changed.
+
+Next is Step 8: the court's night, its beacons' light records and its lights list. The court still
+lists its own light fields and names no environment.

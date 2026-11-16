@@ -145,10 +145,11 @@ what that means in general.
 
 `sandbox3d` uses the same package path, with application identity `foundry-sandbox3d` and
 selection variable `FOUNDRY_SANDBOX3D_PACKAGES`. Its reference content-only mod is
-`samples/sandbox3d/testdata/mods/dusk/`. It replaces the complete lighting config and two
-materials: EV100 exposure, ambient luminance, directional, point and spot intensities, colour,
-roughness and emission. Since M40 its lamps and spot cast shadows too, each with its own
-`source_radius`, which softens them. No code, shader or mesh is added by the mod.
+`samples/sandbox3d/testdata/mods/dusk/`. It replaces the sample's config (EV100 exposure,
+ambient luminance and where each light stands), the base's sun and lamps as light records, the
+yard's sky as an environment record, and two materials (colour, roughness and emission). Since
+M40 its lamps and spot cast shadows too, each with its own `source_radius`, which softens them.
+No code, shader or mesh is added by the mod.
 
 On macOS, after building the sample and compiler once:
 
@@ -165,16 +166,42 @@ FOUNDRY_SANDBOX3D_PACKAGES=dusk:content zig-out/bin/sandbox3d
 
 The last command runs the installed executable; it does not build anything. Launch without
 the variable to see the base lighting. `--msaa=1` and `--msaa=4` choose the demonstrated MSAA
-configuration; `--shadows=off` measures the same scene without its shadow pass. These are
+configuration; `--shadows=off` measures the same scene without its shadow pass, and
+`--environment=off` without its environments. These are
 host proof switches, not saved game settings. Linux/Windows use the user-data roots above,
 substituting `foundry-sandbox3d`; on Windows the tools are `fpack.exe` and `sandbox3d.exe`,
 and the native build uses `-Drhi=vulkan`. A shipped runtime needs neither compiler nor SDK.
 
-The light fields are the sample's own schema, not an engine `foundry:light` record. They use
-[ADR-0056's](../adr/0056-photometric-light-units-and-pre-exposure.md) units: lux for directional
-lights, candela for points/spots, cd/m² for ambient/emission, and EV100 exposure. `direction`
-names a light's local −Z. As with every override, omitted fields take schema defaults; they
-do not inherit the original record. Copy all values you intend to retain.
+**Light records.** Since M41 a light is an engine `foundry:light` record
+([ADR-0085](../adr/0085-lights-are-records-a-model-places.md)): its `kind` (`"directional"`,
+`"point"` or `"spot"`), `color` (linear, 0 to 1), `intensity`, and optionally `range`,
+`inner_cone`, `outer_cone`, `casts_shadow` and `source_radius`. It says what a light is and never
+where. The units are [ADR-0056's](../adr/0056-photometric-light-units-and-pre-exposure.md): lux for
+a directional light, candela for a point or spot, cd/m² for ambient and emission, and EV100 for
+exposure. A record is checked when the package is compiled, so `fpack` refuses a cone past π/2,
+a negative intensity or a colour above 1 by field.
+
+The sandbox's config places records by ID: `{ light sandbox3d:lights.lamp_warm position {...}
+direction {...} }`, where `direction` names the light's local −Z. So a mod has two ways in:
+- **override a record** to change what a lamp is everywhere it stands, as dusk turns the base's
+  `sandbox3d:lights.sun`, `lamp_warm` and `lamp_cool` blue and orange;
+- **restate the config's list** to move lights, drop one or add one of its own, as dusk adds
+  `dusk:lights.spot`.
+
+A light a glTF model carries is imported as a record too, `<model>.light<i>`, so the sandbox's
+standing lamp, `sandbox3d:models.lamp.light0`, is changed the same way.
+
+**Environments.** A `foundry:environment` record is what surrounds a frame: it lights every lit
+surface and is drawn behind them as the sky
+([ADR-0083](../adr/0083-environments-are-content-prefiltered-at-load.md)). `kind "gradient"` takes
+three colours, `zenith`, `horizon` and `ground`, each linear with its own luminance `l` in cd/m²,
+and a `sharpness`. `kind "faces"` takes six square sRGB textures, +X −X +Y −Y +Z −Z, and a
+`luminance` for a texel of value 1. Dusk's `environments.fdt` overrides
+`sandbox3d:environments.day` with an evening gradient. The sandbox draws the yard's sky outdoors
+and the room's indoors, and `--environment=off` draws neither.
+
+As with every override, omitted fields take schema defaults; they do not inherit the original
+record. Copy all values you intend to retain.
 
 ### Your editor, and a canonical layout
 

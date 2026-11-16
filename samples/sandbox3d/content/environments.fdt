@@ -5,11 +5,14 @@
 
 # The yard's daytime sky: a blue zenith, a pale horizon and a green-brown ground. Each colour is
 # linear and multiplied by its own `l`, in cd/m². The sun is the directional light, not the sky.
+# Since M41 Step 7 its luminances are the sample's, not a real day's: the sandbox's sun is 700 lux
+# at EV100 6, not 100,000 at 15, so the sky keeps a real sky's ratio to that sun, about 0.07
+# cd/m² a lux, and is drawn mid-grey to pale rather than white.
 foundry:environment sandbox3d:environments.day {
     kind      "gradient"
-    zenith    { r 0.25  g 0.45  b 1     l 6000 }
-    horizon   { r 0.85  g 0.9   b 1     l 8000 }
-    ground    { r 0.3   g 0.32  b 0.2   l 2500 }
+    zenith    { r 0.25  g 0.45  b 1     l 40 }
+    horizon   { r 0.85  g 0.9   b 1     l 60 }
+    ground    { r 0.3   g 0.32  b 0.2   l 15 }
     sharpness 4
     size      128
 }

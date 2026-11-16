@@ -1,0 +1,9 @@
+# The yard's sky at dusk (`environment.md` §11): the base's day, overridden whole by its ID.
+foundry:environment sandbox3d:environments.day {
+    kind      "gradient"
+    zenith    { r 0.08  g 0.12  b 0.45  l 4 }
+    horizon   { r 1     g 0.45  b 0.18  l 9 }
+    ground    { r 0.12  g 0.1   b 0.08  l 1 }
+    sharpness 3
+    size      128
+}
