@@ -131,6 +131,52 @@ pub const Source = union(enum) {
     }
 };
 
+/// The physical inputs a source reads, one bit each: every key, every mouse button, the
+/// mouse's motion, its wheel, every pad button and every pad axis.
+///
+/// **Sources overlap where their inputs do.** A stick is its two axes, so blocking
+/// `pad.left_stick` hides `pad.left_x`, and the wheel's four directions are the one wheel,
+/// so blocking `mouse.wheel_up` hides `mouse.wheel` and `mouse.wheel_down` too. Blocking
+/// (§7), conflicts (§8) and a capture's `ignore` all compare sources this way, so a source
+/// cannot dodge a rule by being spelled differently. A pad source is every slot's: which pad
+/// is a device selection, not a source.
+pub const Physical = std.StaticBitSet(physical_count);
+
+const physical_keys: usize = 0;
+const physical_mouse: usize = physical_keys + Key.count;
+const physical_motion: usize = physical_mouse + MouseButton.count;
+const physical_wheel: usize = physical_motion + 1;
+const physical_pad_buttons: usize = physical_wheel + 1;
+const physical_pad_axes: usize = physical_pad_buttons + GamepadButton.count;
+pub const physical_count: usize = physical_pad_axes + GamepadAxis.count;
+
+pub const no_physical: Physical = Physical.initEmpty();
+
+/// Marks the physical inputs `source` reads in `set`.
+pub fn markPhysical(set: *Physical, source: Source) void {
+    switch (source) {
+        .key => |k| set.set(physical_keys + @intFromEnum(k)),
+        .mouse_button => |b| set.set(physical_mouse + @intFromEnum(b)),
+        .mouse_motion => set.set(physical_motion),
+        .mouse_wheel, .wheel => set.set(physical_wheel),
+        .pad_button => |b| set.set(physical_pad_buttons + @intFromEnum(b)),
+        .pad_axis => |a| set.set(physical_pad_axes + @intFromEnum(a)),
+        .pad_stick => |s| for (s.axes()) |a| set.set(physical_pad_axes + @intFromEnum(a)),
+    }
+}
+
+/// The physical inputs `source` reads.
+pub fn physicalOf(source: Source) Physical {
+    var set = no_physical;
+    markPhysical(&set, source);
+    return set;
+}
+
+/// Whether two sources read any physical input in common.
+pub fn overlaps(a: Source, b: Source) bool {
+    return physicalOf(a).intersectWith(physicalOf(b)).count() != 0;
+}
+
 fn join(buf: *[max_name]u8, prefix: []const u8, rest: []const u8) []const u8 {
     // Every name this build spells fits; the test below holds that for every one.
     @memcpy(buf[0..prefix.len], prefix);
@@ -203,4 +249,22 @@ test "a name this build does not know parses to nothing, never to a near miss" {
 test "a stick's axes are its x and then its y" {
     try testing.expectEqual([2]GamepadAxis{ .left_x, .left_y }, Stick.left.axes());
     try testing.expectEqual([2]GamepadAxis{ .right_x, .right_y }, Stick.right.axes());
+}
+
+test "sources overlap where their inputs do, and nowhere else" {
+    const left_stick: Source = .{ .pad_stick = .left };
+    try testing.expect(overlaps(left_stick, .{ .pad_axis = .left_x }));
+    try testing.expect(overlaps(left_stick, .{ .pad_axis = .left_y }));
+    try testing.expect(!overlaps(left_stick, .{ .pad_axis = .right_x }));
+    try testing.expect(!overlaps(left_stick, .{ .pad_stick = .right }));
+    try testing.expect(overlaps(.{ .wheel = .up }, .{ .wheel = .down }));
+    try testing.expect(overlaps(.{ .wheel = .up }, .mouse_wheel));
+    try testing.expect(!overlaps(.mouse_wheel, .mouse_motion));
+    try testing.expect(!overlaps(.{ .key = .a }, .{ .key = .b }));
+    try testing.expect(overlaps(.{ .key = .a }, .{ .key = .a }));
+    try testing.expect(!overlaps(.{ .mouse_button = .left }, .{ .pad_button = .south }));
+    try testing.expect(!overlaps(.{ .pad_button = .south }, .{ .pad_axis = .left_x }));
+    // Every source this build knows has a bit of its own somewhere.
+    for (std.enums.values(Key)) |k| try testing.expectEqual(@as(usize, 1), physicalOf(.{ .key = k }).count());
+    try testing.expectEqual(@as(usize, 2), physicalOf(left_stick).count());
 }
