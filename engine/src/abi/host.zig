@@ -34,6 +34,8 @@ const audio = @import("audio");
 const net = @import("net");
 const physics2d = @import("physics2d");
 const physics3d = @import("physics3d");
+const platform = @import("platform");
+const input = @import("input");
 const render3d = @import("render3d");
 const public3d = @import("public3d_types.zig");
 
@@ -44,6 +46,11 @@ const ui_types = @import("ui_types.zig");
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.abi);
+
+/// A key label's capacity and a source name's, as `platform` and `input` bound them: what a v8
+/// call copies into the host before lending it.
+pub const input_label_capacity = platform.key.label_capacity;
+pub const input_source_capacity = input.source.max_name;
 
 /// The most counters one host will open for mods, and the longest name one may carry.
 ///
@@ -237,6 +244,15 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         ui_theme_base_skin: ?ui.Skin = null,
         ui_frame_theme: types.Theme = .none,
         ui_completed_theme: types.Theme = .none,
+        /// The engine's input, as the v8 calls publish it (`input.md` §10, ADR-0090): the frame
+        /// and tick views, the map and the enabled contexts, borrowed. Absent, every input call
+        /// answers `unavailable`. `Engine.inputSources` fills one; the host keeps it where this
+        /// can point at it.
+        input: ?*const app.InputSources = null,
+        /// The label and the source name a call last answered, borrowed by the mod until the
+        /// next call of the same kind.
+        input_label: [input_label_capacity]u8 = @splat(0),
+        input_source_text: [input_source_capacity]u8 = @splat(0),
         mixer: ?*M = null,
         collision: ?*physics2d.World = null,
         /// Must be the allocator the host uses for this collision world's storage.
@@ -272,6 +288,9 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
         /// The bound host, which is what a table's functions find. One per process and per
         /// engine type; binding a second replaces the first and says so.
         var bound: ?*Self = null;
+        /// Inside a native system's callback: what makes an input call answer the step's tick
+        /// view rather than the frame's (ADR-0090).
+        threadlocal var in_system: bool = false;
         threadlocal var caller_host: ?*Self = null;
         threadlocal var caller_mod: types.Mod = .none;
 
@@ -1159,8 +1178,16 @@ pub fn HostWithMixer(comptime E: type, comptime M: type) type {
             const h = current() orelse return;
             const scope = h.enterCaller(slot.owner);
             defer scope.restore();
+            const outer = in_system;
+            in_system = true;
+            defer in_system = outer;
             const step: types.Step = .{ .tick = tick.tick, .delta_ns = @intCast(tick.delta.ns) };
             update(slot.ctx, &step);
+        }
+
+        /// Whether the calling thread is inside a native system's callback.
+        pub fn inSystem() bool {
+            return in_system;
         }
 
         pub fn openQuery(self: *Self, opened: scene.Query) types.Cursor {

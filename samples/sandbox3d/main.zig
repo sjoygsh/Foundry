@@ -56,6 +56,9 @@
 //!   `FOUNDRY_SANDBOX3D_WATER=inline` rewrites the water on the main thread, the baseline;
 //! - `FOUNDRY_SANDBOX3D_EFFECTS=on|off` makes M29's effects corner (`effects.zig`) or leaves it
 //!   out; P faces it from the patch and B fires its sparks;
+//! - `FOUNDRY_SANDBOX3D_SPIN=<from>-<to>` holds a virtual gamepad's north button over those
+//!   frames, through SDL's own pad path or the null backend's script, which `orbiter`'s
+//!   `orbiter:action.spin` reads through `FoundryApi_v8` (`spin.zig`, M45);
 //! - **M** slides a crate into the crowd's way (`crowd.zig`, M33), and `m@frame` presses it;
 //! - **K** drops a crate on the pacer's square, which it turns at, and lifts it again
 //!   (`pacer.zig`, M36), and `k@frame` presses it;
@@ -134,6 +137,7 @@ const pacer_mod = @import("pacer.zig");
 const animators_mod = @import("animators.zig");
 const Props = @import("props.zig").Props;
 const native_mod = @import("native.zig");
+const Spin = @import("spin.zig").Spin;
 const gallery_mod = @import("gallery.zig");
 const Gallery = gallery_mod.Gallery;
 const generated = @import("generated.zig");
@@ -455,6 +459,9 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     defer sample.deinit(engine);
     if (frameLimit(engine, headless) == null and os.envVar("FOUNDRY_SANDBOX3D_KEYS") == null and os.envVar("FOUNDRY_SANDBOX3D_WALK") == null) sample.rememberPanels(engine);
     try sample.load(engine);
+    // The walk's actions, and any a mod adds to the same context (`input.md` §11). Enabled once;
+    // a reload keeps it.
+    try engine.actions.enable(walk_mod.actions.context);
     const native = try gpa.create(Native);
     defer gpa.destroy(native);
     try native.init(engine, &sample.orrery.world, &sample.content.?, &sample.walk.world);
@@ -484,12 +491,15 @@ fn run(gpa: std.mem.Allocator, env: []const platform.os.EnvVar, options: Options
     });
 
     var script = Script.fromEnv(engine);
+    var spin = Spin.fromEnv(engine);
+    defer spin.deinit(engine);
     var skipped_frames: u64 = 0;
     var pace_next: u64 = 0;
     while (!engine.shouldQuit()) {
         // Time this frame spent asleep on purpose, which the gallery's window leaves out.
         var paced_ns: i64 = 0;
         const frame_started = if (!headless) engine.os.monotonicNanos() else 0;
+        spin.frame(engine);
         engine.beginFrame();
         if (sample.content_generation != engine.contentGeneration()) sample.refresh(engine);
         // Beside the engine's asset pump, before simulation: what the pool filled finishes.
@@ -1620,7 +1630,11 @@ const Sample = struct {
             log.info("f3: {s} camera", .{if (self.walk.orbit) "orbit" else "walk"});
         }
         const typing = self.panels_open and self.ui.wantsKeyboard();
-        self.intent = walk_mod.inputIntent(in.*, typing);
+        // The filter box's keys are hidden from every action from the next evaluation on, a
+        // mod's too (`input.md` §7); this frame's walk reads nothing while it types.
+        engine.setInputBlocked(.{ .keyboard = typing });
+        const actions = engine.actionFrame();
+        self.intent = walk_mod.inputIntent(actions, typing);
         if (in.wasPressed(.f4) or scripted.f4) {
             // Asked from what is true, not from what was last asked: focus loss releases it.
             const want = !in.mouse.captured;
@@ -1630,7 +1644,8 @@ const Sample = struct {
                 log.warn("f4: the pointer cannot be captured here ({t}); look with the arrows or the right button", .{err});
             }
         }
-        if (!self.walk.orbit and !typing and (in.mouse.captured or in.mouse.isHeld(.right))) self.walk.look(in.mouse.motion.x, in.mouse.motion.y);
+        const look = actions.state(walk_mod.actions.look).value;
+        if (!self.walk.orbit and !typing and (in.mouse.captured or actions.state(walk_mod.actions.drag).held)) self.walk.look(look.x, look.y);
         if (in.wasPressed(.f1) or scripted.f1) {
             self.panels_open = !self.panels_open;
             log.info("debug overlay {s}", .{if (self.panels_open) "shown" else "hidden"});
@@ -2339,6 +2354,7 @@ test {
     _ = @import("nav_tests.zig");
     _ = @import("strafer_tests.zig");
     _ = @import("native_tests.zig");
+    _ = @import("spin.zig");
     _ = gallery_mod;
     _ = generated;
     _ = effects_mod;

@@ -32,6 +32,7 @@ const input = @import("input");
 
 const log_sink = @import("log_sink.zig");
 const input_bindings = @import("input_bindings.zig");
+const InputSources = @import("input_sources.zig").InputSources;
 
 const Allocator = std.mem.Allocator;
 const log = core.log.scoped(.app);
@@ -1261,6 +1262,26 @@ pub fn EngineOf(comptime P: type, comptime G: type) type {
         /// until changed.
         pub fn setInputBlocked(self: *Self, blocked: input.Blocked) void {
             self.input_blocked = blocked;
+        }
+
+        /// What the public table publishes input from (`input.md` §10): borrows of the frame and
+        /// tick views, the map, the enabled contexts and the overrides, each at the address it
+        /// keeps for the engine's life, and the platform's key labels. A host keeps the answer
+        /// where `abi`'s host can point at it; it never needs refreshing.
+        pub fn inputSources(self: *Self) InputSources {
+            return .{
+                .frame = .{ .input = &self.input, .actions = self.actions.current() },
+                .tick = .{ .input = &self.tick_view.taken_input, .actions = &self.tick_view.taken },
+                .map = &self.input_map,
+                .actions = &self.actions,
+                .overrides = &self.input_overrides,
+                .labels = .{ .ctx = self, .label = labelOf },
+            };
+        }
+
+        fn labelOf(ctx: *anyopaque, key: platform.Key, buf: *[platform.key.label_capacity]u8) []const u8 {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return self.platform.keyLabel(key, buf);
         }
 
         /// The map `actions` reads: the content's actions with the player's overrides applied.
@@ -3586,6 +3607,37 @@ test "a headless engine's steps see the tick view: a press reaches exactly one s
         engine.endFrame();
     }
     try testing.expect(seen);
+}
+
+test "the table's input sources follow the frame and the step being simulated" {
+    var fx = try ContentFixture.init(input_source);
+    defer fx.deinit();
+    const engine = try inputEngine(&fx, .{});
+    defer engine.deinit();
+    // Taken once: the borrows keep their addresses for the engine's life.
+    const sources = engine.inputSources();
+
+    engine.platform.setClockStep(.fromMillis(50));
+    try engine.platform.pushEvent(.{ .key_down = .{ .key = .space } });
+    engine.beginFrame();
+    try testing.expect(sources.frame.actions.state(jump_action).pressed);
+    try testing.expect(sources.frame.input.wasPressed(.space));
+    var steps: u32 = 0;
+    while (engine.nextStep()) |_| {
+        // The step's view is the sources' tick view, and only the first sees the press.
+        const first = steps == 0;
+        try testing.expectEqual(first, sources.tick.actions.state(jump_action).pressed);
+        try testing.expectEqual(first, sources.tick.input.wasPressed(.space));
+        try testing.expect(sources.tick.actions.state(jump_action).held);
+        steps += 1;
+    }
+    engine.endFrame();
+    try testing.expect(steps >= 2);
+    try testing.expect(sources.actions.isEnabled(walk_ctx));
+    try testing.expect(sources.map.action(jump_action) != null);
+    var buf: [platform.key.label_capacity]u8 = undefined;
+    // The null platform labels a key by its own name.
+    try testing.expectEqualStrings("space", sources.keyLabel(.space, &buf));
 }
 
 test "a reload keeps held state: no press invented, no release lost" {

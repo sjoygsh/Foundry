@@ -18,6 +18,8 @@ const asset_calls = @import("calls_asset.zig");
 const author_calls = @import("calls_author.zig");
 const author_types = @import("author_types.zig");
 const content_calls = @import("calls_content.zig");
+const input_calls = @import("calls_input.zig");
+const input_types = @import("input_types.zig");
 const mod_calls = @import("calls_mods.zig");
 const net_calls = @import("calls_net.zig");
 const net_types = @import("net_types.zig");
@@ -640,6 +642,45 @@ fn extendV6(v6: Api_v6, tail: Api_v7_tail) Api_v7 {
     return v7;
 }
 
+/// v8 (`input.md` §10, ADR-0090): input, read-only, as the tick sees it inside a system and as
+/// the frame does elsewhere. Additive; v1-v7 are unchanged.
+const Api_v8_tail = extern struct {
+    input_keyboard: *const fn (?*input_types.KeyboardState) callconv(.c) Result,
+    input_key_from_name: *const fn (Str, ?*u32) callconv(.c) Result,
+    input_key_name: *const fn (u32, ?*Str) callconv(.c) Result,
+    input_key_label: *const fn (u32, ?*Str) callconv(.c) Result,
+    input_mouse: *const fn (?*input_types.MouseState) callconv(.c) Result,
+    input_gamepad_slots: *const fn (?*u32) callconv(.c) Result,
+    input_gamepad: *const fn (u32, ?*input_types.GamepadState) callconv(.c) Result,
+    input_action: *const fn (ContentId, ?*input_types.ActionState) callconv(.c) Result,
+    input_action_binding_count: *const fn (ContentId, ?*u32) callconv(.c) Result,
+    input_action_binding: *const fn (ContentId, u32, ?*input_types.Binding) callconv(.c) Result,
+    input_context_enabled: *const fn (ContentId, ?*Bool) callconv(.c) Result,
+};
+const api_v7_fields = @typeInfo(Api_v7).@"struct".fields;
+const api_v8_tail_fields = @typeInfo(Api_v8_tail).@"struct".fields;
+pub const Api_v8 = blk: {
+    var names: [api_v7_fields.len + api_v8_tail_fields.len][:0]const u8 = undefined;
+    var field_types: [names.len]type = undefined;
+    for (api_v7_fields, 0..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    for (api_v8_tail_fields, api_v7_fields.len..) |f, i| {
+        names[i] = f.name;
+        field_types[i] = f.type;
+    }
+    break :blk @Struct(.@"extern", null, &names, &field_types, &@splat(.{}));
+};
+fn extendV7(v7: Api_v7, tail: Api_v8_tail) Api_v8 {
+    var v8: Api_v8 = undefined;
+    inline for (api_v7_fields) |f| @field(v8, f.name) = @field(v7, f.name);
+    inline for (api_v8_tail_fields) |f| @field(v8, f.name) = @field(tail, f.name);
+    v8.version = types.api_version_8;
+    v8.size = @sizeOf(Api_v8);
+    return v8;
+}
+
 /// The table for one host type, and the `get_api` that hands it out.
 pub fn TableOf(comptime H: type) type {
     const engine = engine_calls.Of(H);
@@ -654,6 +695,7 @@ pub fn TableOf(comptime H: type) type {
     const authoring = author_calls.Of(H);
     const networking = net_calls.Of(H);
     const public3d = public3d_calls.Of(H);
+    const inputs = input_calls.Of(H);
 
     return struct {
         pub const v1: Api_v1 = .{
@@ -972,6 +1014,20 @@ pub fn TableOf(comptime H: type) type {
             .author_job_release = authoring.jobRelease,
         });
 
+        pub const v8: Api_v8 = extendV7(v7, .{
+            .input_keyboard = inputs.keyboard,
+            .input_key_from_name = inputs.keyFromName,
+            .input_key_name = inputs.keyName,
+            .input_key_label = inputs.keyLabel,
+            .input_mouse = inputs.mouse,
+            .input_gamepad_slots = inputs.gamepadSlots,
+            .input_gamepad = inputs.gamepad,
+            .input_action = inputs.action,
+            .input_action_binding_count = inputs.actionBindingCount,
+            .input_action_binding = inputs.actionBinding,
+            .input_context_enabled = inputs.contextEnabled,
+        });
+
         pub fn getApi(version: u32) callconv(.c) ?*const anyopaque {
             if (version == types.api_version_1) return @ptrCast(&v1);
             if (version == types.api_version_2) return @ptrCast(&v2);
@@ -980,6 +1036,7 @@ pub fn TableOf(comptime H: type) type {
             if (version == types.api_version_5) return @ptrCast(&v5);
             if (version == types.api_version_6) return @ptrCast(&v6);
             if (version == types.api_version_7) return @ptrCast(&v7);
+            if (version == types.api_version_8) return @ptrCast(&v8);
             return null;
         }
     };
@@ -990,6 +1047,8 @@ test {
     _ = author_calls;
     _ = author_types;
     _ = content_calls;
+    _ = input_calls;
+    _ = input_types;
     _ = mod_calls;
     _ = net_calls;
     _ = net_types;

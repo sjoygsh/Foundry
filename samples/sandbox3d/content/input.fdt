@@ -1,0 +1,61 @@
+# M45's actions (`docs/design/input.md` §6, §11, ADR-0087): what the walk reads, as content, in
+# one context the sample enables at start. The debug F-keys stay raw keys, because they are the
+# host's shortcuts and not controls. A mod adds an action to this context without overriding it,
+# as `orbiter` does with its spin.
+
+foundry:input_context sandbox3d:context.play {
+    priority 10
+}
+
+# Walking, on the keys and the left stick. +y is forward; the walk turns it into -Z.
+foundry:input_action sandbox3d:action.move {
+    kind     "vector"
+    contexts [ sandbox3d:context.play ]
+    bindings [
+        { source "key.w" axis "y" }
+        { source "key.s" axis "y" scale -1 }
+        { source "key.a" axis "x" scale -1 }
+        { source "key.d" axis "x" }
+        { source "pad.left_stick" }
+    ]
+}
+
+# Turning and pitching at the walk's turn rate: the arrows, and the right stick.
+foundry:input_action sandbox3d:action.turn {
+    kind     "axis"
+    contexts [ sandbox3d:context.play ]
+    bindings [
+        { source "key.left" }
+        { source "key.right" scale -1 }
+        { source "pad.right_x" scale -1 }
+    ]
+}
+
+foundry:input_action sandbox3d:action.pitch {
+    kind     "axis"
+    contexts [ sandbox3d:context.play ]
+    bindings [
+        { source "key.up" }
+        { source "key.down" scale -1 }
+        { source "pad.right_y" }
+    ]
+}
+
+foundry:input_action sandbox3d:action.jump {
+    kind     "button"
+    contexts [ sandbox3d:context.play ]
+    bindings [ { source "key.space" } { source "pad.south" } ]
+}
+
+# Looking with the mouse, while the pointer is captured or `drag` is held.
+foundry:input_action sandbox3d:action.look {
+    kind     "delta"
+    contexts [ sandbox3d:context.play ]
+    bindings [ { source "mouse.motion" } ]
+}
+
+foundry:input_action sandbox3d:action.drag {
+    kind     "button"
+    contexts [ sandbox3d:context.play ]
+    bindings [ { source "mouse.right" } ]
+}

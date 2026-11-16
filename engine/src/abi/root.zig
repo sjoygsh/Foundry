@@ -115,6 +115,10 @@ pub const NetSession = types.NetSession;
 pub const NetPeer = types.NetPeer;
 pub const net = net_types;
 
+/// `input` — the v8 input values (`input.md` §10), for a Zig host or client as `foundry.h` has
+/// them for C.
+pub const input = @import("input_types.zig");
+
 /// What the host hands over, and what it gets back.
 ///
 /// `Host` is the concrete one a game wants; `HostOf` is what makes a test able to bind a
@@ -132,6 +136,7 @@ pub const Api_v4 = api.Api_v4;
 pub const Api_v5 = api.Api_v5;
 pub const Api_v6 = api.Api_v6;
 pub const Api_v7 = api.Api_v7;
+pub const Api_v8 = api.Api_v8;
 pub const public3d = @import("public3d_types.zig");
 pub const Vec3 = public3d.Vec3;
 pub const Quat = public3d.Quat;
@@ -222,6 +227,7 @@ pub const api_version_4 = types.api_version_4;
 pub const api_version_5 = types.api_version_5;
 pub const api_version_6 = types.api_version_6;
 pub const api_version_7 = types.api_version_7;
+pub const api_version_8 = types.api_version_8;
 pub const init_symbol = types.init_symbol;
 pub const shutdown_symbol = types.shutdown_symbol;
 

@@ -20,6 +20,9 @@ const data = @import("data");
 
 const api = @import("api.zig");
 const author_types = @import("author_types.zig");
+const input_types = @import("input_types.zig");
+const platform = @import("platform");
+const input = @import("input");
 const mod_types = @import("mod_types.zig");
 const net_types = @import("net_types.zig");
 const types = @import("types.zig");
@@ -395,6 +398,108 @@ test "the v7 job values are the shapes and numbers the header states" {
     try testing.expect(std.mem.indexOf(u8, header, "FOUNDRY_AUTHOR_JOB_FAILED = 2") != null);
 }
 
+extern fn foundry_agreement_api_v8_size() u64;
+extern fn foundry_agreement_api_v8_offset(u64) u64;
+extern fn foundry_agreement_key_count() u64;
+test "v8 header and Zig tails agree; every previous offset is unchanged" {
+    @setEvalBranchQuota(30000);
+    try testing.expectEqual(@as(u64, @sizeOf(api.Api_v8)), foundry_agreement_api_v8_size());
+    inline for (@typeInfo(api.Api_v7).@"struct".fields) |f| {
+        try testing.expectEqual(@offsetOf(api.Api_v7, f.name), @offsetOf(api.Api_v8, f.name));
+    }
+    const tail = @typeInfo(api.Api_v8).@"struct".fields[@typeInfo(api.Api_v7).@"struct".fields.len..];
+    try testing.expectEqual(@as(usize, 11), tail.len);
+    var at = std.mem.indexOf(u8, header, "typedef struct FoundryApi_v8 {").?;
+    inline for (@typeInfo(api.Api_v8).@"struct".fields) |f| {
+        if (comptime @typeInfo(f.type) == .pointer) {
+            at = std.mem.indexOfPos(u8, header, at, "*" ++ f.name ++ ")") orelse return error.TestUnexpectedResult;
+        }
+    }
+    inline for (tail, 0..) |f, i| {
+        try testing.expectEqual(@as(u64, @offsetOf(api.Api_v8, f.name)), foundry_agreement_api_v8_offset(i));
+    }
+    try testing.expectEqual(@as(u64, std.math.maxInt(u64)), foundry_agreement_api_v8_offset(tail.len));
+}
+
+test "the v8 input values are the shapes the header states" {
+    try testing.expectEqual(@as(usize, 104), @sizeOf(input_types.KeyboardState));
+    try testing.expectEqual(@as(usize, 96), @offsetOf(input_types.KeyboardState, "modifiers"));
+    try testing.expectEqual(@as(usize, 100), @offsetOf(input_types.KeyboardState, "focused"));
+    try testing.expectEqual(@as(usize, 56), @sizeOf(input_types.MouseState));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(input_types.MouseState, "motion_unit"));
+    try testing.expectEqual(@as(usize, 48), @offsetOf(input_types.MouseState, "captured"));
+    try testing.expectEqual(@as(usize, 56), @sizeOf(input_types.GamepadState));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(input_types.GamepadState, "generation"));
+    try testing.expectEqual(@as(usize, 24), @offsetOf(input_types.GamepadState, "axes"));
+    try testing.expectEqual(@as(usize, 48), @offsetOf(input_types.GamepadState, "face"));
+    try testing.expectEqual(@as(usize, 16), @sizeOf(input_types.ActionState));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(input_types.ActionState, "kind"));
+    try testing.expectEqual(@as(usize, 40), @sizeOf(input_types.Binding));
+    try testing.expectEqual(@as(usize, 16), @offsetOf(input_types.Binding, "axis"));
+    try testing.expectEqual(@as(usize, 32), @offsetOf(input_types.Binding, "overridden"));
+}
+
+/// `FOUNDRY_<PREFIX><NAME> = <value>` for every member of `E`, as the header spells it.
+fn expectEnumerators(comptime E: type, comptime prefix: []const u8) !void {
+    inline for (@typeInfo(E).@"enum".fields) |f| {
+        var upper: [f.name.len]u8 = undefined;
+        _ = std.ascii.upperString(&upper, f.name);
+        var buf: [96]u8 = undefined;
+        const line = try std.fmt.bufPrint(&buf, "    {s}{s} = {d}", .{ prefix, &upper, f.value });
+        testing.expect(std.mem.indexOf(u8, header, line) != null) catch |err| {
+            std.debug.print("the header does not state '{s}'\n", .{line});
+            return err;
+        };
+    }
+}
+
+test "the header numbers every key, button, axis, kind and label as the platform does" {
+    // `Key`'s order is append-only, and the header freezes it (ADR-0090).
+    try expectEnumerators(platform.Key, "FOUNDRY_KEY_");
+    try testing.expectEqual(@as(u64, platform.Key.count), foundry_agreement_key_count());
+    try expectEnumerators(platform.MouseButton, "FOUNDRY_MOUSE_");
+    try expectEnumerators(platform.GamepadButton, "FOUNDRY_PAD_");
+    try expectEnumerators(platform.GamepadAxis, "FOUNDRY_PAD_AXIS_");
+    try expectEnumerators(platform.GamepadKind, "FOUNDRY_PAD_KIND_");
+    try expectEnumerators(platform.ButtonLabel, "FOUNDRY_PAD_LABEL_");
+    try expectEnumerators(input.Kind, "FOUNDRY_ACTION_");
+    try expectEnumerators(input.Component, "FOUNDRY_AXIS_");
+    try testing.expectEqual(@as(i32, 1), input_types.motion_counts);
+    // The modifier bits, in `Modifiers`' field order.
+    inline for (.{ "SHIFT 0x1u", "CTRL 0x2u", "ALT 0x4u", "SUPER 0x8u", "CAPS_LOCK 0x10u", "NUM_LOCK 0x20u" }) |m| {
+        try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_MODIFIER_" ++ m ++ "\n") != null);
+    }
+}
+
+/// The text of `typedef struct FoundryApi_vN { ... } FoundryApi_vN;`, comments and all.
+fn tableText(comptime n: u32) []const u8 {
+    const open = std.fmt.comptimePrint("typedef struct FoundryApi_v{d} {{", .{n});
+    const close = std.fmt.comptimePrint("}} FoundryApi_v{d};", .{n});
+    const start = std.mem.indexOf(u8, header, open).?;
+    const end = std.mem.indexOfPos(u8, header, start, close).?;
+    return header[start .. end + close.len];
+}
+
+/// Wyhash of each frozen table's declaration, as M45 Step 7 found it.
+const frozen_tables = [_]u64{
+    0x1afae4d7c9a7dedd, 0x5072dd7ddf094eef, 0xb76c5bd90f9f4d64, 0x92e5de40e0a6d7c6,
+    0xf14692240f041ffe, 0x126b3f7f29827ee9, 0xc5e12b6608b98223,
+};
+
+test "v1 to v7 are byte-identical to the tables they were frozen as" {
+    // An additive table is a sibling, never an edit, and the offsets above would not notice a
+    // changed comment or a renamed parameter: a C author reads both.
+    var changed = false;
+    inline for (frozen_tables, 1..) |pin, n| {
+        const got = std.hash.Wyhash.hash(0, tableText(n));
+        if (got != pin) {
+            std.debug.print("FoundryApi_v{d} is 0x{x:0>16}, frozen as 0x{x:0>16}\n", .{ n, got, pin });
+            changed = true;
+        }
+    }
+    try testing.expect(!changed);
+}
+
 /// **The header, as a build input.**
 ///
 /// Not decoration: `agreement.c`'s object is cached against the C file, and a change to
@@ -414,7 +519,8 @@ test "the header declares the version and the entry points this build publishes"
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_5 5u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_6 6u") != null);
     try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_7 7u") != null);
-    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_7") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION_8 8u") != null);
+    try testing.expect(std.mem.indexOf(u8, header, "#define FOUNDRY_API_VERSION FOUNDRY_API_VERSION_8") != null);
     try testing.expect(std.mem.indexOf(u8, header, types.init_symbol) != null);
     try testing.expect(std.mem.indexOf(u8, header, types.shutdown_symbol) != null);
 }

@@ -26,6 +26,9 @@ pub const diagnostics = @import("diagnostics.zig");
 /// action, merged by action, never content. `Engine` reads it after content loads and writes
 /// it through `saveBindings`.
 pub const input_bindings = @import("input_bindings.zig");
+/// What the public table publishes input from: the frame and tick views, the map, the enabled
+/// contexts and the overrides, borrowed (`input.md` §10, ADR-0090).
+pub const InputSources = @import("input_sources.zig").InputSources;
 /// What is installed, what the player chose and in what order, and what that order
 /// overrides (`mod-management.md` §4, ADR-0040). Opt-in, like settings: a host that loads
 /// only its own packages constructs none of it.
@@ -92,6 +95,7 @@ test {
     _ = log_sink;
     _ = diagnostics;
     _ = input_bindings;
+    _ = @import("input_sources.zig");
     _ = mods;
     _ = profiles;
     _ = settings;

@@ -36,6 +36,7 @@ pub const api_version_4: u32 = 4;
 pub const api_version_5: u32 = 5;
 pub const api_version_6: u32 = 6;
 pub const api_version_7: u32 = 7;
+pub const api_version_8: u32 = 8;
 
 // == Booleans ==========================================================================
 

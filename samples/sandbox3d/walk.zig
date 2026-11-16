@@ -4,25 +4,36 @@ const core = @import("core");
 const data = @import("data");
 const asset = @import("asset");
 const physics = @import("physics3d");
-const platform = @import("platform");
+const input = @import("input");
 pub const Settings = @import("walk_settings.zig").Settings;
 const Vec3 = core.math.Vec3;
 const log = core.log.scoped(.sandbox3d);
 
 pub const Intent = struct { direction: Vec3 = .zero, turn: f32 = 0, pitch: f32 = 0, jump: bool = false };
 
-/// Read immutable frame input once. Mouse delta is consumed once per frame, never once per tick.
-pub fn inputIntent(input: platform.InputSnapshot, typing: bool) Intent {
+/// The walk's actions (`content/input.fdt`), in `context`, which the sample enables at start.
+pub const actions = struct {
+    pub const context = core.ContentId.fromString("sandbox3d:context.play");
+    pub const move = core.ContentId.fromString("sandbox3d:action.move");
+    pub const turn = core.ContentId.fromString("sandbox3d:action.turn");
+    pub const pitch = core.ContentId.fromString("sandbox3d:action.pitch");
+    pub const jump = core.ContentId.fromString("sandbox3d:action.jump");
+    pub const look = core.ContentId.fromString("sandbox3d:action.look");
+    pub const drag = core.ContentId.fromString("sandbox3d:action.drag");
+};
+
+/// Reads the frame's actions once (`input.md` §11). Every one the walk steps on is a level, held
+/// across the frame's ticks; the mouse's look is applied once a frame, never once a tick. The
+/// vector is already clamped to length 1, so a diagonal is no faster than a stick.
+pub fn inputIntent(frame: *const input.Frame, typing: bool) Intent {
     if (typing) return .{};
-    const x: f32 = @as(f32, if (input.isHeld(.d)) 1 else 0) - @as(f32, if (input.isHeld(.a)) 1 else 0);
-    const z: f32 = @as(f32, if (input.isHeld(.s)) 1 else 0) - @as(f32, if (input.isHeld(.w)) 1 else 0);
-    var direction: Vec3 = .init(x, 0, z);
-    if (direction.lengthSquared() > 1) direction = direction.normalize();
+    const move = frame.state(actions.move).value;
     return .{
-        .direction = direction,
-        .turn = @as(f32, if (input.isHeld(.left)) 1 else 0) - @as(f32, if (input.isHeld(.right)) 1 else 0),
-        .pitch = @as(f32, if (input.isHeld(.up)) 1 else 0) - @as(f32, if (input.isHeld(.down)) 1 else 0),
-        .jump = input.isHeld(.space),
+        // +y forward is the walk's -Z.
+        .direction = .init(move.x, 0, -move.y),
+        .turn = frame.state(actions.turn).value.x,
+        .pitch = frame.state(actions.pitch).value.x,
+        .jump = frame.state(actions.jump).held,
     };
 }
 
@@ -206,13 +217,34 @@ fn clampPitch(pitch: f32) f32 {
     return std.math.clamp(pitch, -85 * std.math.pi / 180.0, 85 * std.math.pi / 180.0);
 }
 
-test "walk input ignores typing, normalizes diagonals and consumes bounded look" {
-    var input: platform.InputSnapshot = .{};
-    platform.key.setKey(&input.keys_held, .w, true);
-    platform.key.setKey(&input.keys_held, .d, true);
-    platform.key.setKey(&input.keys_held, .up, true);
-    try std.testing.expectEqualDeep(Intent{}, inputIntent(input, true));
-    try std.testing.expectApproxEqAbs(@as(f32, 1), inputIntent(input, false).direction.length(), 1e-6);
-    try std.testing.expectEqual(@as(f32, 1), inputIntent(input, false).pitch);
+test "walk input ignores typing, reads its actions and keeps a diagonal at unit length" {
+    var frame: input.Frame = .{ .count = 3 };
+    const ids = [_]core.ContentId{ actions.move, actions.pitch, actions.jump };
+    const kinds = [_]input.Kind{ .vector, .axis, .button };
+    const states = [_]input.ActionState{
+        .{ .held = true, .value = .{ .x = std.math.sqrt1_2, .y = std.math.sqrt1_2 } },
+        .{ .held = true, .value = .{ .x = 1, .y = 0 } },
+        .{ .held = true, .value = .{ .x = 1, .y = 0 } },
+    };
+    // A frame is in content-ID order, as evaluation leaves it.
+    var order = [_]usize{ 0, 1, 2 };
+    std.mem.sort(usize, &order, ids, struct {
+        fn less(by: [3]core.ContentId, a: usize, b: usize) bool {
+            return by[a].hash < by[b].hash;
+        }
+    }.less);
+    for (order, 0..) |at, i| {
+        frame.ids[i] = ids[at];
+        frame.kinds[i] = kinds[at];
+        frame.states[i] = states[at];
+    }
+    try std.testing.expectEqualDeep(Intent{}, inputIntent(&frame, true));
+    const intent = inputIntent(&frame, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), intent.direction.length(), 1e-6);
+    // Forward and right: -Z and +X.
+    try std.testing.expect(intent.direction.z < 0 and intent.direction.x > 0);
+    try std.testing.expectEqual(@as(f32, 1), intent.pitch);
+    try std.testing.expectEqual(@as(f32, 0), intent.turn);
+    try std.testing.expect(intent.jump);
     try std.testing.expectApproxEqAbs(@as(f32, 85 * std.math.pi / 180.0), clampPitch(10), 1e-6);
 }

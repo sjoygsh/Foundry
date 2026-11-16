@@ -66,7 +66,8 @@ FOUNDRY_AGREE(FOUNDRY_API_VERSION_4 == 4);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_5 == 5);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_6 == 6);
 FOUNDRY_AGREE(FOUNDRY_API_VERSION_7 == 7);
-FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_7);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION_8 == 8);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_8);
 
 /* -- Strings ------------------------------------------------------------------------- */
 
@@ -4277,3 +4278,89 @@ uint64_t foundry_agreement_api_v6_offset(uint64_t i) {
     static const uint64_t offsets[] = { offsetof(FoundryApi_v6, render3d_instance_create), offsetof(FoundryApi_v6, render3d_instance_destroy), offsetof(FoundryApi_v6, render3d_instance_set_world), offsetof(FoundryApi_v6, render3d_instance_set_material), offsetof(FoundryApi_v6, render3d_instance_set_visible), offsetof(FoundryApi_v6, render3d_light_create), offsetof(FoundryApi_v6, render3d_light_set), offsetof(FoundryApi_v6, render3d_light_destroy), offsetof(FoundryApi_v6, render3d_camera_get), offsetof(FoundryApi_v6, world_transform_get), offsetof(FoundryApi_v6, world_transform_set), offsetof(FoundryApi_v6, world_parent_get), offsetof(FoundryApi_v6, world_parent_set), offsetof(FoundryApi_v6, world_world_transform), offsetof(FoundryApi_v6, physics3d_raycast), offsetof(FoundryApi_v6, physics3d_shape_cast), offsetof(FoundryApi_v6, physics3d_overlap), offsetof(FoundryApi_v6, physics3d_body_create), offsetof(FoundryApi_v6, physics3d_body_destroy), offsetof(FoundryApi_v6, physics3d_body_set_pose), offsetof(FoundryApi_v6, physics3d_body_set_filter), offsetof(FoundryApi_v6, physics3d_body_get), offsetof(FoundryApi_v6, physics3d_character_create), offsetof(FoundryApi_v6, physics3d_character_destroy), offsetof(FoundryApi_v6, physics3d_character_move), offsetof(FoundryApi_v6, physics3d_character_set_feet), offsetof(FoundryApi_v6, physics3d_character_feet), offsetof(FoundryApi_v6, physics3d_character_body) };
     return i < 28 ? offsets[i] : UINT64_MAX;
 }
+
+/* -- ABI v8: input (input.md §10) ---------------------------------------------------- */
+FOUNDRY_AGREE(FOUNDRY_API_VERSION_8 == 8u);
+FOUNDRY_AGREE(FOUNDRY_API_VERSION == FOUNDRY_API_VERSION_8);
+/* v7 unchanged: its last member where v7 put it, and the eleven calls after it. */
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, author_job_release) == offsetof(FoundryApi_v7, author_job_release));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_keyboard) == sizeof(FoundryApi_v7) + 0 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_key_from_name) == sizeof(FoundryApi_v7) + 1 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_key_name) == sizeof(FoundryApi_v7) + 2 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_key_label) == sizeof(FoundryApi_v7) + 3 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_mouse) == sizeof(FoundryApi_v7) + 4 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_gamepad_slots) == sizeof(FoundryApi_v7) + 5 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_gamepad) == sizeof(FoundryApi_v7) + 6 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_action) == sizeof(FoundryApi_v7) + 7 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_action_binding_count) == sizeof(FoundryApi_v7) + 8 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_action_binding) == sizeof(FoundryApi_v7) + 9 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(offsetof(FoundryApi_v8, input_context_enabled) == sizeof(FoundryApi_v7) + 10 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(sizeof(FoundryApi_v8) == sizeof(FoundryApi_v7) + 11 * sizeof(void (*)(void)));
+FOUNDRY_AGREE(sizeof(FoundryKeyboardState) == 104);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, held) == 0);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, pressed) == 32);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, released) == 64);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, modifiers) == 96);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, focused) == 100);
+FOUNDRY_AGREE(offsetof(FoundryKeyboardState, reserved) == 101);
+FOUNDRY_AGREE(sizeof(FoundryMouseState) == 56);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, x) == 0);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, y) == 4);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, pixel_x) == 8);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, pixel_y) == 12);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, motion_x) == 16);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, motion_y) == 20);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, wheel_x) == 24);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, wheel_y) == 28);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, motion_unit) == 32);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, buttons_held) == 36);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, buttons_pressed) == 40);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, buttons_released) == 44);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, captured) == 48);
+FOUNDRY_AGREE(offsetof(FoundryMouseState, reserved) == 49);
+FOUNDRY_AGREE(sizeof(FoundryGamepadState) == 56);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, connected) == 0);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, reserved0) == 1);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, kind) == 4);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, generation) == 8);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, buttons_held) == 12);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, buttons_pressed) == 16);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, buttons_released) == 20);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, axes) == 24);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, face) == 48);
+FOUNDRY_AGREE(offsetof(FoundryGamepadState, reserved) == 52);
+FOUNDRY_AGREE(sizeof(FoundryActionState) == 16);
+FOUNDRY_AGREE(offsetof(FoundryActionState, held) == 0);
+FOUNDRY_AGREE(offsetof(FoundryActionState, pressed) == 1);
+FOUNDRY_AGREE(offsetof(FoundryActionState, released) == 2);
+FOUNDRY_AGREE(offsetof(FoundryActionState, reserved) == 3);
+FOUNDRY_AGREE(offsetof(FoundryActionState, kind) == 4);
+FOUNDRY_AGREE(offsetof(FoundryActionState, value_x) == 8);
+FOUNDRY_AGREE(offsetof(FoundryActionState, value_y) == 12);
+FOUNDRY_AGREE(sizeof(FoundryBinding) == 40);
+FOUNDRY_AGREE(offsetof(FoundryBinding, source) == 0);
+FOUNDRY_AGREE(offsetof(FoundryBinding, axis) == 16);
+FOUNDRY_AGREE(offsetof(FoundryBinding, scale) == 20);
+FOUNDRY_AGREE(offsetof(FoundryBinding, threshold) == 24);
+FOUNDRY_AGREE(offsetof(FoundryBinding, deadzone) == 28);
+FOUNDRY_AGREE(offsetof(FoundryBinding, overridden) == 32);
+FOUNDRY_AGREE(offsetof(FoundryBinding, reserved) == 33);
+FOUNDRY_AGREE(FOUNDRY_KEY_UNKNOWN == 0);
+FOUNDRY_AGREE(FOUNDRY_KEY_A == 1);
+FOUNDRY_AGREE(FOUNDRY_KEY_SPACE == 51);
+FOUNDRY_AGREE(FOUNDRY_KEY_MENU == 105);
+FOUNDRY_AGREE(FOUNDRY_MOUSE_FORWARD == 4);
+FOUNDRY_AGREE(FOUNDRY_PAD_SOUTH == 0);
+FOUNDRY_AGREE(FOUNDRY_PAD_TOUCHPAD_PRESS == 20);
+FOUNDRY_AGREE(FOUNDRY_PAD_AXIS_RIGHT_TRIGGER == 5);
+FOUNDRY_AGREE(FOUNDRY_PAD_KIND_OTHER == 4);
+FOUNDRY_AGREE(FOUNDRY_PAD_LABEL_TRIANGLE == 8);
+FOUNDRY_AGREE(FOUNDRY_MOTION_COUNTS == 1);
+FOUNDRY_AGREE(FOUNDRY_ACTION_DELTA == 3);
+FOUNDRY_AGREE(FOUNDRY_AXIS_Y == 1);
+uint64_t foundry_agreement_api_v8_size(void) { return sizeof(FoundryApi_v8); }
+uint64_t foundry_agreement_api_v8_offset(uint64_t i) {
+    static const uint64_t offsets[] = { offsetof(FoundryApi_v8, input_keyboard), offsetof(FoundryApi_v8, input_key_from_name), offsetof(FoundryApi_v8, input_key_name), offsetof(FoundryApi_v8, input_key_label), offsetof(FoundryApi_v8, input_mouse), offsetof(FoundryApi_v8, input_gamepad_slots), offsetof(FoundryApi_v8, input_gamepad), offsetof(FoundryApi_v8, input_action), offsetof(FoundryApi_v8, input_action_binding_count), offsetof(FoundryApi_v8, input_action_binding), offsetof(FoundryApi_v8, input_context_enabled) };
+    return i < 11 ? offsets[i] : UINT64_MAX;
+}
+uint64_t foundry_agreement_key_count(void) { return (uint64_t)FOUNDRY_KEY_MENU + 1u; }
