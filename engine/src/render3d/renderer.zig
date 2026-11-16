@@ -143,6 +143,15 @@ fn toneStage(comptime name: []const u8, comptime metal_entry: []const u8) Shader
     };
 }
 
+/// The sky pass's two stages (`environment.md` §9), engine-owned and embedded (ADR-0019).
+fn skyStage(comptime name: []const u8, comptime metal_entry: []const u8) ShaderStage {
+    return switch (rhi.backend) {
+        .metal => .{ .bytes = @embedFile("sky_metallib"), .entry = metal_entry },
+        .null => .{ .bytes = "null-backend-shader", .entry = metal_entry },
+        .vulkan => .{ .bytes = @embedFile(name), .entry = "main" },
+    };
+}
+
 fn unlitModel() ShadingModel {
     return .{
         .id = unlit_id,
@@ -396,6 +405,11 @@ pub const Stats = struct {
     particles_dropped: u32 = 0,
     /// Instances whose record or material a reload removed or broke.
     particle_emitters_refused: u32 = 0,
+    /// The content ID of the environment that lit the frame (`environment.md` §10): null when
+    /// none did, an empty or pending one included, or when it was made without one.
+    environment: ?core.ContentId = null,
+    /// Whether the sky pass drew: exactly when a written environment lit the frame.
+    sky_drawn: bool = false,
 };
 
 /// What `Particles.prepare` reports for the frame that follows it.
@@ -668,6 +682,9 @@ const FrameSlot = struct {
 /// One environment (`environment.md` §7.4). `cube` is `.none` until it is first written, and
 /// such an environment lights nothing.
 const EnvironmentState = struct {
+    /// What `Stats.environment` reports while this environment lights a frame; never how it is
+    /// found, which is its handle (ADR-0063).
+    name: ?core.ContentId = null,
     cube: rhi.TextureHandle = .none,
     levels: u32 = 0,
     harmonics: asset.environment.Harmonics = @splat(.{ 0, 0, 0 }),
@@ -677,6 +694,12 @@ const EnvironmentState = struct {
 const DrawConstants = extern struct {
     world: Mat4,
     cofactor: [3][4]f32,
+};
+
+/// The sky's inline constants: the view ray is rebuilt from the inverse view-projection
+/// (`environment.md` §9), which the frame uniform does not carry.
+const SkyConstants = extern struct {
+    inverse_view_projection: Mat4,
 };
 
 /// A cube of `levels` levels from `size`, its faces' bytes laid out as
@@ -872,6 +895,12 @@ pub const Renderer = struct {
     tone_pipeline: rhi.RenderPipelineHandle,
     tone_sampler: rhi.SamplerHandle,
     tone_group: rhi.BindGroupHandle,
+    /// The sky pass (`environment.md` §9): the frame group alone and the inverse
+    /// view-projection, so it needs no material group bound.
+    sky_pipeline_layout: rhi.PipelineLayoutHandle,
+    sky_vertex: rhi.ShaderModuleHandle,
+    sky_fragment: rhi.ShaderModuleHandle,
+    sky_pipeline: rhi.RenderPipelineHandle,
 
     models: std.ArrayList(ModelState),
     pipelines: std.ArrayList(PipelineState),
@@ -1070,6 +1099,36 @@ pub const Renderer = struct {
         const tone_sampler = try device.createSampler(.{ .label = "render3d HDR sampler" });
         errdefer device.destroySampler(tone_sampler);
 
+        // The sky: a full-screen triangle at reversed-Z's far plane, tested `greater_equal`
+        // against the cleared depth and writing none, so it colours only what nothing opaque
+        // covered, at the frame's sample count (`environment.md` §9).
+        const sky_pipeline_layout = try device.createPipelineLayout(.{
+            .label = "render3d sky",
+            .bind_group_layouts = &.{frame_layout},
+            .inline_constant_bytes = @sizeOf(SkyConstants),
+        });
+        errdefer device.destroyPipelineLayout(sky_pipeline_layout);
+        const sky_vertex_stage = skyStage("sky_vertex_spirv", "skyVertex");
+        const sky_fragment_stage = skyStage("sky_fragment_spirv", "skyFragment");
+        const sky_vertex = try device.createShaderModule(.{ .label = "render3d sky vertex", .bytes = sky_vertex_stage.bytes });
+        errdefer device.destroyShaderModule(sky_vertex);
+        const sky_fragment = try device.createShaderModule(.{ .label = "render3d sky fragment", .bytes = sky_fragment_stage.bytes });
+        errdefer device.destroyShaderModule(sky_fragment);
+        const sky_pipeline = try device.createRenderPipeline(.{
+            .label = "render3d sky",
+            .layout = sky_pipeline_layout,
+            .vertex_shader = sky_vertex,
+            .vertex_entry = sky_vertex_stage.entry,
+            .fragment_shader = sky_fragment,
+            .fragment_entry = sky_fragment_stage.entry,
+            .vertex_buffers = &.{},
+            .color_targets = &.{.{ .format = .rgba16_float }},
+            .depth_stencil = .{ .format = .depth32_float, .depth_write_enabled = false, .depth_compare = .greater_equal },
+            .primitive = .{ .cull_mode = .none },
+            .sample_count = config.sample_count,
+        });
+        errdefer device.destroyRenderPipeline(sky_pipeline);
+
         const slots = try gpa.alloc(FrameSlot, config.frames_in_flight);
         errdefer gpa.free(slots);
         var built_slots: usize = 0;
@@ -1127,6 +1186,10 @@ pub const Renderer = struct {
             .tone_pipeline = tone_pipeline,
             .tone_sampler = tone_sampler,
             .tone_group = .none,
+            .sky_pipeline_layout = sky_pipeline_layout,
+            .sky_vertex = sky_vertex,
+            .sky_fragment = sky_fragment,
+            .sky_pipeline = sky_pipeline,
             .models = .empty,
             .pipelines = .empty,
             .samplers = .empty,
@@ -1237,6 +1300,10 @@ pub const Renderer = struct {
         self.device.destroyPipelineLayout(self.tone_pipeline_layout);
         self.device.destroyBindGroupLayout(self.tone_layout);
         self.device.destroySampler(self.tone_sampler);
+        self.device.destroyRenderPipeline(self.sky_pipeline);
+        self.device.destroyShaderModule(self.sky_vertex);
+        self.device.destroyShaderModule(self.sky_fragment);
+        self.device.destroyPipelineLayout(self.sky_pipeline_layout);
         self.device.destroyPipelineLayout(self.pipeline_layout);
         self.device.destroyBindGroupLayout(self.material_layout);
         self.device.destroyBindGroupLayout(self.frame_layout);
@@ -1955,8 +2022,10 @@ pub const Renderer = struct {
 
     /// An environment with nothing written yet: a frame naming it lights nothing until
     /// `writeEnvironment` fills it. Its handle is stable across every write.
-    pub fn createEnvironment(self: *Self) Error!EnvironmentHandle {
-        return self.environments.add(self.gpa, .{});
+    /// An empty environment, which lights nothing until it is written. `name` is what
+    /// `Stats.environment` reports while it lights a frame, `Content`'s record ID.
+    pub fn createEnvironment(self: *Self, name: ?core.ContentId) Error!EnvironmentHandle {
+        return self.environments.add(self.gpa, .{ .name = name });
     }
 
     /// Replaces the environment's cube and harmonics with `prefiltered`'s, which the renderer
@@ -1972,7 +2041,7 @@ pub const Renderer = struct {
         const cube = try createCube(self.device, label, prefiltered.size, prefiltered.levels, prefiltered.bytes);
         self.uploads.uploaded_bytes += prefiltered.bytes.len;
         if (!state.cube.isNone()) self.orphan_cubes.appendAssumeCapacity(state.cube);
-        state.* = .{ .cube = cube, .levels = prefiltered.levels, .harmonics = prefiltered.harmonics };
+        state.* = .{ .name = state.name, .cube = cube, .levels = prefiltered.levels, .harmonics = prefiltered.harmonics };
     }
 
     /// Whether the environment has been written: false for one only created. Null for a handle
@@ -2413,6 +2482,7 @@ pub const Renderer = struct {
             if (!state.cube.isNone()) {
                 lighting.packEnvironment(&uniform, state.harmonics, state.levels, self.view.environment_intensity, self.view.environment_rotation);
                 cube = state.cube;
+                self.stats.environment = state.name;
             }
         }
         @memcpy(bytes[0..@sizeOf(lighting.FrameUniform)], std.mem.asBytes(&uniform));
@@ -2508,7 +2578,12 @@ pub const Renderer = struct {
 
     fn recordWorld(self: *Self, pass: *rhi.RenderPass) Error!void {
         const frame = self.frame orelse return error.NotRecording;
-        if (self.order.items.len == 0) return;
+        // The sky goes after the opaque and masked draws and before the blended ones, so glass
+        // in front of it blends over it (`environment.md` §9). It is recorded only when a
+        // written environment lights the frame; otherwise the clear colour stays behind.
+        const sky = self.view.environment != null and !self.slots[frame.slot].bound_cube.eql(self.environment_fallback);
+        if (self.order.items.len == 0 and !sky) return;
+        var sky_pending = sky;
 
         pass.setViewport(.{
             .width = @floatFromInt(self.view.target_size.width),
@@ -2522,6 +2597,11 @@ pub const Renderer = struct {
 
         for (self.order.items) |draw_index| {
             const item = self.draws.items[draw_index];
+            if (sky_pending and item.alpha == .blend) {
+                self.recordSky(pass, frame);
+                sky_pending = false;
+                bound_pipeline = .none;
+            }
             const mesh = self.meshes.getConst(item.mesh) orelse continue;
             if (item.submesh >= mesh.submeshes.len) continue;
             const submesh = mesh.submeshes[item.submesh];
@@ -2556,6 +2636,23 @@ pub const Renderer = struct {
             self.stats.triangles += submesh.index_count / 3;
             if (item.alpha == .blend) self.stats.blended += 1;
         }
+        if (sky_pending) self.recordSky(pass, frame);
+    }
+
+    /// One full-screen triangle; the next draw binds its own pipeline and groups again.
+    fn recordSky(self: *Self, pass: *rhi.RenderPass, frame: rhi.FrameContext) void {
+        const slot = self.slots[frame.slot];
+        // The view-projection of a valid camera is invertible; a frame whose is not draws no sky.
+        const inverse = self.view_projection.inverse() orelse return;
+        pass.setPipeline(self.sky_pipeline);
+        // The group the world pass binds: a shadowless frame's is the caster group, which binds
+        // the cube too (M40, Step 5).
+        pass.setBindGroup(0, if (self.shadow_tile_count == 0 and !slot.shadow_group.isNone()) slot.shadow_group else slot.group);
+        const constants: SkyConstants = .{ .inverse_view_projection = inverse };
+        pass.setInlineConstants(std.mem.asBytes(&constants));
+        pass.draw(.{ .vertex_count = 3 });
+        self.stats.pipeline_binds += 1;
+        self.stats.sky_drawn = true;
     }
 
     fn shadowKey(self: *const Self, item: DrawItem) PipelineKey {
@@ -6568,7 +6665,7 @@ test "an environment is written whole, refused by shape and inside the window, a
     defer fx.deinit();
     var good = try testEnvironment(testing.allocator, false, 16);
     defer good.deinit(testing.allocator);
-    const handle = try fx.renderer.createEnvironment();
+    const handle = try fx.renderer.createEnvironment(null);
     try testing.expectEqual(@as(?bool, false), fx.renderer.environmentWritten(handle));
 
     // Each shape `prefilter` cannot make, refused before anything is made.
@@ -6602,7 +6699,7 @@ test "an environment is written whole, refused by shape and inside the window, a
     try fx.renderer.begin(view);
     try testing.expectError(error.InFrame, fx.renderer.writeEnvironment(handle, &good, "good"));
     try finishTestFrame(&fx);
-    const gone = try fx.renderer.createEnvironment();
+    const gone = try fx.renderer.createEnvironment(null);
     fx.renderer.destroyEnvironment(gone);
     try testing.expectError(error.InvalidEnvironment, fx.renderer.writeEnvironment(gone, &good, "good"));
     try testing.expectEqual(@as(?bool, null), fx.renderer.environmentWritten(gone));
@@ -6625,7 +6722,7 @@ test "the fourth uniform carries the environment's lanes and bit only when one w
     defer fx.deinit();
     var prefiltered = try testEnvironment(testing.allocator, false, 32);
     defer prefiltered.deinit(testing.allocator);
-    const handle = try fx.renderer.createEnvironment();
+    const handle = try fx.renderer.createEnvironment(null);
     defer fx.renderer.destroyEnvironment(handle);
 
     const Case = struct { named: bool, written: bool };
@@ -6673,7 +6770,7 @@ test "a destroyed or rewritten environment's cube outlives the frames that bind 
     defer large.deinit(testing.allocator);
     const mesh = try litQuad(&fx.renderer, 0);
     const material = try fx.renderer.createMaterial(.{ .shading = lit_id }, "lit");
-    const handle = try fx.renderer.createEnvironment();
+    const handle = try fx.renderer.createEnvironment(null);
     try fx.renderer.writeEnvironment(handle, &small, "small");
     var view = testView(32);
     view.environment = handle;
@@ -6741,7 +6838,7 @@ test "a mirror reflects each of the six faces in place, by tilt and by yaw, at 1
         const quad = try envQuad(&fx.renderer);
         const surface: lighting.Surface = .{ .base = .{ 1, 1, 1 }, .metallic = 1, .roughness = 0 };
         const mirror = try fx.renderer.createMaterial(.{ .shading = lit_id, .metallic = 1, .roughness = 0 }, "mirror");
-        const handle = try fx.renderer.createEnvironment();
+        const handle = try fx.renderer.createEnvironment(null);
         try fx.renderer.writeEnvironment(handle, &prefiltered, "faces");
         const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
         defer fx.device.destroyBuffer(readback);
@@ -6789,9 +6886,9 @@ test "rough and diffuse surfaces under an environment match the oracle, with amb
         defer fx.deinit();
         const format = fx.device.capabilities().surface_format;
         const quad = try envQuad(&fx.renderer);
-        const sky = try fx.renderer.createEnvironment();
+        const sky = try fx.renderer.createEnvironment(null);
         try fx.renderer.writeEnvironment(sky, &gradient, "gradient");
-        const room = try fx.renderer.createEnvironment();
+        const room = try fx.renderer.createEnvironment(null);
         try fx.renderer.writeEnvironment(room, &faces, "faces");
         const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
         defer fx.device.destroyBuffer(readback);
@@ -6840,6 +6937,188 @@ test "rough and diffuse surfaces under an environment match the oracle, with amb
                 checked += 1;
             }
             try testing.expect(checked >= 2);
+        }
+    }
+}
+
+// -- the sky pass (`environment.md` §9, §10) -------------------------------------------------
+
+test "the sky is recorded exactly when a written environment lights the frame, between opaque and blended draws" {
+    var fx = try TestFixture.init(1, 32);
+    defer fx.deinit();
+    var prefiltered = try testEnvironment(testing.allocator, false, 16);
+    defer prefiltered.deinit(testing.allocator);
+    const name = core.ContentId.fromString("test:yard");
+    const written = try fx.renderer.createEnvironment(name);
+    defer fx.renderer.destroyEnvironment(written);
+    try fx.renderer.writeEnvironment(written, &prefiltered, "yard");
+    const pending = try fx.renderer.createEnvironment(core.ContentId.fromString("test:pending"));
+    defer fx.renderer.destroyEnvironment(pending);
+    const unnamed = try fx.renderer.createEnvironment(null);
+    defer fx.renderer.destroyEnvironment(unnamed);
+    try fx.renderer.writeEnvironment(unnamed, &prefiltered, "runtime");
+    const quad = try envQuad(&fx.renderer);
+    const solid = try fx.renderer.createMaterial(.{}, "solid");
+    const glass = try fx.renderer.createMaterial(.{ .base_color = .{ 1, 1, 1, 0.5 }, .alpha_mode = .blend }, "glass");
+
+    const Case = struct { environment: ?EnvironmentHandle, solid: bool, glass: bool, sky: bool, name: ?core.ContentId, binds: u32 };
+    for ([_]Case{
+        .{ .environment = null, .solid = true, .glass = true, .sky = false, .name = null, .binds = 2 },
+        .{ .environment = pending, .solid = true, .glass = true, .sky = false, .name = null, .binds = 2 },
+        // Nothing to draw but the sky: it is still recorded.
+        .{ .environment = written, .solid = false, .glass = false, .sky = true, .name = name, .binds = 1 },
+        .{ .environment = written, .solid = true, .glass = false, .sky = true, .name = name, .binds = 2 },
+        // Between them: the blended draw binds its pipeline again after the sky's.
+        .{ .environment = written, .solid = true, .glass = true, .sky = true, .name = name, .binds = 3 },
+        .{ .environment = written, .solid = false, .glass = true, .sky = true, .name = name, .binds = 2 },
+        .{ .environment = unnamed, .solid = true, .glass = true, .sky = true, .name = null, .binds = 3 },
+    }) |case| {
+        var view = testView(32);
+        view.environment = case.environment;
+        try fx.renderer.begin(view);
+        if (case.solid) try fx.renderer.drawMesh(.{ .mesh = quad, .material = solid, .world = Mat4.translation(.init(0, 0, -3)) });
+        if (case.glass) try fx.renderer.drawMesh(.{ .mesh = quad, .material = glass, .world = Mat4.translation(.init(0, 0, -2)) });
+        try finishTestFrame(&fx);
+        const stats = fx.renderer.frameStats();
+        try testing.expectEqual(case.sky, stats.sky_drawn);
+        try testing.expectEqual(case.name, stats.environment);
+        try testing.expectEqual(case.binds, stats.pipeline_binds);
+        // The sky is not a mesh draw.
+        try testing.expectEqual(@as(u32, @intFromBool(case.solid)) + @intFromBool(case.glass), stats.draws);
+    }
+    if (rhi.backend == .null) try testing.expectEqual(@as(usize, 0), fx.device.violationCount());
+}
+
+/// What the sky pass writes at pixel (x, y) of a 32-pixel `testView` turned by `rotation`: the
+/// cube's top level along the view ray, turned back by the yaw, times the intensity and the
+/// pre-exposure.
+fn skyOracle(cube: *const asset.environment.Prefiltered, view: FrameView, x: usize, y: usize) [3]f32 {
+    const d = Mat4.fromQuat(view.camera.rotation).mulDirection(Vec3.init((@as(f32, @floatFromInt(x)) + 0.5) / 16 - 1, 1 - (@as(f32, @floatFromInt(y)) + 0.5) / 16, -1)).normalize();
+    const e = lighting.environmentDirection(d, @cos(view.environment_rotation), @sin(view.environment_rotation));
+    const radiance = cube.sample(.{ e.x, e.y, e.z }, 0);
+    const scale = view.environment_intensity * lighting.exposureScale(view.exposure_ev100);
+    return .{ radiance[0] * scale, radiance[1] * scale, radiance[2] * scale };
+}
+
+/// Whether pixel (x, y)'s view ray is clear of a face's edge, where the GPU's seamless filter
+/// and the oracle's clamp part (as the rough-surface test's rule).
+fn skyAwayFromEdge(view: FrameView, x: usize, y: usize) bool {
+    const d = Mat4.fromQuat(view.camera.rotation).mulDirection(Vec3.init((@as(f32, @floatFromInt(x)) + 0.5) / 16 - 1, 1 - (@as(f32, @floatFromInt(y)) + 0.5) / 16, -1));
+    const e = lighting.environmentDirection(d, @cos(view.environment_rotation), @sin(view.environment_rotation));
+    const a = [3]f32{ @abs(e.x), @abs(e.y), @abs(e.z) };
+    const major = @max(a[0], @max(a[1], a[2]));
+    return a[0] + a[1] + a[2] - major <= major;
+}
+
+test "the sky shows each of the six faces in place, by yaw and by the camera's turn, at 1x and 4x" {
+    if (rhi.backend == .null) return;
+    var prefiltered = try testEnvironment(testing.allocator, true, 64);
+    defer prefiltered.deinit(testing.allocator);
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const format = fx.device.capabilities().surface_format;
+        const handle = try fx.renderer.createEnvironment(null);
+        try fx.renderer.writeEnvironment(handle, &prefiltered, "faces");
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        // The camera looks down -Z: a yaw turns it onto +X (a quarter), -X (minus a quarter) and
+        // +Z (a half), and a pitch about +X onto +Y and -Y.
+        const Case = struct { face: usize, yaw: f32 = 0, pitch: f32 = 0, ev: ?f32 = null, intensity: f32 = 1 };
+        const quarter = std.math.pi / 2.0;
+        for ([_]Case{
+            .{ .face = 5 },                     .{ .face = 0, .yaw = quarter, .intensity = 1.4 }, .{ .face = 1, .yaw = -quarter },
+            .{ .face = 4, .yaw = std.math.pi }, .{ .face = 2, .pitch = 1.2, .ev = -0.5 },         .{ .face = 3, .pitch = -1.2, .yaw = 0.3 },
+        }) |case| {
+            var view = testView(material_test_size);
+            view.environment = handle;
+            view.environment_rotation = case.yaw;
+            view.environment_intensity = case.intensity;
+            view.exposure_ev100 = case.ev;
+            view.camera.rotation = core.math.Quat.fromAxisAngle(.init(1, 0, 0), case.pitch);
+            try fx.renderer.begin(view);
+            const bytes = try cascadeReadback(&fx, readback, null);
+            try testing.expect(fx.renderer.frameStats().sky_drawn);
+            var checked: usize = 0;
+            for ([_][2]usize{ .{ 16, 16 }, .{ 13, 18 }, .{ 19, 14 }, .{ 9, 22 }, .{ 24, 9 } }) |xy| {
+                if (!skyAwayFromEdge(view, xy[0], xy[1])) continue;
+                const actual = readTexel(&bytes, xy[0], xy[1]);
+                try expectDisplayTexel(displayTexel(format, skyOracle(&prefiltered, view, xy[0], xy[1])), actual);
+                checked += 1;
+            }
+            try testing.expect(checked >= 3);
+            // In place: the centre's face's high channels read brighter than its low ones.
+            const colour = env_face_colours[case.face];
+            const actual = readTexel(&bytes, 16, 16);
+            const channel = if (format == .bgra8_unorm or format == .bgra8_unorm_srgb) [3]usize{ 2, 1, 0 } else [3]usize{ 0, 1, 2 };
+            for (0..3) |hi| for (0..3) |lo| if (colour[hi] > colour[lo]) {
+                try testing.expect(actual[channel[hi]] > actual[channel[lo]] + 40);
+            };
+        }
+    }
+}
+
+test "the sky is read back behind geometry and through glass, and is absent with no environment, at 1x and 4x" {
+    if (rhi.backend == .null) return;
+    var prefiltered = try testEnvironment(testing.allocator, true, 64);
+    defer prefiltered.deinit(testing.allocator);
+    var gradient = try testEnvironment(testing.allocator, false, 64);
+    defer gradient.deinit(testing.allocator);
+    for ([_]u32{ 1, 4 }) |samples| {
+        var fx = try TestFixture.init(samples, material_test_size);
+        defer fx.deinit();
+        const format = fx.device.capabilities().surface_format;
+        const quad = try envQuad(&fx.renderer);
+        const faces = try fx.renderer.createEnvironment(null);
+        try fx.renderer.writeEnvironment(faces, &prefiltered, "faces");
+        const yard = try fx.renderer.createEnvironment(null);
+        try fx.renderer.writeEnvironment(yard, &gradient, "gradient");
+        const pending = try fx.renderer.createEnvironment(null);
+        const readback = try fx.device.createBuffer(.{ .size = material_test_bytes, .usage = .{ .copy_dst = true }, .memory = .readback });
+        defer fx.device.destroyBuffer(readback);
+        // Unlit, so neither is pre-exposed: an opaque wall on the left, glass on the right.
+        const wall_colour = [3]f32{ 0.9, 0.1, 0.05 };
+        const glass_colour = [4]f32{ 0.2, 0.6, 0.9, 0.5 };
+        const wall = try fx.renderer.createMaterial(.{ .base_color = .{ wall_colour[0], wall_colour[1], wall_colour[2], 1 } }, "wall");
+        const glass = try fx.renderer.createMaterial(.{ .base_color = glass_colour, .alpha_mode = .blend }, "glass");
+        // At z = -2 a pixel spans an eighth of a metre: the wall covers x below 8, the glass
+        // x from 24, and the sky shows between.
+        const strip = Mat4.scaling(.init(1, 3, 1));
+        const Case = struct { environment: ?EnvironmentHandle, cube: ?*const asset.environment.Prefiltered, yaw: f32 = 0, intensity: f32 = 1 };
+        for ([_]Case{
+            .{ .environment = faces, .cube = &prefiltered },
+            .{ .environment = faces, .cube = &prefiltered, .yaw = 0.35, .intensity = 1.6 },
+            .{ .environment = yard, .cube = &gradient, .yaw = 2 },
+            .{ .environment = pending, .cube = null },
+            .{ .environment = null, .cube = null },
+        }) |case| {
+            var view = testView(material_test_size);
+            view.environment = case.environment;
+            view.environment_rotation = case.yaw;
+            view.environment_intensity = case.intensity;
+            view.exposure_ev100 = 0.5;
+            try fx.renderer.begin(view);
+            try fx.renderer.drawMesh(.{ .mesh = quad, .material = wall, .world = Mat4.translation(.init(-2, 0, -2)).mul(strip) });
+            try fx.renderer.drawMesh(.{ .mesh = quad, .material = glass, .world = Mat4.translation(.init(2, 0, -2)).mul(strip) });
+            const bytes = try cascadeReadback(&fx, readback, null);
+            try testing.expectEqual(case.cube != null, fx.renderer.frameStats().sky_drawn);
+            const clear = [3]f32{ view.clear_color[0], view.clear_color[1], view.clear_color[2] };
+            // Behind nothing: the sky, or the clear colour without one.
+            for ([_][2]usize{ .{ 16, 16 }, .{ 12, 10 }, .{ 19, 23 } }) |xy| {
+                if (case.cube != null and !skyAwayFromEdge(view, xy[0], xy[1])) continue;
+                const expected = if (case.cube) |cube| skyOracle(cube, view, xy[0], xy[1]) else clear;
+                try expectDisplayTexel(displayTexel(format, expected), readTexel(&bytes, xy[0], xy[1]));
+            }
+            // Behind the wall: the wall alone, the sky drawn nowhere it covers.
+            for ([_][2]usize{ .{ 3, 16 }, .{ 5, 4 } }) |xy| try expectDisplayTexel(displayTexel(format, wall_colour), readTexel(&bytes, xy[0], xy[1]));
+            // Through the glass: premultiplied glass over the sky behind it.
+            for ([_][2]usize{ .{ 27, 16 }, .{ 28, 25 } }) |xy| {
+                if (case.cube != null and !skyAwayFromEdge(view, xy[0], xy[1])) continue;
+                const behind = if (case.cube) |cube| skyOracle(cube, view, xy[0], xy[1]) else clear;
+                var expected: [3]f32 = undefined;
+                for (&expected, 0..) |*v, i| v.* = glass_colour[i] * glass_colour[3] + behind[i] * (1 - glass_colour[3]);
+                try expectDisplayTexel(displayTexel(format, expected), readTexel(&bytes, xy[0], xy[1]));
+            }
         }
     }
 }

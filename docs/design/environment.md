@@ -1,6 +1,6 @@
 # Design: M41 — Environment: a sky, cubemaps and image-based lighting, light records and generated tangents
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 5 are done; each step's Resolution follows §15.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1, with §14 as written. Steps 1 to 6 are done; each step's Resolution follows §15.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9` (ADR-0082 on top of tag `m40`). M0–M40 are complete.
 **Paired with:** M45 Input, designed at the same time in [`input.md`](input.md) by a second
@@ -1123,3 +1123,71 @@ removed. A destroyed handle is refused because it is stale.
 **The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
 thirty-frame samples, `fdt-check`, the five Vulkan checks (shaders changed) and `zig build dist
 -Dapp=court` pass. Tests: null 3,149/3,159 (ten skips), Metal 3,164/3,185 (21 skips).
+
+## Resolution — Step 6: the sky pass (2026-11-16)
+
+A frame lit by an environment now draws it as its sky. `render3d.Renderer` records one
+full-screen triangle at reversed-Z's far plane, tested `greater_equal` against the cleared depth
+and writing none, after the opaque and masked draws and before the blended ones. It colours only
+what nothing opaque covered, at the frame's sample count, into the HDR target that is resolved
+and tone-mapped with everything else. Its fragment reads the cube's top level along the view ray
+turned back by the yaw, times the intensity and the pre-exposure, as §9 says. With no
+environment, or one that is empty or pending, nothing is recorded and the clear colour stays.
+
+**Where the implementation sharpens §9 and §10:**
+- **The sky has its own pipeline layout:** the frame group alone, plus 64 bytes of inline
+  constants holding the inverse view-projection. The frame uniform does not carry that inverse,
+  and the shading layout would leave the material group unbound, which null refuses (rule 5) and
+  Vulkan would have to tolerate. `FrameUniform` is unchanged at 4,416 bytes. The next draw after
+  the sky rebinds its own pipeline and groups.
+- **The ray is two unprojected points, not the camera's position:** the vertex stage unprojects
+  each corner at depths 1 and 0.5, undivided. Both are linear in the screen, so they interpolate
+  exactly, and their difference is right for an orthographic camera's parallel rays too.
+- **One draw, one pipeline per backend:** `sky.metal`, and `sky.vert.glsl` with
+  `sky.frag.glsl`. They are built at `Renderer.init`, embedded (ADR-0019), and checked by two new
+  SPIR-V profiles, `sky_vertex` and `sky_fragment`. The vertex profile reads no frame uniform;
+  the fragment profile pins every `Frame` offset and bindings 5 and 6.
+- **When it is recorded:** exactly when the frame's slot binds a written environment's cube, the
+  test the lit shaders' bit already answers. A frame with nothing else to draw still records the
+  sky. A view-projection that cannot be inverted draws none; a valid camera's always can.
+- **`Stats.environment` is a content ID the renderer is told, not one it looks up.**
+  `createEnvironment` takes an optional name, which `Content` sets to the record's ID. A runtime
+  environment made without one lights and draws its sky and reports none. The handle stays what
+  finds it (ADR-0063). `Stats.sky_drawn` says whether the pass drew. The sky is not counted in
+  `draws`, but its pipeline bind is counted in `pipeline_binds`.
+- **The overlay's 3D lines** gain `environment content(0x…)  sky drawn`, or `no environment`. The
+  overlay has no names for content IDs, so it prints the ID as `core.ContentId` formats it.
+- `Config.environment_samples` is Step 4's, unchanged. `--environment=off` is the samples' flag,
+  at Steps 7 and 8.
+
+**Readbacks on Metal, at 1× and 4×, within ±2/255 of `skyOracle`** (`Prefiltered.sample` at
+level 0, along the turned ray, times intensity and exposure; pixels near a face's edge skipped as
+in Step 5):
+- **Each of the six faces in place.** The camera looks down −Z. A yaw of a quarter, minus a
+  quarter and a half turns it onto +X, −X and +Z, and a pitch of ±1.2 rad onto ±Y. Intensities
+  1 and 1.4, and an exposure of −0.5 EV, are covered. At each centre the face's high channels
+  read at least 40 above its low ones.
+- **Behind geometry and through glass:** an unlit opaque wall on the left reads as the wall
+  alone, and unlit glass (alpha 0.5) on the right reads as the premultiplied glass over the sky
+  behind it. The open pixels between read as the sky. This holds for the six-colour cube with
+  and without a yaw and intensity, and for the gradient at a yaw of 2.
+- **Absent:** with a pending environment and with none, the open pixels read as the clear colour,
+  and the glass blends over the clear colour.
+
+**On null:** the sky is recorded for a written environment, named or not, and for nothing but
+the sky. It is not recorded for none or a pending one. Pipeline binds show it falls between the
+opaque and blended draws, the stats name the environment, and no violation is raised.
+
+**Guards broken, each failing a test:**
+- the gate (recording for a named but unwritten environment): the null recording test;
+- the placement (the sky after every draw): the glass readback;
+- the depth test (`always`): the behind-geometry readback, and Step 5's mirror and rough tests,
+  whose open pixels the sky then covered;
+- the yaw's sign in `sky.metal`, the pre-exposure, the intensity, and the ray's divide by w: the
+  six-face test and the glass readback.
+
+**The bar:** `zig fmt --check`, every `check` (native, Metal, Linux and Windows null), the four
+thirty-frame samples, `fdt-check`, the five Vulkan checks (shaders changed) and `zig build dist
+-Dapp=court` pass. Tests: null 3,163/3,173 (ten skips), Metal 3,196/3,217 (21 skips). A first
+null run, beside the Metal suite and the partner's builds, failed only `author`'s five-second
+glTF mutation sweep on time; alone it passed.

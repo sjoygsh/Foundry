@@ -59,6 +59,9 @@ pub const Profile = enum {
     tone_fragment,
     particle_fragment,
     particle_mask_fragment,
+    // M41's sky pass (`environment.md` §9).
+    sky_vertex,
+    sky_fragment,
     // M41's layered-texture readback tests in the backend, not engine shading (`environment.md` §3).
     layered_vertex,
     cube_fragment,
@@ -389,8 +392,8 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
     const stage: Stage = switch (profile) {
         .shadow_vertex_0, .shadow_vertex_1, .shadow_vertex_2, .shadow_vertex_3 => .vertex,
         .shadow_fragment_0, .shadow_fragment_1, .shadow_fragment_2 => .fragment,
-        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex, .layered_vertex => .vertex,
-        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment, .particle_fragment, .particle_mask_fragment, .cube_fragment, .array_fragment => .fragment,
+        .sprite_vertex, .quad_vertex, .unlit_vertex, .unlit_color_vertex, .unlit_uv_vertex, .unlit_uv_color_vertex, .lit_vertex_0, .lit_vertex_1, .lit_vertex_2, .lit_vertex_3, .lit_vertex_4, .lit_vertex_5, .lit_vertex_6, .lit_vertex_7, .tone_vertex, .sky_vertex, .layered_vertex => .vertex,
+        .sprite_fragment, .quad_fragment, .unlit_fragment, .unlit_mask_fragment, .lit_fragment_0, .lit_fragment_1, .lit_fragment_2, .lit_fragment_3, .tone_fragment, .particle_fragment, .particle_mask_fragment, .sky_fragment, .cube_fragment, .array_fragment => .fragment,
     };
     try require(try hasEntry(bytes, stage, "main"));
 
@@ -532,6 +535,20 @@ pub fn validateProfile(bytes: []const u8, profile: Profile) Error!void {
             try require(try hasMemberDecoration(bytes, material, 3, Decoration.offset, 48));
         },
         .tone_vertex => try require(try hasLocatedVariable(bytes, 0, Storage.output)),
+        // The inverse view-projection in its constants, two points a corner, no frame uniform.
+        .sky_vertex => {
+            try requireConstants(bytes, false);
+            inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.output));
+            try require(try bindingVariable(bytes, 0, 0, Storage.uniform) == null);
+        },
+        // The frame's environment lanes and exposure, and its cube (`environment.md` §9).
+        .sky_fragment => {
+            inline for (0..2) |location| try require(try hasLocatedVariable(bytes, location, Storage.input));
+            try require(try hasLocatedVariable(bytes, 0, Storage.output));
+            try requireLightFrame(bytes);
+            try require(try bindingHasType(bytes, 0, 5, Storage.uniform_constant, Op.type_image));
+            try require(try bindingHasType(bytes, 0, 6, Storage.uniform_constant, Op.type_sampler));
+        },
         .tone_fragment => {
             try require(try hasLocatedVariable(bytes, 0, Storage.input));
             try require(try hasLocatedVariable(bytes, 0, Storage.output));

@@ -458,6 +458,9 @@ pub fn build(b: *std.Build) void {
         modules.get("render3d").?.addAnonymousImport("tone_metallib", .{
             .root_source_file = metalLibrary(b, "tone", &.{"engine/src/render3d/shaders/tone.metal"}),
         });
+        modules.get("render3d").?.addAnonymousImport("sky_metallib", .{
+            .root_source_file = metalLibrary(b, "sky", &.{"engine/src/render3d/shaders/sky.metal"}),
+        });
     }
 
     // M8 step 1 deliberately keeps the scripting host outside the engine layering table.
@@ -1925,6 +1928,8 @@ fn vulkanGraph(
     const unlit_mask_fragment = vulkanShaderStage(b, checker, "unlit-mask-fragment", "engine/src/render3d/shaders/unlit_mask.frag.glsl", "frag", "unlit_mask_fragment");
     const tone_vertex = vulkanShaderStage(b, checker, "tone-vertex", "engine/src/render3d/shaders/tone.vert.glsl", "vert", "tone_vertex");
     const tone_fragment = vulkanShaderStage(b, checker, "tone-fragment", "engine/src/render3d/shaders/tone.frag.glsl", "frag", "tone_fragment");
+    const sky_vertex = vulkanShaderStage(b, checker, "sky-vertex", "engine/src/render3d/shaders/sky.vert.glsl", "vert", "sky_vertex");
+    const sky_fragment = vulkanShaderStage(b, checker, "sky-fragment", "engine/src/render3d/shaders/sky.frag.glsl", "frag", "sky_fragment");
     const layered_vertex = vulkanShaderStage(b, checker, "layered-vertex", "engine/src/rhi/backends/vulkan/shaders/layered.vert.glsl", "vert", "layered_vertex");
     const cube_fragment = vulkanShaderStage(b, checker, "cube-fragment", "engine/src/rhi/backends/vulkan/shaders/cube.frag.glsl", "frag", "cube_fragment");
     const array_fragment = vulkanShaderStage(b, checker, "array-fragment", "engine/src/rhi/backends/vulkan/shaders/array.frag.glsl", "frag", "array_fragment");
@@ -1971,6 +1976,8 @@ fn vulkanGraph(
         render3d_module.addAnonymousImport(b.fmt("shadow_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });
     }
     render3d_module.addAnonymousImport("tone_fragment_spirv", .{ .root_source_file = tone_fragment });
+    render3d_module.addAnonymousImport("sky_vertex_spirv", .{ .root_source_file = sky_vertex });
+    render3d_module.addAnonymousImport("sky_fragment_spirv", .{ .root_source_file = sky_fragment });
     for (0..2) |i| {
         const stage = vulkanShaderStageDefines(b, checker, b.fmt("particle-fragment-{d}", .{i}), "engine/src/render3d/shaders/particle.frag.glsl", "frag", if (i == 1) "particle_mask_fragment" else "particle_fragment", &.{if (i == 1) "-DMASK=1" else "-DNO_MASK=1"});
         render3d_module.addAnonymousImport(b.fmt("particle_fragment_{d}_spirv", .{i}), .{ .root_source_file = stage });

@@ -629,7 +629,7 @@ pub const Content = struct {
         };
         const record = self.assets.store.lookup(id) orelse return error.EnvironmentNotFound;
         if (!record.schema_id.eql(environment.schema.id)) return error.NotAnEnvironment;
-        const handle = try self.renderer.createEnvironment();
+        const handle = try self.renderer.createEnvironment(id);
         errdefer self.renderer.destroyEnvironment(handle);
         const entry = try self.environments.add(self.gpa, .{
             .id = id,
