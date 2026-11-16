@@ -390,7 +390,7 @@ music_set court:music.main {
     paused string  resume string  restart string  to_title string  pointer_released string
     won string  won_detail string  caught string  caught_detail string  fell string  fell_detail string
     beacons_lit string  objective string  objective_gate string  pause_hint string
-    use_key string  use_prompt string
+    use_prompt string
     menu_hints string  options_hints string
     audio string  master_volume string
     music_volume string (default "Music")  effects_volume string (default "Effects")
@@ -412,7 +412,7 @@ text court:text.main {
     beacons_lit "Beacons lit"
     objective "Light the three beacons"  objective_gate "The gate is open. Walk through it."
     pause_hint "Esc  Pause"
-    use_key "E"  use_prompt "Light the beacon"
+    use_prompt "Light the beacon"
     menu_hints "Up/Down  Choose     Enter  Select     Esc  Back"
     options_hints "Up/Down  Choose     Left/Right  Change     Esc  Back"
     audio "Audio"  master_volume "Master volume"  music_volume "Music"  effects_volume "Effects"

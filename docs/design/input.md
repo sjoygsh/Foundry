@@ -1,6 +1,6 @@
 # Design: M45 — Input: action maps, rebinding, gamepads, captured motion in counts, and audio outputs
 
-**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 7 (2026-11-16); Step 8 is next.
+**Status:** Accepted 2026-11-15, when the owner asked for Step 1 (with M41's, ADR-0082), with §16 as written. Steps 1 to 3 are done (2026-11-15), and Steps 4 to 8 (2026-11-16), Step 8 but for the owner's play, which is owed; Step 9 is next.
 **Date:** 2026-11-15
 **Baseline:** `225fbb9`, tag `m40`. M0–M40 are complete. M41 (Environment), this milestone's
 lead under ADR-0082, is being designed at the same time and has no step yet.
@@ -1862,3 +1862,153 @@ in the bar's install. The counts:
 
 No platform backend, shader, RHI or native-window code changed, so no SDL3 cross-check or Vulkan
 check applies.
+
+## Resolution — Step 8: the court, on actions (2026-11-16)
+
+Done by an Opus agent in its own worktree, as ADR-0082's partner half, beside M41 Step 8, which
+changes the court's lighting, environment and beacon light records at the same time. This step
+kept to the court's input: of the files M41 Step 8 touches it changed `main.zig` (the frame's
+input, the ticks and the menus, not the draw), `court.fdt` (one field out of the text schema and
+record) and `noon.fdt` (the same field), and nothing of any light, environment or config record.
+**The owner has not played it yet.** Every part of the exit but that play is met; the play (a
+pad, a rebinding, a restart and a headphone unplug) is owed, and the primary session asks for it
+with M41 Step 8's.
+
+**What the step pinned:**
+- **Content** (`content/input.fdt`): `court:context.menu` (priority 20, blocking) and
+  `court:context.walk` (10), and thirteen actions: `court:action.walk.move` (vector: WASD, the
+  left stick), `walk.jump` (Space, south), `walk.use` (E, west), `walk.look` (delta: mouse
+  motion, not rebindable), `walk.look_stick` (vector: the arrows and the right stick, which were
+  M26's turn and pitch), `walk.pause` (Escape, Start; in both contexts, not rebindable),
+  `menu.up`/`down`/`left`/`right` (the arrows, the d-pad), `menu.accept` (Enter, keypad Enter,
+  south), `menu.back` (Backspace, east) and `court:action.panels` (F1, both contexts). Beside them
+  `court:controls.main` (the catch's rumble: 0.6, 0.9, 450 ms), `court:text.controls` (the
+  Controls and Output rows' words) and `court:text.sources` (what a source and a face label are
+  called on screen). `court:text.main` loses `use_key`.
+- **`walk.zig`:** `Pending` and `inputIntent` are gone. `walk.actionIntent(frame, look)` turns one
+  tick's actions into the `Intent`: move's `(x, y)` is `(x, 0, -y)`, Jump and Use are presses, the
+  captured look is the delta times the player's sensitivity (and invert), and the stick's `x` and
+  `y` are turn and pitch at the walk's turn rate. `walk.Owed` carries what a frame chose that is
+  not input, a menu's command and a mesh's arrival, to the first tick after it. `walk.actions` names
+  the court's IDs.
+- **`controls.zig`:** `syncContexts` (the walk's context in play, the menus' otherwise),
+  `menuKeys`, `Guard`, `handsFrame`, `columnOf`, `LastDevice`, `sourceLabel`, `columnLabel`,
+  `useLabel` and `Rumble`.
+- **`rebinding.zig`:** the Controls screen as state (`Controls`, `Change`, `Table`,
+  `overridesWith`), drawn by `hud.zig`'s `controlsScreen`. Options gains Output (under Audio) and
+  Controls (under the look rows).
+- **`outputs.zig`** and `prefs.zig`'s `audio_output`: the chosen output by name,
+  `court:preferences` v3 with a v2 migration.
+- **`southpaw`** (`testdata/mods/southpaw/`): two action records overridden whole, walking on I,
+  J, K and L and the right stick, looking with the left. Installed as `content/southpaw.fpk`,
+  never selected unless asked (`FOUNDRY_COURT_PACKAGES=southpaw:content`).
+- **`pad.zig`:** `FOUNDRY_COURT_PAD=xbox|playstation` seats one virtual pad for a run, through
+  SDL's virtual joystick, and at exit says what rumble reached it. An evidence affordance, as
+  `FOUNDRY_SANDBOX3D_SPIN` is.
+- **`timing.zig`** reports the engine's `input` span against §13's 0.05 ms.
+
+**Where the code sharpened the design:**
+- **A script presses actions, not keys.** §11 said "the scripts drive the same snapshots". They
+  cannot on SDL, where a script's hands are not events, and the court-test digests never read
+  input at all. Instead the driver's hands for a frame become a synthetic action frame over the
+  engine's map (`handsFrame`: the walk as the vector, a flick as the delta, Jump and Use pressed
+  in each frame the script holds them), fed through a tick view of the court's own and read by
+  the same `actionIntent` as a person's. That is what `Pending` was, so `Pending` goes for scripts
+  too. A test drives all four scripts this way and gets M40's four digests to the bit.
+- **The menu's command and a mesh's arrival are not input.** The tick view carries input's edges;
+  it has no place for a frame's choice. `walk.Owed` is that much of `Pending`, and no more: a later
+  choice replaces one no tick has seen, as before.
+- **A button held across a change of context is pressed by it.** An action in no enabled context
+  reads as rest (§7), so the pad's south button that chose Play read as a Jump in the walk's first
+  frame, and a Jump held when the warden catches would choose Restart. Pause sits in both contexts
+  as one action, which is Step 5's case. For the rest, `controls.Guard` notes, at each change of
+  context, which of the court's button actions have a source down, and silences each until it is
+  let go. That is the court's call, not the engine's (§8's rule for conflicts, applied to the same
+  kind of question).
+- **The menus read `menu.back` or Pause.** Escape stays the way out of every menu because it is
+  Pause's, and the pad's East is `menu.back`. Backspace is `menu.back`'s key, so the keyboard has
+  a rebindable back beside the fixed one.
+- **What the Controls screen captures, by kind:** a button takes one source; a vector bound to
+  buttons takes four, forward, back, left and right, as the `sequence_*` words ask; a vector on the
+  pad takes a stick whole when a stick's axis moves first. Escape and Start (Pause) and Backspace
+  and East (Back) cancel and are never captured. A capture replaces the action's bindings in its
+  column and keeps the other column's. A conflict (by `Map.conflicts`) asks; Accept swaps, giving
+  each conflicting action this action's old source in the place of the one it lost (the same
+  position in a sequence, else the column's first), and Back keeps the old bindings. "Reset to
+  defaults" is the empty set. Each change goes through `saveBindings` and is in force the next
+  frame. Look and Pause are not listed; a mod's own action conflicting is named "another action".
+- **Labels:** a key is the layout's (`keyLabel`), a face button what the pad in use prints
+  (`labelOf`, then `court:text.sources`' `faces`), everything else `court:text.sources`, and its
+  own source name as the last resort. The prompt names Use's binding on the device the player last
+  touched, a key, a mouse button or a pad's button or stick past half way.
+- **Rumble** plays on every connected pad when the phase becomes `caught`, from the frame, never a
+  tick.
+- **Output:** a name is all that persists (§5). `outputs.refresh` lists again at start and on
+  `audio_outputs_changed` and follows the wanted name when it is present and not followed; the row
+  shows what the mixer plays to now, "System default" after a loss, and the name stays wanted.
+  Choosing "System default" is a choice too, an empty name. No name is logged: the log says
+  `output 2 of 3`.
+- **Sensitivity is not retuned.** §11 expected counts to need new defaults. SDL 3.4.14's
+  `SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE` defaults to `"0"` (`SDL_hints.h`, and `SDL_mouse.c`'s
+  `SDL_GetStringBoolean(hint, false)`), so captured motion was already unscaled counts on Windows
+  and Linux from M26 on, which is what `look_sensitivity 1` and `look_rate` were tuned against
+  there, and on macOS it is points in both modes (Step 1). `Config.captured_motion = .raw` changed
+  no number the court reads, so the defaults stand, recorded here as the change §11 asked for.
+- **`F1` is an action.** The overlay's key was the one raw key left; it is `court:action.panels`.
+- **The budget, corrected.** §13's "the `input` span's p95 with the court's map, at most 0.05 ms"
+  assumed the span is evaluation. It is the OS's event pump too, which on the M5 costs more than
+  that alone: tag `m40`'s court, rebuilt in scratch with this step's cost line and run the same
+  way, reads p95 0.115–0.148 ms in the same span with no actions at all. What M45 adds is the
+  difference: alternated relocated ReleaseSafe title runs of 600 frames read p95 0.115, 0.128 ms
+  (`m40`) against 0.145, 0.160 ms (this step), about 0.02–0.03 ms, which includes Steps 2 and 3's
+  pad and output polling. Evaluating the court's map, feeding the tick view and taking it reads
+  p95 0.0003 ms in `court-test -Doptimize=ReleaseSafe`, which asserts 0.05 ms. Frame pacing is
+  unchanged: frame work p95 0.69–0.74 ms at `m40` and 0.69–0.78 ms here, none skipped.
+
+**The runs (relocated ReleaseSafe install on Metal, the M5, windowed, `HOME` a scratch root):**
+- `FOUNDRY_COURT_PLAY=win`: 52 of 52 steps, 2,443 ticks replayed, frame work p95 1.278 ms, the
+  `input` span p95 0.273 ms; with `FOUNDRY_COURT_PAD=xbox`, the same, p95 1.252 and 0.198 ms.
+- `caught` with a virtual PlayStation pad: 92 ticks replayed, and `pad: 1 rumble(s) reached the
+  pad, the last at 39321 and 58982 of 65535`, which is 0.6 and 0.9.
+- `fell`: 192 ticks replayed, frame work p95 1.393 ms.
+- 900 frames on the title, and 600 with `southpaw` selected and a pad seated: no skipped frame,
+  frame work p95 0.896 and 0.934 ms.
+- Every scripted ending matched, every music start was on its frame, and nothing was written: the
+  scratch home held no file afterwards, and `~/Library/Application Support/foundry-court` was
+  byte-identical before and after (its `settings.fset` and `overlay-panels.txt` by SHA-1).
+- `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1` was set for the pad runs' processes alone (Step 7).
+
+**Each guard was broken once, and each failed its test:**
+- the guard arming nothing, and never freeing, each failed "a button held across a change of
+  context is not pressed by it";
+- the hands' walk not negated, and the hands' jump held but not pressed, each failed the hands
+  test and the four-digest test;
+- the walk reading Jump held, and the sensitivity dropped, each failed the edges test;
+- the other context left enabled failed the menus test and the guard test;
+- the swap keeping the lost source, a stick captured as an axis, and no conflict asked each failed
+  the Controls test;
+- the v2 migration removed failed the M31 preferences test;
+- `Owed` handing its choice to every tick failed "a menu action latched in one frame reaches
+  exactly one tick".
+
+Twelve mutations, each restored.
+
+**The exit:**
+- the four digests hold: `court-test` keeps M40's, and the new test reaches the same four through
+  the actions path;
+- `southpaw`'s test passes: I walks and W does not, its sticks are swapped, and a player's Jump on
+  G wins over it while its Move stands;
+- the budget holds for what M45 adds to the span, as corrected above, and frame pacing is M40's;
+- **the owner has not played it**: owed, with M41 Step 8's.
+
+**Bar:** every line of `AGENTS.md` §3 exited 0, plus `zig build test -Drhi=metal`, the null graph,
+`court-test` in Debug and at ReleaseSafe, and `dist -Dapp=court`, since the court's content and
+release imports changed. The counts:
+- `zig build test` 3,223/3,233 (ten skips);
+- null 3,205/3,215 (ten skips);
+- Metal 3,238/3,259 (21 skips);
+- `court-test` 96/98 in Debug (two skips) and 98/98 at ReleaseSafe;
+- every check, the four thirty-frame samples and `fdt-check`.
+
+No platform backend, shader, RHI, ABI header or native-window code changed, so no SDL3
+cross-check, Vulkan check or C header compile applies.

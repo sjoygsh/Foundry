@@ -37,7 +37,7 @@ court:text court:text.main {
     fell "You fell into the gap." fell_detail "The ledge is a jump away, not a step."
     beacons_lit "Beacons lit" objective "Light the three beacons"
     objective_gate "The gate is open. Walk through it." pause_hint "Esc  Pause"
-    use_key "E" use_prompt "Light the beacon"
+    use_prompt "Light the beacon"
     menu_hints "Up/Down  Choose     Enter  Select     Esc  Back"
     options_hints "Up/Down  Choose     Left/Right  Change     Esc  Back"
     audio "Audio" master_volume "Master volume"

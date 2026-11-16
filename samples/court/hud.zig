@@ -10,6 +10,8 @@ const ui = @import("ui");
 const menus_mod = @import("menus.zig");
 const game_mod = @import("game.zig");
 const Text = @import("text.zig").Text;
+const ControlsText = @import("text.zig").ControlsText;
+const rebinding = @import("rebinding.zig");
 
 const Rect = core.math.Rect;
 const Vec2 = core.math.Vec2;
@@ -34,13 +36,24 @@ pub const View = struct {
     /// the keyboard.
     pointer_moved: bool = false,
     size: Vec2,
+    /// M45 (`input.md` §11): the Controls and Output rows' words, the prompt's key cap (Use's
+    /// binding on the device in use), the output playing now, and the Controls table.
+    controls_text: *const ControlsText = &default_controls_text,
+    use_label: []const u8 = "",
+    output_name: ?[]const u8 = null,
+    table: ?*const rebinding.Table = null,
 };
+
+const default_controls_text: ControlsText = .{};
 
 pub const Result = struct {
     hovered: ?Item = null,
     clicked: ?Item = null,
     /// A slider was dragged; `options` already holds the new value.
     options_changed: bool = false,
+    /// On the Controls screen: the row under the pointer, and a cell it pressed.
+    controls_hovered: ?u8 = null,
+    controls_clicked: ?rebinding.Cell = null,
 };
 
 const row_width: f32 = 340;
@@ -57,6 +70,7 @@ pub fn describe(ctx: *ui.Context, view: View, options: *Options) Allocator.Error
         .pause => pause(ctx, view),
         .ended => ended(ctx, view),
         .options => optionsScreen(ctx, view, options),
+        .controls => controlsScreen(ctx, view),
     };
 }
 
@@ -102,14 +116,14 @@ fn hud(ctx: *ui.Context, view: View) Allocator.Error!void {
 
     // The prompt, when a beacon is in the look and in reach: a key cap and what it does.
     if (view.aimed) {
-        const key = measure(ctx, t.use_key, 1);
+        const key = measure(ctx, view.use_label, 1);
         const words = measure(ctx, t.use_prompt, 1);
         const cap: Rect = .init(0, 0, key.x + style.padding.x * 2, line);
         const total = cap.w + 12 + words.x;
         const left = centre.x - total / 2;
         const top = view.size.y * 0.62;
         try part(ctx, .init(left, top, cap.w, cap.h), .button, style.control);
-        try text(ctx, t.use_key, .init(left + style.padding.x, top + (line - key.y) / 2), style.text, 1);
+        try text(ctx, view.use_label, .init(left + style.padding.x, top + (line - key.y) / 2), style.text, 1);
         try text(ctx, t.use_prompt, .init(left + cap.w + 12, top + (line - words.y) / 2), style.text, 1);
     }
 }
@@ -186,9 +200,11 @@ const OptionsLayout = struct {
     volume: Rect,
     music: Rect,
     effects: Rect,
+    output: Rect,
     controls: f32,
     sensitivity: Rect,
     invert: Rect,
+    bindings: Rect,
     note: f32,
     back: Rect,
 
@@ -209,12 +225,16 @@ const OptionsLayout = struct {
         l.music = .init(left, y, width, style.line_height);
         y += style.line_height + style.spacing;
         l.effects = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing;
+        l.output = .init(left, y, width, style.line_height);
         y += style.line_height + style.spacing * 3;
         l.controls = y;
         y += sectionHeight(ctx);
         l.sensitivity = .init(left, y, width, style.line_height);
         y += style.line_height + style.spacing;
         l.invert = .init(left, y, width, style.line_height);
+        y += style.line_height + style.spacing;
+        l.bindings = .init(left, y, width, style.line_height);
         y += style.line_height + style.spacing * 3;
         l.note = y;
         y += style.line_height;
@@ -234,8 +254,10 @@ fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Erro
         .{ .item = .volume, .bounds = l.volume },
         .{ .item = .music, .bounds = l.music },
         .{ .item = .effects, .bounds = l.effects },
+        .{ .item = .output, .bounds = l.output },
         .{ .item = .sensitivity, .bounds = l.sensitivity },
         .{ .item = .invert, .bounds = l.invert },
+        .{ .item = .controls, .bounds = l.bindings },
         .{ .item = .back, .bounds = l.back },
     };
     const under = underPointer(ctx, view, &placed);
@@ -250,6 +272,7 @@ fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Erro
     if (try sliderRow(ctx, .music, t.music_volume, music, &options.music, Options.volume_min, Options.volume_max, Options.volume_step, l.music, focused == .music, &result)) result.options_changed = true;
     const effects = std.fmt.bufPrint(&buffer, "{d:.0}%", .{options.effects * 100}) catch buffer[0..0];
     if (try sliderRow(ctx, .effects, t.effects_volume, effects, &options.effects, Options.volume_min, Options.volume_max, Options.volume_step, l.effects, focused == .effects, &result)) result.options_changed = true;
+    try valueRow(ctx, .output, view.controls_text.output, view.output_name orelse view.controls_text.system_default, l.output, focused == .output, &result);
 
     try section(ctx, t.controls_section, l.left, l.controls, l.width);
     const sensitivity = std.fmt.bufPrint(&buffer, "{d:.1}x", .{options.sensitivity}) catch buffer[0..0];
@@ -264,9 +287,71 @@ fn optionsScreen(ctx: *ui.Context, view: View, options: *Options) Allocator.Erro
         try text(ctx, state, .init(box.x - 10 - size.x, bounds.y + (bounds.h - size.y) / 2), rowColor(ctx, focused == .invert), 1);
     }
 
+    try row(ctx, .controls, view.controls_text.controls_screen, l.bindings, focused == .controls, &result);
+
     try text(ctx, t.applies_at_once, .init(l.left, l.note), style.text_dim, 1);
     try row(ctx, .back, t.back, l.back, focused == .back, &result);
     try centred(ctx, t.options_hints, view.size.x / 2, view.size.y - 40, style.text_dim, 1);
+    return result;
+}
+
+/// A row with its value written at the right, such as the output's name.
+fn valueRow(ctx: *ui.Context, item: Item, label: []const u8, value: []const u8, bounds: Rect, focused: bool, result: *Result) Allocator.Error!void {
+    try row(ctx, item, label, bounds, focused, result);
+    const size = measure(ctx, value, 1);
+    try text(ctx, value, .init(bounds.x + bounds.w - ctx.style.padding.x - size.x, bounds.y + (bounds.h - size.y) / 2), rowColor(ctx, focused), 1);
+}
+
+/// Options -> Controls: a row per rebindable action with its two columns, then Reset and Back,
+/// and under them what a capture or a conflict asks.
+fn controlsScreen(ctx: *ui.Context, view: View) Allocator.Error!Result {
+    const style = ctx.style;
+    const ct = view.controls_text;
+    try veil(ctx, view);
+    var result: Result = .{};
+    const table = view.table orelse return result;
+    const width: f32 = @min(view.size.x - 48, 760);
+    const left = (view.size.x - width) / 2;
+    // The rows step a little tighter than a menu's, so thirteen fit a 720-point window.
+    const step = style.line_height + 2;
+    const name_w = width * 0.36;
+    const cell_w = (width - name_w) / 2;
+    var y = view.size.y * 0.06;
+    try text(ctx, ct.controls_screen, .init(left, y), style.text, 2);
+    y += style.line_height * 1.5;
+    try text(ctx, ct.keyboard, .init(left + name_w + style.padding.x, y), style.text_dim, 1);
+    try text(ctx, ct.pad, .init(left + name_w + cell_w + style.padding.x, y), style.text_dim, 1);
+    y += style.line_height * 0.8;
+    const top = y;
+    const pointer = ctx.input.pointer;
+    const browsing = table.mode == .browse;
+    for (0..rebinding.row_count) |i| {
+        const bounds: Rect = .init(left, top + step * @as(f32, @floatFromInt(i)), width, style.line_height);
+        const row_id = ui.Id.root.child("court").child("controls").childIndex(i);
+        const focused = table.focus == i;
+        if (browsing and view.pointer_moved and bounds.contains(pointer)) result.controls_hovered = @intCast(i);
+        if (i < rebinding.rows.len) {
+            try text(ctx, table.names[i], .init(bounds.x + style.padding.x, bounds.y + (bounds.h - measure(ctx, table.names[i], 1).y) / 2), style.text, 1);
+            for (0..2) |c| {
+                const cell: Rect = .init(left + name_w + cell_w * @as(f32, @floatFromInt(c)), bounds.y, cell_w - 4, bounds.h);
+                const column: @import("controls.zig").Column = if (c == 0) .keyboard else .pad;
+                const on = focused and table.column == column;
+                if (browsing and try ui.selectableIn(ctx, row_id.childIndex(c), "", on, cell)) result.controls_clicked = .{ .row = @intCast(i), .column = column };
+                if (!browsing and on) try ctx.list.addRect(ctx.gpa, cell, style.accent);
+                const shown = table.cells[i][c];
+                try text(ctx, shown, .init(cell.x + style.padding.x, cell.y + (cell.h - measure(ctx, shown, 1).y) / 2), rowColor(ctx, on), 1);
+            }
+        } else {
+            const label = if (i == rebinding.reset_row) ct.reset else view.text.back;
+            const narrow: Rect = .init(bounds.x, bounds.y, 320, bounds.h);
+            if (browsing and try ui.selectableIn(ctx, row_id, "", focused, narrow)) result.controls_clicked = .{ .row = @intCast(i), .column = .keyboard };
+            try text(ctx, label, .init(narrow.x + style.padding.x, narrow.y + (narrow.h - measure(ctx, label, 1).y) / 2), rowColor(ctx, focused), 1);
+        }
+    }
+    y = top + step * @as(f32, @floatFromInt(rebinding.row_count)) + style.spacing * 2;
+    if (table.line.len != 0) try text(ctx, table.line, .init(left, y), style.accent, 1);
+    if (table.detail.len != 0) try text(ctx, table.detail, .init(left, y + style.line_height * 0.8), style.text_dim, 1);
+    try centred(ctx, ct.controls_hints, view.size.x / 2, view.size.y - 40, style.text_dim, 1);
     return result;
 }
 
@@ -346,7 +431,7 @@ fn rows(ctx: *ui.Context, view: View, left: f32, top: f32) Allocator.Error!Resul
     result.hovered = under;
     const focused = under orelse view.menus.focused(view.phase);
     for (placed[0..items.len]) |p| {
-        try row(ctx, p.item, labelOf(view.text, p.item), p.bounds, focused == p.item, &result);
+        try row(ctx, p.item, labelOf(view, p.item), p.bounds, focused == p.item, &result);
     }
     return result;
 }
@@ -377,7 +462,8 @@ fn rowId(item: Item) ui.Id {
     return ui.Id.root.child("court").child(@tagName(item));
 }
 
-fn labelOf(t: *const Text, item: Item) []const u8 {
+fn labelOf(view: View, item: Item) []const u8 {
+    const t = view.text;
     return switch (item) {
         .play => t.play,
         .resume_game => t.@"resume",
@@ -390,6 +476,8 @@ fn labelOf(t: *const Text, item: Item) []const u8 {
         .effects => t.effects_volume,
         .sensitivity => t.look_sensitivity,
         .invert => t.invert_look,
+        .output => view.controls_text.output,
+        .controls => view.controls_text.controls_screen,
         .back => t.back,
     };
 }

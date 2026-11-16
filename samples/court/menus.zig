@@ -11,7 +11,7 @@ const walk_mod = @import("walk.zig");
 
 const Phase = game_mod.Phase;
 
-pub const Screen = enum { hud, title, pause, ended, options };
+pub const Screen = enum { hud, title, pause, ended, options, controls };
 
 pub const Item = enum {
     play,
@@ -23,17 +23,19 @@ pub const Item = enum {
     volume,
     music,
     effects,
+    output,
     sensitivity,
     invert,
+    controls,
     back,
 };
 
 pub const title_items = [_]Item{ .play, .options, .quit };
 pub const pause_items = [_]Item{ .resume_game, .restart, .options, .to_title };
 pub const ended_items = [_]Item{ .restart, .to_title };
-pub const options_items = [_]Item{ .volume, .music, .effects, .sensitivity, .invert, .back };
+pub const options_items = [_]Item{ .volume, .music, .effects, .output, .sensitivity, .invert, .controls, .back };
 
-/// One frame's menu input, as edges. Arrows, Enter and Escape for a person.
+/// One frame's menu input, as edges: the menu actions' presses for a person (`controls.zig`).
 pub const Keys = struct {
     up: bool = false,
     down: bool = false,
@@ -78,6 +80,9 @@ pub const Command = enum {
     moved,
     /// `Options` changed and should be applied and saved.
     options_changed,
+    /// Step the audio output left or right (`outputs.zig`), which `Options` does not hold.
+    output_left,
+    output_right,
 
     /// The tick action this command is, if it is one.
     pub fn action(self: Command) walk_mod.Action {
@@ -87,7 +92,7 @@ pub const Command = enum {
             .resume_game => .unpause,
             .restart => .restart,
             .to_title => .title,
-            .none, .quit, .moved, .options_changed => .none,
+            .none, .quit, .moved, .options_changed, .output_left, .output_right => .none,
         };
     }
 };
@@ -95,6 +100,8 @@ pub const Command = enum {
 pub const Menus = struct {
     focus: u8 = 0,
     options_open: bool = false,
+    /// Options -> Controls, over Options. Its rows are `rebinding.zig`'s.
+    controls_open: bool = false,
     /// The focus to return to when Options closes.
     options_from: u8 = 0,
     /// The phase the focus belongs to. A new phase starts at its first row.
@@ -102,6 +109,7 @@ pub const Menus = struct {
 
     pub fn screen(self: *const Menus, phase: Phase) Screen {
         if (phase == .playing) return .hud;
+        if (self.options_open and self.controls_open) return .controls;
         if (self.options_open) return .options;
         return switch (phase) {
             .title => .title,
@@ -118,6 +126,7 @@ pub const Menus = struct {
             .pause => &pause_items,
             .ended => &ended_items,
             .options => &options_items,
+            .controls => &.{},
         };
     }
 
@@ -135,7 +144,10 @@ pub const Menus = struct {
             self.focus = 0;
             // Options belongs to the menu it was opened from; a phase change closes it.
             self.options_open = false;
+            self.controls_open = false;
         }
+        // Controls reads its own keys (`rebinding.Controls`); the host routes them there.
+        if (self.screen(phase) == .controls) return .none;
         const list = self.items(phase);
         if (list.len == 0) {
             // Playing: Escape pauses, and nothing else is a menu's.
@@ -159,6 +171,7 @@ pub const Menus = struct {
         const current = list[self.focus];
         if (keys.left or keys.right) {
             const sign: f32 = if (keys.right) 1 else -1;
+            if (current == .output) return if (keys.right) .output_right else .output_left;
             if (adjust(current, sign, options)) result = .options_changed;
         }
         if (clicked) |item| if (indexOf(list, item)) |at| {
@@ -187,6 +200,11 @@ pub const Menus = struct {
                 self.closeOptions();
                 return .moved;
             },
+            .controls => {
+                self.controls_open = true;
+                return .moved;
+            },
+            .output => return .output_right,
             .invert => {
                 options.invert = !options.invert;
                 return .options_changed;
@@ -207,6 +225,11 @@ pub const Menus = struct {
             // Leaving the title is Quit's, said out loud rather than under Escape.
             .title, .playing => .none,
         };
+    }
+
+    /// Controls closed itself: back to its row in Options.
+    pub fn closeControls(self: *Menus) void {
+        self.controls_open = false;
     }
 
     fn closeOptions(self: *Menus) void {
@@ -350,6 +373,12 @@ test "menus: options opens over its menu, changes values within bounds and retur
     try testing.expectApproxEqAbs(@as(f32, 0.95), o.music, 1e-6);
     try testing.expectEqual(Options.volume_min, o.volume);
 
+    // The output is stepped by its own commands: Options holds no output.
+    _ = m.update(.paused, .{ .down = true }, null, null, &o);
+    try testing.expectEqual(Item.output, m.focused(.paused).?);
+    try testing.expectEqual(Command.output_right, m.update(.paused, .{ .right = true }, null, null, &o));
+    try testing.expectEqual(Command.output_left, m.update(.paused, .{ .left = true }, null, null, &o));
+    try testing.expectEqual(Command.output_right, m.update(.paused, .{ .accept = true }, null, null, &o));
     _ = m.update(.paused, .{ .down = true }, null, null, &o);
     for (0..60) |_| _ = m.update(.paused, .{ .right = true }, null, null, &o);
     try testing.expectEqual(Options.sensitivity_max, o.sensitivity);
@@ -362,6 +391,16 @@ test "menus: options opens over its menu, changes values within bounds and retur
     try testing.expect(o.invert);
     try testing.expectEqual(Command.options_changed, m.update(.paused, .{ .left = true }, null, null, &o));
     try testing.expect(!o.invert);
+
+    // Controls opens over Options, reads no keys of the menus', and closes back to its row.
+    _ = m.update(.paused, .{ .down = true }, null, null, &o);
+    try testing.expectEqual(Item.controls, m.focused(.paused).?);
+    try testing.expectEqual(Command.moved, m.update(.paused, .{ .accept = true }, null, null, &o));
+    try testing.expectEqual(Screen.controls, m.screen(.paused));
+    try testing.expectEqual(Command.none, m.update(.paused, .{ .back = true }, null, null, &o));
+    try testing.expectEqual(Screen.controls, m.screen(.paused));
+    m.closeControls();
+    try testing.expectEqual(Item.controls, m.focused(.paused).?);
 
     // Escape closes Options and does not resume the game; the focus is back on its row.
     try testing.expectEqual(Command.moved, m.update(.paused, .{ .back = true }, null, null, &o));

@@ -1,0 +1,185 @@
+# M45's controls (`docs/design/input.md` §11, ADR-0087): every key and button the court reads, as
+# actions in two contexts. The court enables `walk` while a game is in play and `menu` otherwise.
+# A mod changes a default by overriding one action record, as `southpaw` does, and a player's own
+# rebinding (`bindings.fset`) still wins over it (ADR-0088).
+
+foundry:input_context court:context.menu {
+    priority 20
+    blocks   true
+}
+
+foundry:input_context court:context.walk {
+    priority 10
+}
+
+# Walking, on the keys and the left stick. +y is forward; the walk turns it into -Z.
+foundry:input_action court:action.walk.move {
+    kind     "vector"
+    contexts [ court:context.walk ]
+    bindings [
+        { source "key.w" axis "y" }
+        { source "key.s" axis "y" scale -1 }
+        { source "key.a" axis "x" scale -1 }
+        { source "key.d" axis "x" }
+        { source "pad.left_stick" deadzone 0.2 }
+    ]
+}
+
+foundry:input_action court:action.walk.jump {
+    kind     "button"
+    contexts [ court:context.walk ]
+    bindings [ { source "key.space" } { source "pad.south" } ]
+}
+
+foundry:input_action court:action.walk.use {
+    kind     "button"
+    contexts [ court:context.walk ]
+    bindings [ { source "key.e" } { source "pad.west" } ]
+}
+
+# Looking with the captured mouse. Motion is the only source a delta has, so it is not offered
+# for rebinding; sensitivity and invert are the player's options.
+foundry:input_action court:action.walk.look {
+    kind       "delta"
+    contexts   [ court:context.walk ]
+    bindings   [ { source "mouse.motion" } ]
+    rebindable false
+}
+
+# Looking at the walk's turn rate: the right stick and the arrows, which M26 read as turn and
+# pitch. +x turns right and +y looks up.
+foundry:input_action court:action.walk.look_stick {
+    kind     "vector"
+    contexts [ court:context.walk ]
+    bindings [
+        { source "key.up" axis "y" }
+        { source "key.down" axis "y" scale -1 }
+        { source "key.left" axis "x" scale -1 }
+        { source "key.right" axis "x" }
+        { source "pad.right_stick" deadzone 0.2 }
+    ]
+}
+
+# Pause in play, and back out of a menu. In both contexts as one action, so the press that
+# paused is not read again as a press in the pause menu. Not rebindable: it is the way out.
+foundry:input_action court:action.walk.pause {
+    kind       "button"
+    contexts   [ court:context.walk court:context.menu ]
+    bindings   [ { source "key.escape" } { source "pad.start" } ]
+    rebindable false
+}
+
+foundry:input_action court:action.menu.up {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.up" } { source "pad.dpad_up" } ]
+}
+
+foundry:input_action court:action.menu.down {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.down" } { source "pad.dpad_down" } ]
+}
+
+foundry:input_action court:action.menu.left {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.left" } { source "pad.dpad_left" } ]
+}
+
+foundry:input_action court:action.menu.right {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.right" } { source "pad.dpad_right" } ]
+}
+
+foundry:input_action court:action.menu.accept {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.enter" } { source "key.kp_enter" } { source "pad.south" } ]
+}
+
+foundry:input_action court:action.menu.back {
+    kind     "button"
+    contexts [ court:context.menu ]
+    bindings [ { source "key.backspace" } { source "pad.east" } ]
+}
+
+# The debug overlay, which declares no key of its own.
+foundry:input_action court:action.panels {
+    kind     "button"
+    contexts [ court:context.walk court:context.menu ]
+    bindings [ { source "key.f1" } ]
+}
+
+# What the pad does when the warden catches the player: presentation, never simulation.
+@schema controls {
+    caught_rumble_low f32  caught_rumble_high f32  caught_rumble_ms u32
+}
+controls court:controls.main {
+    caught_rumble_low 0.6  caught_rumble_high 0.9  caught_rumble_ms 450
+}
+
+# The words of the Controls and Output rows, beside `court:text.main`. A translation overrides
+# both records.
+@schema controls_text {
+    controls_screen string  output string  system_default string
+    action_move string  action_jump string  action_use string  action_look_stick string
+    action_menu_up string  action_menu_down string  action_menu_left string  action_menu_right string
+    action_menu_accept string  action_menu_back string  action_panels string
+    keyboard string  pad string  unbound string  reset string
+    press_key string  press_pad string  press_cancel string
+    sequence_up string  sequence_down string  sequence_left string  sequence_right string
+    conflict string  another_action string  conflict_hint string  controls_hints string
+}
+controls_text court:text.controls {
+    controls_screen "Controls"  output "Output"  system_default "System default"
+    action_move "Move"  action_jump "Jump"  action_use "Light a beacon"  action_look_stick "Look"
+    action_menu_up "Menu up"  action_menu_down "Menu down"  action_menu_left "Menu left"
+    action_menu_right "Menu right"  action_menu_accept "Menu select"  action_menu_back "Menu back"
+    action_panels "Debug panels"
+    keyboard "Keyboard and mouse"  pad "Gamepad"  unbound "-"  reset "Reset to defaults"
+    press_key "Press a key or a mouse button"  press_pad "Press a gamepad button or move a stick"
+    press_cancel "Esc or Start cancels"
+    sequence_up "Forward or up"  sequence_down "Back or down"  sequence_left "Left"
+    sequence_right "Right"
+    conflict "is also bound to"  another_action "another action"
+    conflict_hint "Enter swaps them     Esc keeps the old binding"
+    controls_hints "Up/Down  Choose     Left/Right  Column     Enter  Rebind     Esc  Back"
+}
+
+# What a binding is called on screen. A key is named by the keyboard's own layout; everything
+# else is named here, and a source not listed is shown by its name. A face button is named by
+# what the pad in use prints on it (`faces`), and by its position when no pad has been seen.
+@schema source_names {
+    sources [{ source string text string }]
+    faces [{ label string text string }]
+}
+source_names court:text.sources {
+    sources [
+        { source "mouse.left" text "Left click" }  { source "mouse.right" text "Right click" }
+        { source "mouse.middle" text "Middle click" }  { source "mouse.back" text "Mouse back" }
+        { source "mouse.forward" text "Mouse forward" }
+        { source "mouse.wheel_up" text "Wheel up" }  { source "mouse.wheel_down" text "Wheel down" }
+        { source "mouse.wheel_left" text "Wheel left" }  { source "mouse.wheel_right" text "Wheel right" }
+        { source "pad.south" text "South" }  { source "pad.east" text "East" }
+        { source "pad.west" text "West" }  { source "pad.north" text "North" }
+        { source "pad.back" text "Back" }  { source "pad.guide" text "Guide" }  { source "pad.start" text "Start" }
+        { source "pad.left_stick_press" text "L3" }  { source "pad.right_stick_press" text "R3" }
+        { source "pad.left_shoulder" text "LB" }  { source "pad.right_shoulder" text "RB" }
+        { source "pad.dpad_up" text "D-pad up" }  { source "pad.dpad_down" text "D-pad down" }
+        { source "pad.dpad_left" text "D-pad left" }  { source "pad.dpad_right" text "D-pad right" }
+        { source "pad.misc1" text "Share" }  { source "pad.touchpad_press" text "Touchpad" }
+        { source "pad.left_paddle1" text "P1" }  { source "pad.left_paddle2" text "P2" }
+        { source "pad.right_paddle1" text "P3" }  { source "pad.right_paddle2" text "P4" }
+        { source "pad.left_stick" text "Left stick" }  { source "pad.right_stick" text "Right stick" }
+        { source "pad.left_x" text "Left stick X" }  { source "pad.left_y" text "Left stick Y" }
+        { source "pad.right_x" text "Right stick X" }  { source "pad.right_y" text "Right stick Y" }
+        { source "pad.left_trigger" text "LT" }  { source "pad.right_trigger" text "RT" }
+    ]
+    faces [
+        { label "a" text "A" }  { label "b" text "B" }  { label "x" text "X" }  { label "y" text "Y" }
+        { label "cross" text "Cross" }  { label "circle" text "Circle" }
+        { label "square" text "Square" }  { label "triangle" text "Triangle" }
+    ]
+}

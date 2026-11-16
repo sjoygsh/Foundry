@@ -98,23 +98,40 @@ test "court: compiled level blocks walking, jumps the low wall and lands; airbor
 }
 
 test "court: input edges survive empty frames and occur once across catch-up ticks" {
+    // The court's own actions, through the tick view a person's reach their ticks by.
+    if (comptime !options.available) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var env = try @import("controls_tests.zig").Actions.init(gpa, false);
+    defer env.deinit(gpa);
+    var view: @import("input").TickView = .empty;
     var input: platform.InputSnapshot = .{};
     platform.key.setKey(&input.keys_pressed, .space, true);
+    platform.key.setKey(&input.keys_held, .space, true);
     input.mouse.captured = true;
     input.mouse.motion = .{ .x = 10, .y = -2 };
-    var pending: walk_mod.Pending = .{};
-    pending.feed(walk_mod.inputIntent(input, false));
-    pending.feed(.{ .direction = .right, .look_dx = 3 });
-    const first = pending.take();
+    view.feed(env.evaluate(&input), &input);
+    // A frame with no tick: the press and the motion wait, and D is held.
+    input = .{};
+    platform.key.setKey(&input.keys_held, .space, true);
+    platform.key.setKey(&input.keys_held, .d, true);
+    input.mouse.captured = true;
+    input.mouse.motion = .{ .x = 3, .y = 0 };
+    view.feed(env.evaluate(&input), &input);
+    const first = walk_mod.actionIntent(view.take().actions, .{});
     try testing.expect(first.jump);
     try testing.expectEqual(@as(f32, 13), first.look_dx);
     try testing.expectEqual(@as(f32, -2), first.look_dy);
-    const second = pending.take();
+    const second = walk_mod.actionIntent(view.take().actions, .{});
     try testing.expect(!second.jump and second.look_dx == 0 and second.look_dy == 0);
     try testing.expectEqualDeep(core.math.Vec3.right, second.direction);
-    input.mouse.captured = false;
-    try testing.expectEqual(@as(f32, 0), walk_mod.inputIntent(input, false).look_dx);
-    try testing.expectEqualDeep(walk_mod.Intent{}, walk_mod.inputIntent(input, true));
+    // An uncaptured pointer's motion is no look; sensitivity and invert scale a captured one.
+    input.mouse.motion = .{ .x = 4, .y = 2 };
+    view.feed(env.evaluate(&input), &input);
+    const scaled = walk_mod.actionIntent(view.take().actions, .{ .sensitivity = 2, .invert = true });
+    try testing.expectEqual(@as(f32, 8), scaled.look_dx);
+    try testing.expectEqual(@as(f32, -4), scaled.look_dy);
+    view.feed(env.evaluate(&input), &input);
+    try testing.expectEqual(@as(f32, 0), walk_mod.actionIntent(view.take().actions, .{ .captured = false }).look_dx);
 }
 
 test "court: package movement rules refuse missing, non-finite and out-of-bounds fields" {

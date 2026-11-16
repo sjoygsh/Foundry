@@ -1,0 +1,27 @@
+# M45's content-only controls mod (`docs/design/input.md` §11): two of the court's action
+# records, overridden whole. No code and no recompiled game. A player's own rebinding of any
+# action still wins over these defaults (ADR-0088).
+
+foundry:input_action court:action.walk.move {
+    kind     "vector"
+    contexts [ court:context.walk ]
+    bindings [
+        { source "key.i" axis "y" }
+        { source "key.k" axis "y" scale -1 }
+        { source "key.j" axis "x" scale -1 }
+        { source "key.l" axis "x" }
+        { source "pad.right_stick" deadzone 0.2 }
+    ]
+}
+
+foundry:input_action court:action.walk.look_stick {
+    kind     "vector"
+    contexts [ court:context.walk ]
+    bindings [
+        { source "key.up" axis "y" }
+        { source "key.down" axis "y" scale -1 }
+        { source "key.left" axis "x" scale -1 }
+        { source "key.right" axis "x" }
+        { source "pad.left_stick" deadzone 0.2 }
+    ]
+}

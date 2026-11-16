@@ -1,0 +1,7 @@
+foundry:mod southpaw:content {
+    name "Southpaw"
+    version 1
+    license "Apache-2.0"
+    summary "Walk on the right hand: I, J, K and L and the right stick, and look with the left. Content only."
+    requires [ { id court:content } ]
+}
